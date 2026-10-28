@@ -1,126 +1,127 @@
-# Arco9 TaskBeat
+# Kanbeat
 
-A Markdown-first, Kanban-driven TUI for native CLI coding agents.
+A filesystem-native Kanban with one persistent local supervisor and multiple rich terminal clients. Native coding CLIs do the work. The filesystem determines the ticket status.
 
-**Status: early architectural scaffold, not production-ready.** See the standalone visual design document at [docs/design/design.html](docs/design/design.html).
+> **Early rewrite, v0.2.0. Not yet a production release.** The code is a fresh architecture, not a migration of the old TaskBeat dispatcher. The core workflow and headless CLI event transport are implemented; interactive embedded harness terminals, custom session groups, and transition-hook execution still require separate implementation.
 
-## What it is
+[Standalone design specification](docs/design/design.html)
 
-TaskBeat is intentionally a small **dispatcher**, not a new agent framework. Tickets are plain Markdown files in the current project's .tasks directory. A native Codex CLI, Claude Code CLI, OpenCode CLI or Pi CLI process lives in tmux, receives the ticket instructions and edits the project as usual. TaskBeat observes file-based status changes and hands the ticket to the next role. Ticket logs are never embedded in Markdown.
+## Principles
 
-The first implementation includes:
-- Textual mouse-clickable Kanban with Board, Sessions, Archive and Settings tabs.
-- Full-viewport, borderless ticket editing (FMODAL) and small dialogs (SMODAL).
-- Ticket ordering, manual status moves, select-mode bulk actions, archive and restore.
-- Project-local YAML-frontmatter Markdown and atomic write / advisory lock.
-- Sequential ticket dispatcher, parallel reviewers **within one ticket**, reviewer consensus, three launch/recovery attempts and notifications.
-- Native tmux process lifecycle and durable session registry; optional experimental embedded PTY view.
+- One supervisor per project, any number of TUI clients. Closing TUI does **not** stop execution.
+- `kanbeat` starts or joins the project's supervisor.
+- `Play` resumes dispatch. `Stop` interrupts board-owned CLI processes and terminates them, saving native session IDs when the CLI reports them. The supervisor stays alive.
+- Stop does not change ticket columns. Play attempts native resume for unfinished slots; the CLI may need to recheck which changes were already made.
+- The supervisor starts **stopped** if the state directory is absent, or when recovering from supervisor restart.
+- The first numeric filename segment is order, the second is a unique stable ticket ID.
+- Tickets are plain Markdown with **no frontmatter**, transcript or runtime metadata.
+- Status = directory. Order = first filename number. ID = second number. `archive/` is out of scope.
+- Sequential tickets; 0..N parallel reviewers on **one active ticket only**. Separate reviewer slots have isolated contexts.
+- Default harness unavailable: global Stop with notification. Missing assigned harness: use default, fresh session. Missing native session: fresh session in same role.
+- No special handling for intentional deletion of active runtime files.
+- Native CLI flags never override user permissions, sandbox or authentication settings.
+- No worktree management, automatic git reset, git cleanup or diff ownership.
 
-## Requirements
+## Installation
 
-- Python 3.11+
-- tmux in PATH, on a Unix-like machine
-- At least one installed, authenticated coding CLI: codex, claude, opencode, pi.
-- A terminal emulator with mouse reporting; mouse *hover* is not required.
+Requires Python 3.11+, a Unix-like system, and at least one installed and authenticated native CLI: Codex CLI (`codex`), Claude Code (`claude`), OpenCode (`opencode`), Pi (`pi`).
 
-Install from the repository root:
+```sh
+python -m pip install -e .
+cd /path/to/my-project
+kanbeat
+```
 
-    python -m pip install -e .
-    taskbeat run
+Open a second terminal in the **same** project and launch `kanbeat` again: it connects to the same supervisor. A different project directory starts an independent supervisor.
 
-Optional experimental full-terminal FMODAL:
+```sh
+kanbeat list
+kanbeat new "Implement auth" --column todo --description "Add token validation"
+kanbeat play
+kanbeat stop
+kanbeat move 001 backlog
+```
 
-    python -m pip install -e '.[terminal]'
+`kanbeat supervisor` runs a foreground supervisor for debugging. The normal CLI starts a detached supervisor automatically.
 
-Use in another project by starting it from that project's directory:
+## On-disk layout
 
-    cd /path/to/project
-    taskbeat
+```text
+.kanbeat/
+├── INSTRUCTIONS.md            # only read when explicitly asked
+├── config.json                # project defaults, Git-trackable
+├── backlog/
+│   └── 0-001-future-search.md
+├── todo/
+│   ├── 0-002-authentication.md
+│   └── 10-003-token-refresh.md
+├── progress/
+├── review/
+├── done/
+├── failed/
+├── archive/
+└── .state/                    # Git-ignored, optional, recreatable
+    ├── supervisor.json        # Play/Stop, slots, session IDs, review verdicts
+    ├── supervisor.sock        # local Unix IPC socket
+    ├── supervisor.lock
+    ├── supervisor.log
+    └── logs/                  # native CLI output, not task content
+```
 
-TaskBeat creates .tasks on first launch. It does **not** create a ticket automatically. TaskBeat's scheduler runs when the TUI is open, not as a background daemon.
+The file `0-002-authentication.md` contains only:
 
-## Ticket and agent CLI
+```md
+# Implement authentication
 
-Create a ticket and enqueue it:
+Add token validation to the API.
 
-    taskbeat new "Implement auth middleware" --status todo --description "Add auth validation"
-    taskbeat list
+## Acceptance criteria
 
-An agent completes development by changing the ticket to Review:
+- Validate access tokens.
+- Handle expiration.
+```
 
-    taskbeat status task-123 review
+Creating `.kanbeat` automatically creates `INSTRUCTIONS.md` for a separately instructed agent to author tickets. It is **not** injected into coding agents automatically.
 
-An agent trying to jump directly from Progress to Done is redirected to Review.
+The first number is **numeric sort order**. The second, e.g. `002`, is the ticket ID and must be unique across all column and archive directories. The slug is readable; changing order and status never changes ID. No metadata is added to Markdown by Kanbeat.
 
-A reviewer uses the concurrency-safe verdict command:
+If `.state` is absent at startup, board status still comes from directories and execution starts **stopped**. Without assignments, configured defaults are used after the user presses Play. Deleting `.state` while the system is actively running is not a supported operation.
 
-    taskbeat review task-123 reviewer-1 approve --iteration <current-iteration-id>
-    taskbeat review task-123 reviewer-2 changes_requested --iteration <current-iteration-id>
+## Flow
 
-### Review/QA context boundary
+```text
+Backlog --manual--> Todo --Play--> Progress --Developer turn done-->
+Review/QA --all Reviewer slots approve--> Done
+          \--any changes_requested--> Progress
+```
 
-**A Reviewer receives only the original ticket task as its task context**, together with its own reviewer/global prompt (if set) and minimal workflow instructions (reviewer ID, iteration, status/reporting command). TaskBeat does **not** feed it the Developer's session logs, transcript, messages, terminal output, Developer CP or a summary of the Developer's work. The Reviewer independently examines the actual repository changes and runs tests. Different Reviewer **slots** (for example, `reviewer-1` and `reviewer-2`) do not share histories.
+Each normal developer turn is executed through the native CLI's structured non-interactive mode. A successful completed turn moves its ticket to Review/QA. Developer can write tests but should not execute them. Reviewers test, prefer headless where suitable, and return a **verdict** in their final response: `KANBEAT_VERDICT: approve` or `KANBEAT_VERDICT: changes_requested`. Reviewer outcomes are collected per slot. One rejection returns the task to Progress with short feedback; all approvals advance to Done. Zero reviewers automatically advance Review/QA to Done.
 
-**Exception: replacement inside the same Reviewer slot.** If `reviewer-1` was running Claude Code and its harness is changed to Codex, the new Codex session in `reviewer-1` may receive the bounded history of that slot's previous Claude session (when available). The same-slot reset may likewise reuse its own context. This is a continuation of one slot, **not** communication between different reviewers. `reviewer-2` still gets no history from `reviewer-1`.
+A Reviewer receives the **original ticket snapshot**, its own role/global/slot CP and workflow instructions. It is never automatically given the Developer transcript, terminal history, CP, or other Reviewers' transcripts. A replacement **within the same reviewer slot** can receive that same slot's bounded prior output as untrusted context when harness is changed. Different reviewer slots never exchange histories.
 
-The slot ID must remain the same for any such handoff. A newly created Reviewer slot receives the original ticket and its own applicable prompts only. A **Developer → Reviewer** transition never performs a log handoff.
+Only one ticket may be in Progress or Review/QA for the dispatcher to start work. If there are multiple, the supervisor suspends dispatch and reports an error. `failed/` is a manual-recovery column.
 
-Each review worker has an independent ID. After *all* reviewers submit, TaskBeat returns the ticket to Progress if anyone requested changes or sends it to Done if all approved. Zero reviewers means Review automatically reaches Done.
+## Native CLI lifecycle
 
-Use the global option to reference the project when running outside the project's directory:
+No custom agent implementation is embedded. Kanbeat uses documented native commands to run each turn and parse structured events. Codex exec JSON, Claude print stream-json, OpenCode run JSON and Pi print JSON are used. A CLI's native session identifier is stored when reported and used for resume. If an assigned harness is gone, the slot switches to the configured default and starts fresh. If the **default** itself is unavailable, the whole board stops and must be restarted manually after configuration.
 
-    taskbeat --project /path/to/project list
+If a session no longer exists, the worker attempts a fresh run in the same slot. This is not equivalent to rolling back tools or Git modifications. Stop interrupts process groups, then terminates unresponsive workers. Custom non-board sessions must not be interrupted by board Stop.
 
-### Ticket format
+**Limitations:** JSON event shapes and session recovery vary by installed CLI version. Reliable interactive PTY embedding is not implemented in this initial rewrite; the Sessions tab is currently a read-only output viewer. Runtime session IDs are only available for CLIs/events that disclose them. Transition hooks are specified but not yet executed. You should verify your chosen CLI version before relying on the workflow unattended.
 
-    ---
-    id: task-001
-    title: Implement auth middleware
-    status: todo
-    order: 100
-    developer:
-      harness: codex
-    reviewers:
-      - id: reviewer-1
-        harness: claude
-    ---
-    ## Goal
-    Validate auth and handle edge cases.
+## Configuration
 
-Optional role fields use **sparse frontmatter**: `cp` and `session` are only written when set. Clearing a value removes its field on the next save. Empty `developer` and `reviewers` sections and unset `review_iteration` are omitted too. Existing Markdown files are compacted the next time TaskBeat saves them.
+Edit project settings via Settings in TUI, or `.kanbeat/config.json`. The `.state` directory is ignored by Git, but `.kanbeat` tickets, column directories, `INSTRUCTIONS.md` and `config.json` are intentionally **not** ignored. Treat CP and logs as sensitive local data.
 
-Files without frontmatter are also recognized, **safely defaulting to Backlog** rather than running automatically. Fields not owned by TaskBeat are preserved when the file is rewritten. Never put secrets in ticket Markdown: Custom Prompts in tickets are visible as plain text.
-
-Task status values: backlog, todo, progress, review, done, failed. Archive is a directory, not an execution status.
-
-## Runtime model
-
-- .tasks/*.md: tickets, editable externally
-- .tasks/archive/*.md: archived tickets
-- .tasks/config.json: project settings (gitignored by default)
-- .tasks/.state/: private tmux socket, session registry, dispatcher ledger, lock (gitignored)
-- One ticket active at once, selected from Todo by ascending order
-- N reviewer processes *within* that one ticket are allowed
-- Old tmux sessions remain alive after closing their viewer; leaving ticket scope via Backlog/Archive ends ticket-owned processes
-
-The original harness's access permissions, sandbox and authentication remain untouched. The CLI is started as the configured command; no permission-altering command flags are added.
-
-## Known gaps and intentionally experimental features
-
-This is the **initial scaffold**, not a claim of feature completeness:
-- Embedded PTY via textual-tty is optional and still requires hands-on compatibility checking across all four CLIs. A tmux screen capture / input fallback is provided.
-- Native CLI session-ID discovery and vendor-specific resume after tmux dies are not implemented yet. Live tmux sessions can be reattached.
-- Reset, customizable per-reviewer session configuration dialog, explicit handoff editor, session group management UI and independent hook execution are incomplete. Ticket data fields are ready for extension.
-- Configured transition hook is saved but **not executed** yet. No fake GitHub sync or side effects.
-- Hung-but-alive CLIs are not killed based on elapsed time. The three-attempt policy applies to launch / unexpected exit; timeout detection is an explicit follow-up.
-- Files edited *simultaneously by external tools* without honoring the lock can still conflict. Agent-facing taskbeat commands use a file lock and atomic replacement.
-- There is no remote daemon or database. Session registry and state are local to the project.
-
-Tests are included as examples/coverage seeds but have **not been run** as part of this initial implementation.
+The project root is the current working directory by default. Use `kanbeat --project /path/to/project` to select another root.
 
 ## Development
 
-    python -m pip install -e '.[dev]'
-    pytest
+```sh
+python -m pip install -e '.[dev]'
+pytest
+```
 
-Design decisions and implementation roadmap: [docs/design/design.html](docs/design/design.html).
+Tests are included, **not run** during this rewrite per project owner request.
+
+The old `.tasks` layout is not automatically migrated. Existing users must manually copy/reformat tickets to the new directory/filename convention. No destructive auto-conversion is performed.

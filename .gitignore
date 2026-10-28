@@ -4,7 +4,5 @@ __pycache__/
 .venv/
 dist/
 *.egg-info/
-.tasks/.state/
-.tasks/config.json
-.tasks/*.md
-.tasks/archive/
+# The tickets, status directories and config ARE part of the project.
+.kanbeat/.state/

@@ -1,27 +1,24 @@
 [build-system]
-requires = ["hatchling>=1.25"]
+requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [project]
-name = "arco9-taskbeat"
-version = "0.1.0"
-description = "Markdown-first Kanban and native CLI agent dispatcher for your terminal"
+name = "kanbeat"
+version = "0.2.0"
+description = "Filesystem-native Kanban with a persistent local AI harness supervisor"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-  "textual>=6.0",
-  "PyYAML>=6.0",
-]
+dependencies = ["textual>=3.0"]
 
 [project.optional-dependencies]
-terminal = ["textual-tty>=0.4.0"]
-dev = ["pytest>=8.0"]
+terminal = ["textual-tty>=0.4"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [project.scripts]
-taskbeat = "taskbeat.cli:main"
+kanbeat = "kanbeat.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/taskbeat"]
+packages = ["src/kanbeat"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
