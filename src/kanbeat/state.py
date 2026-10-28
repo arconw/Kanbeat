@@ -65,7 +65,9 @@ class LocalState:
 
     def notice(self, text: str, level: str = "information") -> None:
         notices = self.data.setdefault("notices", [])
-        notices.append({"message": text, "level": level})
+        serial = int(self.data.get("notice_seq", 0)) + 1
+        self.data["notice_seq"] = serial
+        notices.append({"id": serial, "message": text, "level": level})
         del notices[:-30]
 
     def clean_deleted_tickets(self, current_ids: set[str]) -> None:

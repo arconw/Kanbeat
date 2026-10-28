@@ -379,6 +379,8 @@ class KanbeatApp(App[None]):
         self._updating = False
         self.select_mode = False
         self.selection: set[str] = set()
+        self._seen_notice_id = 0
+        self._initial_snapshot = True
 
     def compose(self) -> ComposeResult:
         with Vertical(id="root"):
@@ -414,9 +416,28 @@ class KanbeatApp(App[None]):
             snap = await self.rpc({"op": "snapshot"})
             signature = json.dumps(snap, sort_keys=True, ensure_ascii=False)
             self.snapshot = snap
-            self.query_one("#execution", Button).label = (
+            execution_button = self.query_one("#execution", Button)
+            execution_button.label = (
                 "■ STOP" if snap.get("execution") == "running" else "▶ PLAY"
             )
+            execution_button.variant = (
+                "error" if snap.get("execution") == "running" else "success"
+            )
+            notices = snap.get("notices") or []
+            if self._initial_snapshot:
+                self._seen_notice_id = max(
+                    (int(n.get("id", 0)) for n in notices), default=0
+                )
+                self._initial_snapshot = False
+            for notice in notices:
+                sequence = int(notice.get("id", 0))
+                if sequence > self._seen_notice_id:
+                    self.notify(
+                        str(notice.get("message", "")),
+                        severity=notice.get("level", "information"),
+                        timeout=8,
+                    )
+                    self._seen_notice_id = max(self._seen_notice_id, sequence)
             if signature != self._signature or force:
                 self._signature = signature
                 # Avoid wiping unsaved settings text while the board is active.

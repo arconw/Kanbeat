@@ -467,7 +467,9 @@ class Supervisor:
         if self.runtime.data.get("execution") == "running":
             self.runtime.data["execution"] = "stopped"
             self.notice("Supervisor restarted: board stopped; press Play to resume")
-        self.server = await asyncio.start_unix_server(self.handle, path=str(self.socket))
+        self.server = await asyncio.start_unix_server(
+            self.handle, path=str(self.socket), limit=8 * 1024 * 1024
+        )
         os.chmod(self.socket, 0o600)
         try:
             while True:
@@ -489,7 +491,7 @@ class Supervisor:
 async def request(project: Path, message: dict[str, Any], timeout: float = 10) -> dict[str, Any]:
     path = Board(project).root / ".state" / "supervisor.sock"
     reader, writer = await asyncio.wait_for(
-        asyncio.open_unix_connection(str(path)), timeout=timeout
+        asyncio.open_unix_connection(str(path), limit=8 * 1024 * 1024), timeout=timeout
     )
     try:
         writer.write((json.dumps(message) + "\n").encode())
