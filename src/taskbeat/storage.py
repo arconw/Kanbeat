@@ -79,6 +79,46 @@ class Ticket:
         return self.path.parent.name == "archive"
 
 
+def compact_ticket_meta(meta: dict[str, Any]) -> dict[str, Any]:
+    """Omit unset optional role fields from Markdown frontmatter.
+
+    Only TaskBeat-owned fields are compacted. Unknown extension fields are
+    preserved, even when empty, to avoid altering external tools' data.
+    """
+    compacted = dict(meta)
+
+    def compact_role(role: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value for key, value in role.items()
+            if not (
+                key in ("cp", "session", "harness")
+                and (value is None or (isinstance(value, str) and not value.strip()))
+            )
+        }
+
+    if isinstance(compacted.get("developer"), dict):
+        developer = compact_role(compacted["developer"])
+        if developer:
+            compacted["developer"] = developer
+        else:
+            compacted.pop("developer")
+
+    if isinstance(compacted.get("reviewers"), list):
+        reviewers = [
+            compact_role(reviewer) if isinstance(reviewer, dict) else reviewer
+            for reviewer in compacted["reviewers"]
+        ]
+        if reviewers:
+            compacted["reviewers"] = reviewers
+        else:
+            compacted.pop("reviewers")
+
+    if compacted.get("review_iteration") is None:
+        compacted.pop("review_iteration", None)
+
+    return compacted
+
+
 def atomic_write(path: Path, contents: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_name = ""
@@ -167,6 +207,7 @@ class TicketStore:
         return sorted(tickets, key=lambda task: (task.order, task.id))
 
     def _write(self, ticket: Ticket) -> None:
+        ticket.meta = compact_ticket_meta(ticket.meta)
         data = yaml.safe_dump(ticket.meta, allow_unicode=True, sort_keys=False).rstrip()
         atomic_write(ticket.path, "---\n" + data + "\n---\n" + ticket.body.rstrip() + "\n")
 
@@ -185,7 +226,7 @@ class TicketStore:
             self.path_for(ticket_id),
             {"id": ticket_id, "title": title.strip() or ticket_id,
              "status": status, "order": self.next_order(status),
-             "developer": {"harness": ""}, "reviewers": []},
+             },
             body,
         )
         with self.locked():
