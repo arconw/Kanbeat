@@ -20,7 +20,12 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_AUTH_TOKEN }}
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
           prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
             Review this pull request. Focus on:
             - bugs and logic errors
             - security issues
@@ -28,4 +33,5 @@ jobs:
             - violations of the project conventions described in CLAUDE.md
 
             Leave inline comments on specific lines. Skip nitpicks and purely
-            stylistic remarks. If everything looks fine, say so briefly.
+            stylistic remarks. If everything looks fine, post a brief PR comment
+            using gh pr comment. Do not leave the review only in the execution log.
