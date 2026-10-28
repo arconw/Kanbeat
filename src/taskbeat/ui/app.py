@@ -378,7 +378,7 @@ class TaskBeatApp(App[None]):
         for status in ("backlog", "todo", "progress", "review", "done", "failed"):
             group = [t for t in rows if t.status == status]
             lane = PageScroll(classes="lane")
-            lane.add(Static(f"{status.upper()}   {len(group):02d}", classes="lane-title"))
+            lane.add(Static(f"{'REVIEW/QA' if status == 'review' else status.upper()}   {len(group):02d}", classes="lane-title"))
             for ticket in group:
                 card = PageVertical(classes="ticket-card")
                 with_title = PageHorizontal(classes="ticket-top")
