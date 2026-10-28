@@ -11,6 +11,7 @@ from contextlib import suppress
 import fcntl
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import signal
@@ -21,7 +22,7 @@ from .filesystem import Board, Ticket, ACTIVE
 from .native import NativeRun, Outcome, VERDICT, available, process_identity
 from .state import LocalState
 from .hooks import TransitionHooks
-from .ipc import socket_path, prepare_socket_directory, remove_socket
+from .ipc import socket_path, prepare_socket_directory, remove_socket, bind_socket
 
 MAX_INPUT = 1024 * 1024
 HARNESS_NAMES = ("codex", "claude", "opencode", "pi")
@@ -867,12 +868,16 @@ class Supervisor:
 
     async def serve(self) -> None:
         self.acquire()
-        await self.recover_orphans()
-        self.server = await asyncio.start_unix_server(
-            self.handle, path=str(self.socket), limit=8 * 1024 * 1024
-        )
-        os.chmod(self.socket, 0o600)
         try:
+            await self.recover_orphans()
+            sock = bind_socket(self.socket)
+            try:
+                self.server = await asyncio.start_unix_server(
+                    self.handle, sock=sock, limit=8 * 1024 * 1024
+                )
+            except BaseException:
+                sock.close()
+                raise
             while True:
                 try:
                     await self.reconcile()
@@ -883,10 +888,19 @@ class Supervisor:
                         self._reported.add(message)
                 await asyncio.sleep(1)
         finally:
-            await self.stop("Supervisor exiting")
-            self.server.close()
-            await self.server.wait_closed()
-            remove_socket(self.socket)
+            try:
+                await self.stop("Supervisor exiting")
+            finally:
+                if self.server is not None:
+                    self.server.close()
+                    await self.server.wait_closed()
+                try:
+                    remove_socket(self.socket)
+                except (OSError, RuntimeError) as exc:
+                    logging.getLogger(__name__).warning("Socket cleanup: %s", exc)
+                if self.lock_stream is not None:
+                    self.lock_stream.close()
+                    self.lock_stream = None
 
 
 async def request(

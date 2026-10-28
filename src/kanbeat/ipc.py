@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import stat
+import socket
 
 MAX_SOCKET_BYTES = 103
 
@@ -34,7 +35,9 @@ def prepare_socket_directory(path: Path) -> None:
         )
     os.chmod(directory, 0o700)
     parent = directory.parent.stat()
-    if parent.st_uid != os.getuid() or parent.st_mode & 0o022:
+    if directory == socket_root() and (
+        parent.st_uid != os.getuid() or parent.st_mode & 0o022
+    ):
         raise RuntimeError(
             "Socket directory parent must be owned by this user and not writable by others"
         )
@@ -48,3 +51,17 @@ def remove_socket(path: Path) -> None:
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
         raise RuntimeError("Refusing to remove a non-owned or non-socket runtime path")
     path.unlink()
+
+
+def bind_socket(path: Path) -> socket.socket:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    previous = os.umask(0o177)
+    try:
+        sock.bind(str(path))
+        sock.setblocking(False)
+        return sock
+    except BaseException:
+        sock.close()
+        raise
+    finally:
+        os.umask(previous)

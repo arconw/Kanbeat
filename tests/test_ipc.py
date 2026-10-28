@@ -134,3 +134,59 @@ def test_socket_directory_rejects_symlink(tmp_path):
     alias.symlink_to(real, target_is_directory=True)
     with pytest.raises(RuntimeError, match="real directory"):
         prepare_socket_directory(alias / "test.sock")
+
+
+def test_shared_project_parent_is_allowed(tmp_path):
+    from kanbeat.ipc import prepare_socket_directory
+
+    state = tmp_path / ".kanbeat" / ".state"
+    state.mkdir(parents=True)
+    state.parent.chmod(0o770)
+    prepare_socket_directory(state / "supervisor.sock")
+    assert state.stat().st_mode & 0o777 == 0o700
+
+
+def test_bind_permissions_are_private_immediately(tmp_path):
+    import os
+
+    from kanbeat.ipc import bind_socket
+
+    path = tmp_path / "test.sock"
+    previous = os.umask(0)
+    sock = None
+    try:
+        sock = bind_socket(path)
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert os.umask(0) == 0
+    finally:
+        os.umask(previous)
+        if sock is not None:
+            sock.close()
+        path.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_preserves_replacement_file_and_releases_lock(
+    tmp_path, short_socket_root, caplog
+):
+    supervisor = Supervisor(tmp_path / ("nested-" * 15))
+    task = asyncio.create_task(supervisor.serve())
+    try:
+        for _ in range(100):
+            if supervisor.server is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert supervisor.server is not None
+        supervisor.socket.unlink()
+        supervisor.socket.write_text("Preserve replacement")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert supervisor.socket.read_text() == "Preserve replacement"
+        assert "Socket cleanup" in caplog.text
+        assert supervisor.lock_stream is None
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        supervisor.socket.unlink(missing_ok=True)
