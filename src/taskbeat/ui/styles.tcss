@@ -1,0 +1,197 @@
+Screen {
+    background: #0b1019;
+    color: #dce6f4;
+}
+#application { height: 100%; width: 100%; }
+#navigation {
+    height: 3;
+    background: #141c2a;
+    border-bottom: solid #344257;
+    padding: 0 1;
+    align-vertical: middle;
+}
+#brand {
+    width: 1fr;
+    color: #7ee7d8;
+    text-style: bold;
+    content-align-vertical: middle;
+}
+.nav-button {
+    min-width: 12;
+    height: 3;
+    background: #141c2a;
+    color: #9eacc0;
+    border: none;
+}
+.nav-button.active {
+    color: #7ee7d8;
+    background: #203545;
+    text-style: bold;
+}
+#viewport { height: 1fr; width: 100%; }
+#statusbar {
+    height: 1;
+    background: #1b2635;
+    color: #899aaf;
+    padding-left: 2;
+}
+#board-page { height: 100%; }
+.page-toolbar {
+    height: 3;
+    padding: 0 1;
+    background: #101827;
+    align-vertical: middle;
+}
+.page-title {
+    width: 1fr;
+    height: 3;
+    text-style: bold;
+    color: #dce6f4;
+    content-align-vertical: middle;
+}
+.page-toolbar Button {
+    min-width: 12;
+    height: 3;
+    margin: 0 0 0 1;
+}
+#lanes {
+    height: 1fr;
+    width: 100%;
+    padding: 1;
+    overflow-x: auto;
+}
+.lane {
+    min-width: 20;
+    width: 1fr;
+    height: 100%;
+    margin: 0 1 0 0;
+    background: #121b29;
+    padding: 1;
+}
+.lane-title {
+    color: #8297ac;
+    text-style: bold;
+    height: 2;
+    padding-left: 1;
+}
+.ticket-card {
+    width: 100%;
+    height: auto;
+    background: #202c3d;
+    margin-bottom: 1;
+    padding: 1;
+}
+.ticket-card:focus-within { background: #26364c; }
+.ticket-top { height: auto; }
+.card-title {
+    width: 1fr;
+    min-width: 5;
+    border: none;
+    background: transparent;
+    color: #e9f1fa;
+    text-align: left;
+    height: auto;
+}
+.card-menu {
+    min-width: 4;
+    width: 4;
+    border: none;
+    background: #2e4157;
+    color: #92dcce;
+}
+.ticket-summary {
+    color: #a1aec0;
+    padding: 0 1;
+    height: auto;
+}
+.state-running { color: #7ee7d8; padding: 1; }
+.state-failed { color: #ff93a6; padding: 1; }
+#session-page, #archive-page, #settings-page {
+    padding: 1 2;
+    height: 100%;
+}
+.session-heading, .section-label {
+    color: #9b8cff;
+    text-style: bold;
+    margin-top: 1;
+    margin-bottom: 1;
+}
+.session-section { height: auto; }
+.session-button { width: 100%; }
+.form-row { height: auto; min-height: 3; align-vertical: middle; }
+.form-row Input { width: 1fr; }
+.form-row Select { width: 26; }
+.form-row Button { min-width: 12; }
+.archive-row {
+    height: 4;
+    background: #182332;
+    margin-bottom: 1;
+    padding: 0 1;
+    align-vertical: middle;
+}
+.archive-title { width: 1fr; content-align-vertical: middle; }
+.field-label {
+    color: #8b9db5;
+    text-style: bold;
+    margin-top: 1;
+    margin-bottom: 1;
+}
+.label-text { width: 1fr; color: #a8b9cd; content-align-vertical: middle; }
+.settings-editor { height: 7; margin-bottom: 1; }
+TicketModal, SessionModal, LogModal, ConfirmDialog, TicketActions {
+    align: center middle;
+    background: #080d15 85%;
+}
+.full-modal {
+    width: 100%;
+    height: 100%;
+    background: #111a29;
+    border: none;
+    padding: 0;
+}
+.modal-header {
+    height: 3;
+    background: #202b3c;
+    align-vertical: middle;
+    padding: 0 1 0 2;
+}
+.modal-header Button { height: 3; min-width: 9; }
+.dialog-title {
+    width: 1fr;
+    text-style: bold;
+    color: #82e3d5;
+    content-align-vertical: middle;
+}
+.full-modal-content {
+    height: 1fr;
+    padding: 1 2;
+}
+#description { height: 12; }
+.prompt-editor { height: 6; margin-bottom: 1; }
+.reviewer-row {
+    height: auto;
+    background: #192436;
+    padding: 1;
+    margin: 0 0 1 0;
+}
+.actions {
+    height: 3;
+    dock: bottom;
+    background: #202b3c;
+    align-horizontal: right;
+}
+.actions Button { min-width: 12; height: 3; }
+.small-modal {
+    width: 72;
+    max-width: 90%;
+    height: auto;
+    max-height: 80%;
+    background: #151f2e;
+    padding: 1;
+}
+.dialog-body { padding: 2 1; height: auto; }
+.log-modal { height: 75%; }
+.log-window { height: 1fr; background: #0f1723; padding: 1; }
+#embedded-terminal { height: 1fr; width: 100%; }
+#session-capture { height: auto; }
+.hint { color: #e9bc75; padding: 1; }

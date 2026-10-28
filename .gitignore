@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+dist/
+*.egg-info/
+.tasks/.state/
+.tasks/config.json
+.tasks/*.md
+.tasks/archive/
