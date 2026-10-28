@@ -10,7 +10,9 @@ from kanbeat.supervisor import Supervisor
 @pytest.fixture
 def supervisor(tmp_path: Path):
     instance = Supervisor(tmp_path)
-    instance.runtime.save_config({"transition_hook": {"harness": "claude", "prompt": "Sync issue"}})
+    instance.runtime.save_config(
+        {"transition_hook": {"harness": "claude", "prompt": "Sync issue"}}
+    )
     return instance
 
 
@@ -25,7 +27,9 @@ def test_disabled_and_same_column_moves_do_not_queue(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_hook_runs_once_with_isolated_session_and_current_path(supervisor, monkeypatch):
+async def test_hook_runs_once_with_isolated_session_and_current_path(
+    supervisor, monkeypatch
+):
     import kanbeat.hooks as module
 
     ticket = supervisor.board.create("Task", "Private body")
@@ -124,7 +128,9 @@ async def test_restart_does_not_replay_uncertain_hook(supervisor):
 @pytest.mark.parametrize("value", [None, [], {"harness": "unknown"}, {"prompt": 5}])
 def test_invalid_hook_configuration_is_not_saved(supervisor, value):
     with pytest.raises(ValueError):
-        supervisor.runtime.save_config({"global_cp": "Changed", "transition_hook": value})
+        supervisor.runtime.save_config(
+            {"global_cp": "Changed", "transition_hook": value}
+        )
     assert supervisor.runtime.config["global_cp"] == ""
 
 
@@ -157,11 +163,17 @@ async def test_full_queue_lifecycle_serializes_hooks(supervisor, monkeypatch):
         await asyncio.sleep(0)
     assert supervisor.board.find(first.id).column == "done"
     assert supervisor.board.find(second.id).column == "done"
-    assert [(e["ticket"], e["from"], e["to"], e["status"])
-            for e in supervisor.hooks.entries.values()] == [
+    assert [
+        (e["ticket"], e["from"], e["to"], e["status"])
+        for e in supervisor.hooks.entries.values()
+    ] == [
         (ticket.id, before, after, "completed")
         for ticket in (first, second)
-        for before, after in (("todo", "progress"), ("progress", "review"), ("review", "done"))
+        for before, after in (
+            ("todo", "progress"),
+            ("progress", "review"),
+            ("review", "done"),
+        )
     ]
     assert len(observed) == 6
 
@@ -213,7 +225,9 @@ async def test_real_native_process_executes_hook(supervisor, monkeypatch):
         "print(json.dumps({'type': 'system', 'session_id': 'hook-session'})); "
         "print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'Synced'}))"
     )
-    monkeypatch.setattr("kanbeat.native.command", lambda *args: ([sys.executable, "-c", script], None))
+    monkeypatch.setattr(
+        "kanbeat.native.command", lambda *args: ([sys.executable, "-c", script], None)
+    )
     monkeypatch.setattr("kanbeat.hooks.available", lambda name: True)
     ticket = supervisor.board.create("Task")
     supervisor.move_ticket(ticket.id, "done")
@@ -231,9 +245,13 @@ async def test_real_native_process_is_terminated_on_stop(supervisor, monkeypatch
 
     from kanbeat.native import process_identity
 
-    monkeypatch.setattr("kanbeat.native.command", lambda *args: (
-        [sys.executable, "-c", "import time; time.sleep(60)"], None,
-    ))
+    monkeypatch.setattr(
+        "kanbeat.native.command",
+        lambda *args: (
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            None,
+        ),
+    )
     monkeypatch.setattr("kanbeat.hooks.available", lambda name: True)
     ticket = supervisor.board.create("Task")
     supervisor.move_ticket(ticket.id, "done")

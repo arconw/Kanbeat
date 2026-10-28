@@ -3,6 +3,7 @@
 The CLI still owns its model, credentials, tools and sandbox settings.
 This is headless task execution, not an embedded interactive terminal.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,11 +25,20 @@ def available(name: str) -> bool:
     return name in HARNESS and shutil.which(HARNESS[name]) is not None
 
 
-def command(name: str, prompt: str, session_id: str | None) -> tuple[list[str], bytes | None]:
+def command(
+    name: str, prompt: str, session_id: str | None
+) -> tuple[list[str], bytes | None]:
     """Native CLI argv; ticket contents are never interpolated into a shell."""
     if name == "codex":
         if session_id:
-            return ["codex", "exec", "resume", session_id, "-", "--json"], prompt.encode()
+            return [
+                "codex",
+                "exec",
+                "resume",
+                session_id,
+                "-",
+                "--json",
+            ], prompt.encode()
         return ["codex", "exec", "--json", "-"], prompt.encode()
     if name == "claude":
         argv = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
@@ -90,7 +100,9 @@ class EventStream:
                 self.session_id = sid
             if kind == "result":
                 self.finished = True
-                self.failed = bool(event.get("is_error")) or event.get("subtype") != "success"
+                self.failed = (
+                    bool(event.get("is_error")) or event.get("subtype") != "success"
+                )
                 self.answer = str(event.get("result") or "")
                 if self.failed:
                     self.error = self.answer[:400]
@@ -119,10 +131,14 @@ class EventStream:
                 msg = event.get("message") or {}
                 if isinstance(msg, dict) and msg.get("role") == "assistant":
                     chunks = msg.get("content") or []
-                    self.answer = "\n".join(
-                        str(c.get("text")) for c in chunks
-                        if isinstance(c, dict) and c.get("type") == "text"
-                    ) or self.answer
+                    self.answer = (
+                        "\n".join(
+                            str(c.get("text"))
+                            for c in chunks
+                            if isinstance(c, dict) and c.get("type") == "text"
+                        )
+                        or self.answer
+                    )
                     self.failed = msg.get("stopReason") in ("error", "aborted")
             if kind in ("agent_end", "agent_settled"):
                 self.finished = True
@@ -136,22 +152,32 @@ class EventStream:
             re.search(
                 r"(?:session|thread).{0,90}"
                 r"(?:not found|does not exist|unknown|missing|cannot resume|no such)",
-                error_text, re.I,
-            ) or re.search(
+                error_text,
+                re.I,
+            )
+            or re.search(
                 r"(?:not found|cannot find|could not find|no such|unknown)"
                 r".{0,90}(?:session|thread)",
-                error_text, re.I,
+                error_text,
+                re.I,
             )
         )
         ok = (
-            return_code == 0 and not self.failed and self.events > 0 and
-            (self.finished or self.harness == "opencode")
+            return_code == 0
+            and not self.failed
+            and self.events > 0
+            and (self.finished or self.harness == "opencode")
         )
-        reason = "completed" if ok else (
-            self.error or stderr.strip()[-400:] or f"exit={return_code}, no completion event"
+        reason = (
+            "completed"
+            if ok
+            else (
+                self.error
+                or stderr.strip()[-400:]
+                or f"exit={return_code}, no completion event"
+            )
         )
         return Outcome(ok, reason, self.session_id, self.answer, missing)
-
 
 
 def process_identity(pid: int) -> str | None:
@@ -167,7 +193,9 @@ def process_identity(pid: int) -> str | None:
             return "linux:" + fields[19]
         output = subprocess.check_output(
             ["ps", "-p", str(pid), "-o", "lstart="],
-            stderr=subprocess.DEVNULL, timeout=2, text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            text=True,
         ).strip()
         return "ps:" + output if output else None
     except (OSError, ValueError, IndexError, subprocess.SubprocessError):
@@ -176,8 +204,12 @@ def process_identity(pid: int) -> str | None:
 
 class NativeRun:
     def __init__(
-        self, harness: str, prompt: str, session_id: str | None,
-        cwd: Path, log_path: Path,
+        self,
+        harness: str,
+        prompt: str,
+        session_id: str | None,
+        cwd: Path,
+        log_path: Path,
         on_session: Callable[[str], None] | None = None,
         on_process: Callable[[int, str | None], None] | None = None,
     ):
@@ -223,10 +255,15 @@ class NativeRun:
             log.flush()
             try:
                 self.process = await asyncio.create_subprocess_exec(
-                    *args, cwd=self.cwd,
-                    stdin=asyncio.subprocess.PIPE if stdin_payload is not None else asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True, limit=2 * 1024 * 1024,
+                    *args,
+                    cwd=self.cwd,
+                    stdin=asyncio.subprocess.PIPE
+                    if stdin_payload is not None
+                    else asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                    limit=2 * 1024 * 1024,
                 )
             except OSError as exc:
                 return Outcome(False, str(exc), self.session_id, "")
@@ -240,7 +277,7 @@ class NativeRun:
                 assert proc.stderr is not None
                 while chunk := await proc.stderr.read(4096):
                     if len(error_bytes) < 8192:
-                        error_bytes.extend(chunk[:8192 - len(error_bytes)])
+                        error_bytes.extend(chunk[: 8192 - len(error_bytes)])
                     log.write(chunk.decode("utf-8", "replace"))
                     log.flush()
 
@@ -265,7 +302,13 @@ class NativeRun:
                 if stream.session_id and stream.session_id != self.session_id:
                     self.session_id = stream.session_id
                     self.on_session(self.session_id)
-                if event.get("type") in ("item.completed", "text", "result", "message_end", "error"):
+                if event.get("type") in (
+                    "item.completed",
+                    "text",
+                    "result",
+                    "message_end",
+                    "error",
+                ):
                     summary = stream.answer or stream.error
                     if summary:
                         log.write(summary[-3000:] + "\n")
@@ -273,5 +316,7 @@ class NativeRun:
             code = await proc.wait()
             await stderr_task
             if self.stopping:
-                return Outcome(False, "interrupted by board Stop", stream.session_id, stream.answer)
+                return Outcome(
+                    False, "interrupted by board Stop", stream.session_id, stream.answer
+                )
             return stream.result(code, error_bytes.decode("utf-8", "replace"))

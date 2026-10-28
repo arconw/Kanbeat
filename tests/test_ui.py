@@ -18,8 +18,10 @@ async def test_settings_save_transition_hook(tmp_path, monkeypatch):
         app.query_one("#settings-save", Button).press()
         await pilot.pause()
         assert supervisor.runtime.config["transition_hook"] == {
-            "harness": "claude", "prompt": "Update linked issue",
+            "harness": "claude",
+            "prompt": "Update linked issue",
         }
         assert Supervisor(tmp_path).runtime.config["transition_hook"] == {
-            "harness": "claude", "prompt": "Update linked issue",
+            "harness": "claude",
+            "prompt": "Update linked issue",
         }

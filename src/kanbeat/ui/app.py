@@ -1,4 +1,5 @@
 """Kanbeat TUI. A mouse-clickable view/controller for the supervisor, never its owner."""
+
 from __future__ import annotations
 
 import json
@@ -15,8 +16,12 @@ from ..supervisor import request
 
 COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed")
 ALL_COLUMNS = COLUMNS + ("archive",)
-HARNESS = [("Codex", "codex"), ("Claude Code", "claude"),
-           ("OpenCode", "opencode"), ("Pi", "pi")]
+HARNESS = [
+    ("Codex", "codex"),
+    ("Claude Code", "claude"),
+    ("OpenCode", "opencode"),
+    ("Pi", "pi"),
+]
 COLUMN_OPTIONS = [(c.upper() if c != "review" else "REVIEW/QA", c) for c in ALL_COLUMNS]
 
 
@@ -48,7 +53,9 @@ class LogView(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="full"):
             with Horizontal(classes="modal-header"):
-                yield Static(f"SESSION OUTPUT · {self.ticket}/{self.slot}", classes="modal-name")
+                yield Static(
+                    f"SESSION OUTPUT · {self.ticket}/{self.slot}", classes="modal-name"
+                )
                 yield Button("× Close", id="close")
             with VerticalScroll(id="log-scroll"):
                 yield Static("Loading...", id="log-text")
@@ -59,8 +66,12 @@ class LogView(ModalScreen[None]):
 
     async def refresh_log(self) -> None:
         try:
-            response = await self.app.rpc({"op": "log", "ticket": self.ticket, "slot": self.slot})
-            self.query_one("#log-text", Static).update(response.get("log") or "No log yet.")
+            response = await self.app.rpc(
+                {"op": "log", "ticket": self.ticket, "slot": self.slot}
+            )
+            self.query_one("#log-text", Static).update(
+                response.get("log") or "No log yet."
+            )
         except RuntimeError as exc:
             self.app.notify(str(exc), severity="error")
 
@@ -82,13 +93,20 @@ class TicketView(ModalScreen[None]):
         state = self.ticket.get("state") or {}
         with Vertical(classes="full"):
             with Horizontal(classes="modal-header"):
-                yield Static("TICKET " + self.ticket["id"] + " · " + self.ticket["title"], classes="modal-name", id="ticket-heading")
+                yield Static(
+                    "TICKET " + self.ticket["id"] + " · " + self.ticket["title"],
+                    classes="modal-name",
+                    id="ticket-heading",
+                )
                 yield Button("× Close", id="close")
             with VerticalScroll(classes="content"):
                 yield Static(
-                    "FILE  " + self.ticket["filename"] + "   •   " +
-                    self.ticket["column"].upper(),
-                    classes="hint", id="ticket-location",
+                    "FILE  "
+                    + self.ticket["filename"]
+                    + "   •   "
+                    + self.ticket["column"].upper(),
+                    classes="hint",
+                    id="ticket-location",
                 )
                 yield Markdown(self.ticket["body"], id="ticket-markdown")
                 yield Static("HARNESS SLOTS", classes="section-title")
@@ -97,8 +115,11 @@ class TicketView(ModalScreen[None]):
                     yield Button("Configure", id="dev-config")
                     yield Button("Logs", id="dev-log")
                     yield Static(
-                        (state.get("runtime") or {}).get("developer", {}).get("status", "idle"),
-                        classes="runtime", id="developer-runtime",
+                        (state.get("runtime") or {})
+                        .get("developer", {})
+                        .get("status", "idle"),
+                        classes="runtime",
+                        id="developer-runtime",
                     )
                 for slot in state.get("reviewers") or []:
                     sid = slot.get("id", "reviewer")
@@ -108,7 +129,10 @@ class TicketView(ModalScreen[None]):
                         yield Button("Logs", id="log-" + sid)
                         yield Button("Remove", id="remove-" + sid)
                 yield Button("+ Reviewer", id="add-reviewer")
-            yield Static("Ticket Markdown is read-only here. Edit its .md file in your editor.", classes="hint")
+            yield Static(
+                "Ticket Markdown is read-only here. Edit its .md file in your editor.",
+                classes="hint",
+            )
 
     def on_mount(self) -> None:
         self.set_interval(1.5, self.refresh_ticket)
@@ -128,8 +152,7 @@ class TicketView(ModalScreen[None]):
             or latest["column"] != self.ticket["column"]
         ):
             self.query_one("#ticket-location", Static).update(
-                "FILE  " + latest["filename"] + "   •   " +
-                latest["column"].upper()
+                "FILE  " + latest["filename"] + "   •   " + latest["column"].upper()
             )
         if latest["title"] != self.ticket["title"]:
             self.query_one("#ticket-heading", Static).update(
@@ -164,14 +187,15 @@ class TicketView(ModalScreen[None]):
                 number += 1
             self.app.push_screen(Assignment(self.ticket, "reviewer-" + str(number)))
 
-
     @work
     async def confirm_remove(self, slot: str) -> None:
-        approved = await self.app.push_screen_wait(Confirm("Remove reviewer slot " + slot + "?"))
+        approved = await self.app.push_screen_wait(
+            Confirm("Remove reviewer slot " + slot + "?")
+        )
         if approved:
-            if await self.app.execute({
-                "op": "remove_reviewer", "ticket": self.ticket["id"], "slot": slot
-            }):
+            if await self.app.execute(
+                {"op": "remove_reviewer", "ticket": self.ticket["id"], "slot": slot}
+            ):
                 self.dismiss(None)
 
 
@@ -183,15 +207,23 @@ class Assignment(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         state = self.ticket.get("state") or {}
-        value = state.get("developer", {}) if self.slot == "developer" else next(
-            (r for r in state.get("reviewers", []) if r.get("id") == self.slot), {}
+        value = (
+            state.get("developer", {})
+            if self.slot == "developer"
+            else next(
+                (r for r in state.get("reviewers", []) if r.get("id") == self.slot), {}
+            )
         )
         with Vertical(classes="sm"):
             with Horizontal(classes="modal-header"):
                 yield Static("SLOT CONFIGURATION · " + self.slot, classes="modal-name")
                 yield Button("×", id="close")
             yield Static("Harness", classes="field")
-            yield Select([("Project default", "")] + HARNESS, value=value.get("harness") or "", id="harness")
+            yield Select(
+                [("Project default", "")] + HARNESS,
+                value=value.get("harness") or "",
+                id="harness",
+            )
             yield Static("Custom Prompt", classes="field")
             yield TextArea(str(value.get("cp") or ""), id="cp")
             with Horizontal(classes="modal-actions"):
@@ -205,10 +237,14 @@ class Assignment(ModalScreen[None]):
         elif name == "save":
             harness = self.query_one("#harness", Select).value
             cp = self.query_one("#cp", TextArea).text
-            ok = await self.app.execute({
-                "op": "set_assignment", "ticket": self.ticket["id"],
-                "slot": self.slot, "values": {"harness": harness, "cp": cp},
-            })
+            ok = await self.app.execute(
+                {
+                    "op": "set_assignment",
+                    "ticket": self.ticket["id"],
+                    "slot": self.slot,
+                    "values": {"harness": harness, "cp": cp},
+                }
+            )
             if ok:
                 self.dismiss(None)
 
@@ -221,7 +257,9 @@ class TicketActions(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="sm"):
             with Horizontal(classes="modal-header"):
-                yield Static("TICKET ACTIONS · " + self.ticket["id"], classes="modal-name")
+                yield Static(
+                    "TICKET ACTIONS · " + self.ticket["id"], classes="modal-name"
+                )
                 yield Button("×", id="close")
             yield Static("Move to column", classes="field")
             yield Select(COLUMN_OPTIONS, value=self.ticket["column"], id="column")
@@ -238,12 +276,19 @@ class TicketActions(ModalScreen[None]):
             return
         ticket_id = self.ticket["id"]
         if name == "move":
-            cmd = {"op": "move", "ticket": ticket_id,
-                   "column": self.query_one("#column", Select).value}
+            cmd = {
+                "op": "move",
+                "ticket": ticket_id,
+                "column": self.query_one("#column", Select).value,
+            }
         elif name == "archive":
             cmd = {"op": "archive", "ticket": ticket_id}
         else:
-            cmd = {"op": "reorder", "ticket": ticket_id, "direction": -1 if name == "up" else 1}
+            cmd = {
+                "op": "reorder",
+                "ticket": ticket_id,
+                "direction": -1 if name == "up" else 1,
+            }
         if await self.app.execute(cmd):
             self.dismiss(None)
 
@@ -257,7 +302,9 @@ class NewTicket(ModalScreen[None]):
             yield Static("Title", classes="field")
             yield Input(id="title", placeholder="Implement authentication")
             yield Static("Initial column", classes="field")
-            yield Select([("BACKLOG", "backlog"), ("TODO", "todo")], value="backlog", id="column")
+            yield Select(
+                [("BACKLOG", "backlog"), ("TODO", "todo")], value="backlog", id="column"
+            )
             with Horizontal(classes="modal-actions"):
                 yield Button("Cancel", id="cancel")
                 yield Button("Create", id="save", variant="primary")
@@ -270,10 +317,13 @@ class NewTicket(ModalScreen[None]):
             if not title:
                 self.app.notify("Title is required", severity="warning")
                 return
-            if await self.app.execute({
-                "op": "create", "title": title,
-                "column": self.query_one("#column", Select).value,
-            }):
+            if await self.app.execute(
+                {
+                    "op": "create",
+                    "title": title,
+                    "column": self.query_one("#column", Select).value,
+                }
+            ):
                 self.dismiss(None)
 
 
@@ -285,26 +335,47 @@ class Settings(VerticalScroll):
     def compose(self) -> ComposeResult:
         yield Static("SETTINGS / PROJECT DEFAULTS", classes="page-heading")
         yield Static("Default harness", classes="field")
-        yield Select(HARNESS, value=self.config.get("default_harness") or "codex", id="cfg-harness")
+        yield Select(
+            HARNESS,
+            value=self.config.get("default_harness") or "codex",
+            id="cfg-harness",
+        )
         for field, title in (
             ("global_cp", "Global CP"),
             ("developer_prompt", "Developer Prompt"),
             ("reviewer_prompt", "Reviewer / QA Prompt"),
         ):
             yield Static(title, classes="field")
-            yield TextArea(str(self.config.get(field) or ""), id="cfg-" + field, classes="settings-editor")
+            yield TextArea(
+                str(self.config.get(field) or ""),
+                id="cfg-" + field,
+                classes="settings-editor",
+            )
         yield Static("TRANSITION HOOK", classes="section-title")
         hook = self.config.get("transition_hook") or {}
-        yield Select([("Project default", "")] + HARNESS,
-                     value=hook.get("harness") or "", allow_blank=False, id="cfg-hook-harness")
-        yield TextArea(str(hook.get("prompt") or ""), id="cfg-hook-prompt", classes="settings-editor")
-        yield Static("Empty prompt disables hooks. Hooks run after moves on Play. "
-                     "Failures never revert tickets; interrupted hooks are not replayed.", classes="hint")
+        yield Select(
+            [("Project default", "")] + HARNESS,
+            value=hook.get("harness") or "",
+            allow_blank=False,
+            id="cfg-hook-harness",
+        )
+        yield TextArea(
+            str(hook.get("prompt") or ""),
+            id="cfg-hook-prompt",
+            classes="settings-editor",
+        )
+        yield Static(
+            "Empty prompt disables hooks. Hooks run after moves on Play. "
+            "Failures never revert tickets; interrupted hooks are not replayed.",
+            classes="hint",
+        )
         yield Button("Save settings", id="settings-save", variant="primary")
 
 
 class BoardView(Vertical):
-    def __init__(self, snapshot: dict[str, Any], select_mode: bool, selection: set[str]):
+    def __init__(
+        self, snapshot: dict[str, Any], select_mode: bool, selection: set[str]
+    ):
         super().__init__(id="board-page")
         self.snapshot = snapshot
         self.select_mode = select_mode
@@ -313,31 +384,48 @@ class BoardView(Vertical):
     def compose(self) -> ComposeResult:
         with Horizontal(classes="toolbar"):
             yield Static("BOARD / PROJECT PIPELINE", classes="page-heading")
-            yield Button("Select mode " + ("ON" if self.select_mode else "OFF"), id="select-mode")
-            yield Button("Bulk archive", id="bulk-archive", disabled=not self.select_mode)
+            yield Button(
+                "Select mode " + ("ON" if self.select_mode else "OFF"), id="select-mode"
+            )
+            yield Button(
+                "Bulk archive", id="bulk-archive", disabled=not self.select_mode
+            )
             yield Button("+ Ticket", id="new-ticket")
         with Horizontal(id="lanes"):
             for column in COLUMNS:
-                items = [t for t in self.snapshot.get("tickets", []) if t["column"] == column]
+                items = [
+                    t for t in self.snapshot.get("tickets", []) if t["column"] == column
+                ]
                 with VerticalScroll(classes="lane"):
                     yield Static(
-                        ("REVIEW/QA" if column == "review" else column.upper()) +
-                        f"   {len(items):02d}", classes="lane-title",
+                        ("REVIEW/QA" if column == "review" else column.upper())
+                        + f"   {len(items):02d}",
+                        classes="lane-title",
                     )
                     for ticket in items:
                         with Vertical(classes="card"):
                             with Horizontal(classes="card-head"):
                                 yield Button(
-                                    ticket["title"][:48], id="view-" + ticket["id"],
+                                    ticket["title"][:48],
+                                    id="view-" + ticket["id"],
                                     classes="card-title",
                                 )
-                                yield Button("···", id="act-" + ticket["id"], classes="card-menu")
+                                yield Button(
+                                    "···", id="act-" + ticket["id"], classes="card-menu"
+                                )
                             lines = ticket["body"].splitlines()
                             summary = next(
-                                (line.strip() for line in lines
-                                 if line.strip() and not line.startswith("#")), ""
+                                (
+                                    line.strip()
+                                    for line in lines
+                                    if line.strip() and not line.startswith("#")
+                                ),
+                                "",
                             )
-                            yield Static(summary[:100] or "No description", classes="card-summary")
+                            yield Static(
+                                summary[:100] or "No description",
+                                classes="card-summary",
+                            )
                             state = ticket.get("state") or {}
                             runtimes = state.get("runtime") or {}
                             if runtimes:
@@ -348,8 +436,10 @@ class BoardView(Vertical):
                                 yield Static("◌ " + status[:88], classes="card-runtime")
                             if self.select_mode:
                                 yield Button(
-                                    ("☑" if ticket["id"] in self.selection else "☐") + " Select",
-                                    id="pick-" + ticket["id"], classes="check-button",
+                                    ("☑" if ticket["id"] in self.selection else "☐")
+                                    + " Select",
+                                    id="pick-" + ticket["id"],
+                                    classes="check-button",
                                 )
 
 
@@ -360,11 +450,14 @@ class SessionsView(VerticalScroll):
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Collapsible
+
         yield Static("SESSIONS / NATIVE CLI OUTPUT", classes="page-heading")
         with Collapsible(title="Tasks", collapsed=True):
             for ticket in self.snapshot.get("tickets", []):
                 state = ticket.get("state") or {}
-                yield Static(ticket["title"] + " · " + ticket["id"], classes="session-heading")
+                yield Static(
+                    ticket["title"] + " · " + ticket["id"], classes="session-heading"
+                )
                 yield Button("Developer logs", id="log-" + ticket["id"] + "-developer")
                 for row in state.get("reviewers") or []:
                     yield Button(
@@ -489,7 +582,9 @@ class KanbeatApp(App[None]):
         panel = self.query_one("#content", Vertical)
         await panel.remove_children()
         if self.tab == "board":
-            await panel.mount(BoardView(self.snapshot, self.select_mode, self.selection))
+            await panel.mount(
+                BoardView(self.snapshot, self.select_mode, self.selection)
+            )
         elif self.tab == "sessions":
             await panel.mount(SessionsView(self.snapshot))
         elif self.tab == "archive":
@@ -507,7 +602,9 @@ class KanbeatApp(App[None]):
         self.call_later(self.refresh_snapshot, True)
 
     def find_ticket(self, ticket_id: str) -> dict[str, Any] | None:
-        return next((t for t in self.snapshot.get("tickets", []) if t["id"] == ticket_id), None)
+        return next(
+            (t for t in self.snapshot.get("tickets", []) if t["id"] == ticket_id), None
+        )
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         name = event.button.id or ""
@@ -543,16 +640,16 @@ class KanbeatApp(App[None]):
             if ticket:
                 self.push_screen(TicketActions(ticket))
         elif name.startswith("restore-"):
-            await self.execute({"op": "restore", "ticket": name[8:], "column": "backlog"})
+            await self.execute(
+                {"op": "restore", "ticket": name[8:], "column": "backlog"}
+            )
         elif name.startswith("delete-"):
             self.confirm_delete(name[7:])
         elif name.startswith("log-"):
             _, tid, slot = name.split("-", 2)
             await self.push_screen(LogView(tid, slot))
         elif name == "settings-save":
-            config = {
-                "default_harness": self.query_one("#cfg-harness", Select).value
-            }
+            config = {"default_harness": self.query_one("#cfg-harness", Select).value}
             for field in ("global_cp", "developer_prompt", "reviewer_prompt"):
                 config[field] = self.query_one("#cfg-" + field, TextArea).text
             config["transition_hook"] = {

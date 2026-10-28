@@ -19,13 +19,18 @@ class TransitionHooks:
         serial = int(self.state.data.get("hook_seq", 0)) + 1
         self.state.data["hook_seq"] = serial
         self.entries[str(serial)] = {
-            "ticket": after.id, "from": before.column, "to": after.column,
+            "ticket": after.id,
+            "from": before.column,
+            "to": after.column,
             "harness": config.get("harness") or self.state.config["default_harness"],
-            "prompt": config["prompt"], "status": "pending",
+            "prompt": config["prompt"],
+            "status": "pending",
         }
         self.state.save()
 
-    def record_process(self, entry: dict[str, Any], pid: int, identity: str | None) -> None:
+    def record_process(
+        self, entry: dict[str, Any], pid: int, identity: str | None
+    ) -> None:
         entry.update(pid=pid, process_identity=identity)
         self.state.save()
 
@@ -42,25 +47,34 @@ class TransitionHooks:
                 raise ValueError("Hook harness unavailable: " + harness)
             ticket = self.state.board.find(entry["ticket"])
             path = ticket.path.relative_to(self.state.board.project).as_posix()
-            prompt = "\n\n".join([
-                entry["prompt"],
-                f"Kanbeat transition event {event_id}: ticket #{ticket.id} "
-                f"{entry['from']} -> {entry['to']}.",
-                f"Current canonical ticket path: {path}. Read it directly if needed.",
-                "This is an independent transition hook session. Do not edit, "
-                "rename, move or delete Kanbeat tickets, configuration or runtime "
-                "state. Do not read worker transcripts or custom prompts. "
-                "Do not change ticket status. External side effects must be idempotent.",
-            ])
+            prompt = "\n\n".join(
+                [
+                    entry["prompt"],
+                    f"Kanbeat transition event {event_id}: ticket #{ticket.id} "
+                    f"{entry['from']} -> {entry['to']}.",
+                    f"Current canonical ticket path: {path}. Read it directly if needed.",
+                    "This is an independent transition hook session. Do not edit, "
+                    "rename, move or delete Kanbeat tickets, configuration or runtime "
+                    "state. Do not read worker transcripts or custom prompts. "
+                    "Do not change ticket status. External side effects must be idempotent.",
+                ]
+            )
             run = NativeRun(
-                harness, prompt, None, self.state.board.project,
+                harness,
+                prompt,
+                None,
+                self.state.board.project,
                 self.state.board.root / ".state" / "logs" / f"hook-{event_id}.log",
-                on_process=lambda pid, identity: self.record_process(entry, pid, identity),
+                on_process=lambda pid, identity: self.record_process(
+                    entry, pid, identity
+                ),
             )
             runs[key] = run
             result = await run.execute()
-            entry["status"] = "interrupted" if run.stopping else (
-                "completed" if result.ok else "failed"
+            entry["status"] = (
+                "interrupted"
+                if run.stopping
+                else ("completed" if result.ok else "failed")
             )
             entry["reason"] = result.reason
         except Exception as exc:

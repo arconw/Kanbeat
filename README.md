@@ -186,16 +186,19 @@ pytest
 ```
 
 CI runs regression tests and headless TUI checks on Python 3.11–3.14 on Linux,
-plus Python 3.14 on macOS. It also checks Ruff diagnostics, builds wheel/sdist,
+plus Python 3.14 on macOS. It also checks Ruff diagnostics and formatting,
+validates workflow syntax and shell snippets with actionlint, builds wheel/sdist,
 validates distribution metadata and smoke-tests clean installs with bundled TUI
 styles. Test and distribution artifacts are attached to Actions runs. Dependabot
-tracks Python and Actions dependency updates. Tags matching `v*` run the same CI;
+tracks Python and Actions dependency updates. CodeQL scans Python on PRs,
+main pushes and a weekly schedule. Tags matching `v*` run the same CI;
 there is no automatic PyPI publication.
 
 Local equivalent:
 
 ```sh
 python -m ruff check src tests
+python -m ruff format --check src tests
 python -m pytest
 python -m build --outdir .tmp/dist
 python -m twine check .tmp/dist/*

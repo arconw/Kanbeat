@@ -1,4 +1,5 @@
 """Filesystem-native tickets. No YAML frontmatter, no mutable ticket metadata."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,7 +11,9 @@ from typing import Any
 
 COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed", "archive")
 ACTIVE = ("progress", "review")
-FILENAME = re.compile(r"^(?P<order>\d+)-(?P<id>\d{3,})-(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)\.md$")
+FILENAME = re.compile(
+    r"^(?P<order>\d+)-(?P<id>\d{3,})-(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)\.md$"
+)
 SLUG = re.compile(r"[^a-z0-9]+")
 
 INSTRUCTION = """# Kanbeat ticket-writing guide
@@ -73,7 +76,9 @@ class Board:
                     continue
                 ticket_id = match["id"]
                 if ticket_id in ids:
-                    errors.append(f"Duplicate ticket ID {ticket_id}: {column}/{path.name}")
+                    errors.append(
+                        f"Duplicate ticket ID {ticket_id}: {column}/{path.name}"
+                    )
                     continue
                 ids.add(ticket_id)
                 try:
@@ -82,14 +87,24 @@ class Board:
                     errors.append(f"Unreadable ticket {path.name}: {exc}")
                     continue
                 title = next(
-                    (line[2:].strip() for line in content.splitlines()
-                     if line.startswith("# ") and line[2:].strip()),
+                    (
+                        line[2:].strip()
+                        for line in content.splitlines()
+                        if line.startswith("# ") and line[2:].strip()
+                    ),
                     match["slug"].replace("-", " ").title(),
                 )
-                tickets.append(Ticket(
-                    id=ticket_id, order=int(match["order"]), slug=match["slug"],
-                    column=column, path=path, title=title, body=content,
-                ))
+                tickets.append(
+                    Ticket(
+                        id=ticket_id,
+                        order=int(match["order"]),
+                        slug=match["slug"],
+                        column=column,
+                        path=path,
+                        title=title,
+                        body=content,
+                    )
+                )
         tickets.sort(key=lambda t: (COLUMNS.index(t.column), t.order, int(t.id)))
         return tickets, errors
 
@@ -156,10 +171,12 @@ class Board:
         for rank, item in enumerate(neighbors):
             temporary = item.path.with_name(f".kanbeat-rename-{item.id}")
             item.path.rename(temporary)
-            renames.append((
-                temporary,
-                self.root / item.column / f"{rank * 10}-{item.id}-{item.slug}.md",
-            ))
+            renames.append(
+                (
+                    temporary,
+                    self.root / item.column / f"{rank * 10}-{item.id}-{item.slug}.md",
+                )
+            )
         for temporary, destination in renames:
             temporary.rename(destination)
 
@@ -172,11 +189,15 @@ class Board:
 
 def atomic_json(path: Path, data: dict[str, Any]) -> None:
     import json
+
     path.parent.mkdir(parents=True, exist_ok=True)
     temp: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=path.parent, prefix=".writing-",
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=".writing-",
             delete=False,
         ) as stream:
             temp = stream.name

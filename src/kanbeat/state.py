@@ -1,4 +1,5 @@
 """Private recoverable runtime. Tickets and columns never depend on .state."""
+
 from __future__ import annotations
 
 import json
@@ -64,7 +65,10 @@ class LocalState:
 
     def save_config(self, values: dict[str, Any]) -> None:
         if "transition_hook" in values:
-            values = {**values, "transition_hook": self.validate_hook(values["transition_hook"])}
+            values = {
+                **values,
+                "transition_hook": self.validate_hook(values["transition_hook"]),
+            }
         editable = set(DEFAULT_CONFIG)
         for key in editable:
             if key in values:
@@ -72,10 +76,16 @@ class LocalState:
         atomic_json(self.config_path, self.config)
 
     def ticket(self, ticket_id: str) -> dict[str, Any]:
-        return self.data["tickets"].setdefault(ticket_id, {
-            "developer": {}, "reviewers": [], "runtime": {}, "phase": "",
-            "review_results": {},
-        })
+        return self.data["tickets"].setdefault(
+            ticket_id,
+            {
+                "developer": {},
+                "reviewers": [],
+                "runtime": {},
+                "phase": "",
+                "review_results": {},
+            },
+        )
 
     def notice(self, text: str, level: str = "information") -> None:
         notices = self.data.setdefault("notices", [])

@@ -1,4 +1,5 @@
-"""Lifecycle regression cases. Run only in the owner's environment."""
+"""Supervisor lifecycle regression cases."""
+
 import asyncio
 from pathlib import Path
 
@@ -31,7 +32,9 @@ def test_supervisor_does_not_edit_ticket_file(tmp_path: Path):
 
 def test_reviewer_prompt_uses_path_not_body_or_developer_logs(tmp_path: Path):
     supervisor = Supervisor(tmp_path)
-    ticket = supervisor.board.create("Implement", "Confidential ticket detail", column="review")
+    ticket = supervisor.board.create(
+        "Implement", "Confidential ticket detail", column="review"
+    )
     state = supervisor.ticket_state(ticket.id)
     state["developer"]["session"] = "developer-secret"
     state["reviewers"] = [
@@ -53,7 +56,9 @@ def test_archived_ticket_not_dispatched(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_modified_ticket_is_redispatched_to_same_session(tmp_path: Path, monkeypatch):
+async def test_modified_ticket_is_redispatched_to_same_session(
+    tmp_path: Path, monkeypatch
+):
     import kanbeat.supervisor as module
 
     supervisor = Supervisor(tmp_path)
@@ -67,7 +72,9 @@ async def test_modified_ticket_is_redispatched_to_same_session(tmp_path: Path, m
     class FakeRun:
         stopping = False
 
-        def __init__(self, harness, prompt, session, cwd, log, on_session=None, on_process=None):
+        def __init__(
+            self, harness, prompt, session, cwd, log, on_session=None, on_process=None
+        ):
             captured.append((prompt, session))
             self.on_session = on_session
 
@@ -95,7 +102,9 @@ async def test_modified_ticket_is_redispatched_to_same_session(tmp_path: Path, m
 
 
 @pytest.mark.asyncio
-async def test_finished_reviewer_verdict_invalidated_when_ticket_changes(tmp_path: Path, monkeypatch):
+async def test_finished_reviewer_verdict_invalidated_when_ticket_changes(
+    tmp_path: Path, monkeypatch
+):
     import kanbeat.supervisor as module
 
     supervisor = Supervisor(tmp_path)
@@ -107,11 +116,15 @@ async def test_finished_reviewer_verdict_invalidated_when_ticket_changes(tmp_pat
     old_hash = supervisor.content_hash(ticket)
     state["review_results"] = {
         "reviewer-1": {
-            "verdict": "approve", "iteration": 2, "task_hash": old_hash,
+            "verdict": "approve",
+            "iteration": 2,
+            "task_hash": old_hash,
         }
     }
     state["runtime"]["reviewer-1"] = {
-        "stage": "review", "iteration": 2, "status": "completed",
+        "stage": "review",
+        "iteration": 2,
+        "status": "completed",
         "task_hash": old_hash,
     }
     supervisor.runtime.data["execution"] = "running"
@@ -120,6 +133,7 @@ async def test_finished_reviewer_verdict_invalidated_when_ticket_changes(tmp_pat
 
     async def fake_start(ticket, worker, assignment):
         observed.append((ticket.id, worker))
+
     monkeypatch.setattr(supervisor, "start_worker", fake_start)
     monkeypatch.setattr(module, "available", lambda _name: True)
     await supervisor.reconcile()
@@ -145,7 +159,9 @@ async def test_external_move_interrupts_old_worker(tmp_path: Path, monkeypatch):
     class FakeRun:
         stopping = False
 
-        def __init__(self, harness, prompt, session, cwd, log, on_session=None, on_process=None):
+        def __init__(
+            self, harness, prompt, session, cwd, log, on_session=None, on_process=None
+        ):
             pass
 
         async def execute(self):
@@ -177,9 +193,7 @@ async def test_reviewer_failure_stops_parallel_workers(tmp_path: Path, monkeypat
     state = supervisor.ticket_state(ticket.id)
     state["phase"] = "review"
     state["iteration"] = 1
-    state["reviewers"] = [
-        {"id": "reviewer-1"}, {"id": "reviewer-2"}
-    ]
+    state["reviewers"] = [{"id": "reviewer-1"}, {"id": "reviewer-2"}]
     supervisor.runtime.data["execution"] = "running"
     gate = asyncio.Event()
     stopped = []
@@ -187,7 +201,9 @@ async def test_reviewer_failure_stops_parallel_workers(tmp_path: Path, monkeypat
     class FakeRun:
         stopping = False
 
-        def __init__(self, harness, prompt, session, cwd, log, on_session=None, on_process=None):
+        def __init__(
+            self, harness, prompt, session, cwd, log, on_session=None, on_process=None
+        ):
             pass
 
         async def execute(self):
@@ -216,13 +232,16 @@ async def test_crash_recovery_keeps_session_but_stops_dispatch(tmp_path: Path):
     state = supervisor.ticket_state(ticket.id)
     state["developer"]["session"] = "native-session-id"
     state["runtime"]["developer"] = {
-        "stage": "progress", "iteration": 1, "status": "running",
+        "stage": "progress",
+        "iteration": 1,
+        "status": "running",
     }
     supervisor.runtime.data["execution"] = "running"
     await supervisor.recover_orphans()
     assert supervisor.runtime.data["execution"] == "stopped"
     assert state["developer"]["session"] == "native-session-id"
     assert state["runtime"]["developer"]["status"] == "interrupted"
+
 
 @pytest.mark.asyncio
 async def test_play_after_orphan_was_resolved(tmp_path: Path, monkeypatch):
@@ -232,7 +251,8 @@ async def test_play_after_orphan_was_resolved(tmp_path: Path, monkeypatch):
     ticket = supervisor.board.create("Safe retry", column="progress")
     state = supervisor.ticket_state(ticket.id)
     state["runtime"]["developer"] = {
-        "status": "recovery_blocked", "pid": 123456,
+        "status": "recovery_blocked",
+        "pid": 123456,
         "process_identity": "linux:111",
     }
     monkeypatch.setattr(module, "process_identity", lambda pid: None)

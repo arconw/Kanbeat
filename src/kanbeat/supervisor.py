@@ -3,6 +3,7 @@
 The filesystem owns ticket status; .state only owns assignments, session IDs,
 runtime, reviewer verdicts and the global Play/Stop switch.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -93,13 +94,18 @@ class Supervisor:
     def content_hash(ticket: Ticket) -> str:
         return hashlib.sha256(ticket.body.encode("utf-8")).hexdigest()
 
-    def prompt(self, ticket: Ticket, slot: str, resumed: bool, *, updated: bool = False) -> str:
+    def prompt(
+        self, ticket: Ticket, slot: str, resumed: bool, *, updated: bool = False
+    ) -> str:
         """Always identify the live Markdown path; never paste the task body."""
         state = self.ticket_state(ticket.id)
         role = "developer" if slot == "developer" else "reviewer"
         assignment = (
-            state.setdefault("developer", {}) if role == "developer"
-            else next((r for r in state.get("reviewers", []) if r.get("id") == slot), {})
+            state.setdefault("developer", {})
+            if role == "developer"
+            else next(
+                (r for r in state.get("reviewers", []) if r.get("id") == slot), {}
+            )
         )
         config = self.runtime.config
         path = ticket.path.relative_to(self.board.project).as_posix()
@@ -111,11 +117,23 @@ class Supervisor:
             "ticket files, Kanbeat config or .kanbeat/.state. Kanbeat manages "
             "the Kanban workflow. You may edit project implementation files.",
         ]
-        custom = "\n\n".join(filter(None, [
-            str(config.get("global_cp") or ""),
-            str(config.get("developer_prompt" if role == "developer" else "reviewer_prompt") or ""),
-            str(assignment.get("cp") or ""),
-        ]))
+        custom = "\n\n".join(
+            filter(
+                None,
+                [
+                    str(config.get("global_cp") or ""),
+                    str(
+                        config.get(
+                            "developer_prompt"
+                            if role == "developer"
+                            else "reviewer_prompt"
+                        )
+                        or ""
+                    ),
+                    str(assignment.get("cp") or ""),
+                ],
+            )
+        )
         if custom and not resumed:
             parts.insert(1, "Role and project instructions:\n" + custom)
         handoff = str(assignment.get("pending_handoff") or "") if not resumed else ""
@@ -136,10 +154,14 @@ class Supervisor:
                 "path above and verify which changes already exist before continuing."
             )
         if role == "developer":
-            parts.append("Implement the ticket. You may write tests, but do NOT run them.")
+            parts.append(
+                "Implement the ticket. You may write tests, but do NOT run them."
+            )
             feedback = str(state.get("feedback") or "")
             if feedback:
-                parts.append("Previous review feedback (not session transcripts):\n" + feedback)
+                parts.append(
+                    "Previous review feedback (not session transcripts):\n" + feedback
+                )
         else:
             parts.append(
                 "Independently inspect the working tree and run relevant tests "
@@ -149,13 +171,17 @@ class Supervisor:
                 "KANBEAT_VERDICT: changes_requested. Explain requested fixes above it."
             )
             parts.append(
-                "Independent reviewer slots: " +
-                ", ".join(str(r["id"]) for r in state.get("reviewers", []) if r.get("id"))
+                "Independent reviewer slots: "
+                + ", ".join(
+                    str(r["id"]) for r in state.get("reviewers", []) if r.get("id")
+                )
             )
         return "\n\n".join(parts)
 
     def selected_harness(self, assignment: dict[str, Any]) -> tuple[str, str | None]:
-        configured = str(assignment.get("harness") or self.runtime.config["default_harness"])
+        configured = str(
+            assignment.get("harness") or self.runtime.config["default_harness"]
+        )
         default = str(self.runtime.config["default_harness"])
         if available(configured):
             return configured, assignment.get("session")
@@ -170,7 +196,9 @@ class Supervisor:
         assignment.pop("pending_handoff", None)
         return default, None
 
-    def current_ticket(self, ticket_id: str, stage: str, iteration: int) -> Ticket | None:
+    def current_ticket(
+        self, ticket_id: str, stage: str, iteration: int
+    ) -> Ticket | None:
         """Reject stale results even before the poller sees a manual move."""
         if self.runtime.data["execution"] != "running":
             return None
@@ -183,8 +211,12 @@ class Supervisor:
             return None
         return ticket if ticket.column == stage else None
 
-    def record_process(self, ticket_id: str, slot: str, pid: int, identity: str | None) -> None:
-        entry = self.ticket_state(ticket_id).setdefault("runtime", {}).setdefault(slot, {})
+    def record_process(
+        self, ticket_id: str, slot: str, pid: int, identity: str | None
+    ) -> None:
+        entry = (
+            self.ticket_state(ticket_id).setdefault("runtime", {}).setdefault(slot, {})
+        )
         entry["pid"] = pid
         entry["process_identity"] = identity
         self.save()
@@ -210,19 +242,26 @@ class Supervisor:
         if not stale:
             return
         self.cancelled.update(stale)
-        await asyncio.gather(*(
-            self.runs[key].stop() for key in stale if key in self.runs
-        ), return_exceptions=True)
+        await asyncio.gather(
+            *(self.runs[key].stop() for key in stale if key in self.runs),
+            return_exceptions=True,
+        )
         this_job = asyncio.current_task()
-        await asyncio.gather(*(
-            self.jobs[key] for key in stale
-            if key in self.jobs and self.jobs[key] is not this_job
-        ), return_exceptions=True)
+        await asyncio.gather(
+            *(
+                self.jobs[key]
+                for key in stale
+                if key in self.jobs and self.jobs[key] is not this_job
+            ),
+            return_exceptions=True,
+        )
         for key in stale:
             self.job_scopes.pop(key, None)
             self.cancelled.discard(key)
 
-    async def fail_ticket(self, ticket_id: str, stage: str, iteration: int, message: str) -> None:
+    async def fail_ticket(
+        self, ticket_id: str, stage: str, iteration: int, message: str
+    ) -> None:
         ticket = self.current_ticket(ticket_id, stage, iteration)
         if ticket is None:
             return
@@ -231,7 +270,9 @@ class Supervisor:
         # Stop other parallel reviewers before dispatching the next Todo ticket.
         await self.stop_stale_jobs(self.board.scan()[0])
 
-    async def start_worker(self, ticket: Ticket, worker: str, assignment: dict[str, Any]) -> None:
+    async def start_worker(
+        self, ticket: Ticket, worker: str, assignment: dict[str, Any]
+    ) -> None:
         key = self.slot_key(ticket.id, worker)
         if key in self.jobs and not self.jobs[key].done():
             return
@@ -246,8 +287,10 @@ class Supervisor:
             return
         if int(entry.get("attempts", 0)) >= 3:
             await self.fail_ticket(
-                ticket.id, stage, iteration,
-                f"Ticket {ticket.id}, {worker}: three failed attempts"
+                ticket.id,
+                stage,
+                iteration,
+                f"Ticket {ticket.id}, {worker}: three failed attempts",
             )
             return
         harness, original_session = self.selected_harness(assignment)
@@ -269,11 +312,17 @@ class Supervisor:
                     entry["task_hash"] = content_hash
                     resumed = bool(session)
                     native = NativeRun(
-                        harness, self.prompt(current, worker, resumed, updated=updated),
-                        session, self.board.project,
+                        harness,
+                        self.prompt(current, worker, resumed, updated=updated),
+                        session,
+                        self.board.project,
                         self.state_dir / "logs" / f"{ticket_id}-{worker}.log",
-                        on_session=lambda sid: self.record_session(ticket_id, worker, sid),
-                        on_process=lambda pid, token: self.record_process(ticket_id, worker, pid, token),
+                        on_session=lambda sid: self.record_session(
+                            ticket_id, worker, sid
+                        ),
+                        on_process=lambda pid, token: self.record_process(
+                            ticket_id, worker, pid, token
+                        ),
                     )
                     self.runs[key] = native
                     entry["status"] = "running"
@@ -309,8 +358,10 @@ class Supervisor:
                             verdict = VERDICT.search(result.answer)
                             if verdict is None:
                                 result = Outcome(
-                                    False, "Reviewer omitted KANBEAT_VERDICT",
-                                    result.session_id, result.answer
+                                    False,
+                                    "Reviewer omitted KANBEAT_VERDICT",
+                                    result.session_id,
+                                    result.answer,
                                 )
                             else:
                                 state.setdefault("review_results", {})[worker] = {
@@ -329,13 +380,16 @@ class Supervisor:
                     entry["status"] = "recovering"
                     self.notice(
                         f"{ticket_id}/{worker}: {result.reason} "
-                        f"(attempt {entry['attempts']}/3)", "warning"
+                        f"(attempt {entry['attempts']}/3)",
+                        "warning",
                     )
                     if entry["attempts"] >= 3:
                         entry["status"] = "failed"
                         await self.fail_ticket(
-                            ticket_id, stage, iteration,
-                            f"{ticket_id}/{worker}: three unsuccessful attempts"
+                            ticket_id,
+                            stage,
+                            iteration,
+                            f"{ticket_id}/{worker}: three unsuccessful attempts",
                         )
                         return
                     session = str(assignment.get("session") or "") or None
@@ -346,7 +400,10 @@ class Supervisor:
                 active = self.runs.get(key)
                 if active is not None:
                     await active.stop()
-                if key in self.cancelled or self.current_ticket(ticket.id, stage, iteration) is None:
+                if (
+                    key in self.cancelled
+                    or self.current_ticket(ticket.id, stage, iteration) is None
+                ):
                     entry["status"] = "interrupted"
                     return
                 entry["attempts"] = int(entry.get("attempts", 0)) + 1
@@ -356,8 +413,10 @@ class Supervisor:
                 if entry["attempts"] >= 3:
                     entry["status"] = "failed"
                     await self.fail_ticket(
-                        ticket.id, stage, iteration,
-                        f"{ticket.id}/{worker}: three unsuccessful attempts"
+                        ticket.id,
+                        stage,
+                        iteration,
+                        f"{ticket.id}/{worker}: three unsuccessful attempts",
                     )
             finally:
                 self.runs.pop(key, None)
@@ -385,15 +444,20 @@ class Supervisor:
     async def stop(self, reason: str = "Board stopped") -> None:
         self.runtime.data["execution"] = "stopped"
         self.save()
-        self.cancelled.update(
-            key for key, job in self.jobs.items() if not job.done()
+        self.cancelled.update(key for key, job in self.jobs.items() if not job.done())
+        await asyncio.gather(
+            *(run.stop() for run in list(self.runs.values())), return_exceptions=True
         )
-        await asyncio.gather(*(run.stop() for run in list(self.runs.values())), return_exceptions=True)
-        await asyncio.gather(*(job for job in list(self.jobs.values())), return_exceptions=True)
+        await asyncio.gather(
+            *(job for job in list(self.jobs.values())), return_exceptions=True
+        )
         self.job_scopes.clear()
         self.cancelled.clear()
         self.jobs.clear()
-        for state in [*self.runtime.data["tickets"].values(), {"runtime": self.hooks.entries}]:
+        for state in [
+            *self.runtime.data["tickets"].values(),
+            {"runtime": self.hooks.entries},
+        ]:
             for item in state.get("runtime", {}).values():
                 if item.get("status") in ("running", "starting", "recovering"):
                     item["status"] = "interrupted"
@@ -403,7 +467,10 @@ class Supervisor:
         self.notice(reason)
 
     async def play(self) -> None:
-        for state in [*self.runtime.data["tickets"].values(), {"runtime": self.hooks.entries}]:
+        for state in [
+            *self.runtime.data["tickets"].values(),
+            {"runtime": self.hooks.entries},
+        ]:
             for item in state.get("runtime", {}).values():
                 if item.get("status") != "recovery_blocked":
                     continue
@@ -422,7 +489,9 @@ class Supervisor:
                     )
         default = str(self.runtime.config["default_harness"])
         if not available(default):
-            await self.stop("Default Harness unavailable. Set a valid default and press Play.")
+            await self.stop(
+                "Default Harness unavailable. Set a valid default and press Play."
+            )
             raise ValueError("Default Harness unavailable: " + default)
         self.runtime.data["execution"] = "running"
         self.save()
@@ -456,7 +525,8 @@ class Supervisor:
                         entry["status"] = "recovery_blocked"
                         self.runtime.notice(
                             f"{ticket_id}/{slot}: existing process has no safe identity; "
-                            "board requires manual resolution", "error"
+                            "board requires manual resolution",
+                            "error",
                         )
                     elif identity != token:
                         entry["status"] = "interrupted"
@@ -464,7 +534,8 @@ class Supervisor:
                         entry["status"] = "recovery_blocked"
                         self.runtime.notice(
                             f"{ticket_id}/{slot}: unexpected process group; "
-                            "manual resolution required", "error"
+                            "manual resolution required",
+                            "error",
                         )
                     else:
                         for sig, delay in (
@@ -494,7 +565,9 @@ class Supervisor:
                         entry.pop("pid", None)
                         entry.pop("process_identity", None)
         if previous:
-            self.runtime.notice("Supervisor restarted; board stopped. Press Play to resume.")
+            self.runtime.notice(
+                "Supervisor restarted; board stopped. Press Play to resume."
+            )
         self.save()
 
     async def reconcile(self) -> None:
@@ -511,12 +584,24 @@ class Supervisor:
             self.runtime.clean_deleted_tickets({ticket.id for ticket in tickets})
             if self.runtime.data["execution"] != "running":
                 return
-            if any(entry.get("status") == "recovery_blocked" for entry in self.hooks.entries.values()):
+            if any(
+                entry.get("status") == "recovery_blocked"
+                for entry in self.hooks.entries.values()
+            ):
                 return
-            if any(key.startswith("hook:") and not job.done() for key, job in self.jobs.items()):
+            if any(
+                key.startswith("hook:") and not job.done()
+                for key, job in self.jobs.items()
+            ):
                 return
-            pending = next((event_id for event_id, entry in self.hooks.entries.items()
-                            if entry.get("status") == "pending"), None)
+            pending = next(
+                (
+                    event_id
+                    for event_id, entry in self.hooks.entries.items()
+                    if entry.get("status") == "pending"
+                ),
+                None,
+            )
             if pending is not None:
                 self.jobs["hook:" + pending] = asyncio.create_task(
                     self.hooks.execute(pending, self.runs)
@@ -524,7 +609,9 @@ class Supervisor:
                 return
             default = str(self.runtime.config["default_harness"])
             if not available(default):
-                await self.stop("Default Harness unavailable. Configure it and press Play.")
+                await self.stop(
+                    "Default Harness unavailable. Configure it and press Play."
+                )
                 return
             active = [t for t in tickets if t.column in ACTIVE]
             if len(active) > 1:
@@ -556,10 +643,9 @@ class Supervisor:
             runtime = state.setdefault("runtime", {})
             if ticket.column == "review":
                 for slot, result in list(state.get("review_results", {}).items()):
-                    if (
-                        result.get("task_hash") != current_hash
-                        or result.get("iteration") != state.get("iteration")
-                    ):
+                    if result.get("task_hash") != current_hash or result.get(
+                        "iteration"
+                    ) != state.get("iteration"):
                         del state["review_results"][slot]
                         if runtime.get(slot, {}).get("status") == "completed":
                             runtime[slot]["status"] = "stale"
@@ -586,7 +672,8 @@ class Supervisor:
                 if runtime.get("developer", {}).get("status") == "completed":
                     if (
                         runtime["developer"].get("task_hash") == current_hash
-                        and self.content_hash(self.board.find(ticket.id)) == current_hash
+                        and self.content_hash(self.board.find(ticket.id))
+                        == current_hash
                     ):
                         self.move_ticket(ticket.id, "review")
                         state["phase"] = ""
@@ -596,8 +683,8 @@ class Supervisor:
                 reviewer_ids = {worker for worker, _assignment in slots}
                 if reviewer_ids and set(results) == reviewer_ids:
                     if all(
-                        result.get("task_hash") == current_hash and
-                        result.get("iteration") == state.get("iteration")
+                        result.get("task_hash") == current_hash
+                        and result.get("iteration") == state.get("iteration")
                         for result in results.values()
                     ):
                         # Re-read just before moving; an editor may have saved
@@ -605,8 +692,11 @@ class Supervisor:
                         fresh = self.board.find(ticket.id)
                         if self.content_hash(fresh) != current_hash:
                             return
-                        rejected = [v for v in results.values()
-                                    if v.get("verdict") == "changes_requested"]
+                        rejected = [
+                            v
+                            for v in results.values()
+                            if v.get("verdict") == "changes_requested"
+                        ]
                         if rejected:
                             state["feedback"] = "\n\n".join(
                                 v.get("feedback", "") for v in rejected
@@ -623,12 +713,20 @@ class Supervisor:
             "brand": "Kanbeat",
             "project": str(self.board.project),
             "execution": self.runtime.data["execution"],
-            "tickets": [{
-                "id": t.id, "title": t.title, "body": t.body,
-                "column": t.column, "order": t.order, "filename": t.path.name,
-                "state": self.runtime.data["tickets"].get(t.id, {}),
-            } for t in tickets],
-            "errors": errors, "notices": self.runtime.data.get("notices", []),
+            "tickets": [
+                {
+                    "id": t.id,
+                    "title": t.title,
+                    "body": t.body,
+                    "column": t.column,
+                    "order": t.order,
+                    "filename": t.path.name,
+                    "state": self.runtime.data["tickets"].get(t.id, {}),
+                }
+                for t in tickets
+            ],
+            "errors": errors,
+            "notices": self.runtime.data.get("notices", []),
             "config": self.runtime.config,
             "custom": self.runtime.data.get("custom", {}),
             "hooks": self.hooks.entries,
@@ -648,14 +746,18 @@ class Supervisor:
                 raise ValueError("Expected config object")
             self.runtime.save_config(values)
         elif op == "create":
-            self.board.create(str(request.get("title") or "New ticket"),
-                              str(request.get("body") or ""),
-                              str(request.get("column") or "backlog"))
+            self.board.create(
+                str(request.get("title") or "New ticket"),
+                str(request.get("body") or ""),
+                str(request.get("column") or "backlog"),
+            )
         elif op in ("move", "archive", "restore", "reorder", "delete"):
             ticket_id = str(request.get("ticket") or "")
             ticket = self.board.find(ticket_id)
             if ticket.column in ACTIVE and self.runtime.data["execution"] == "running":
-                raise ValueError("Stop the board before manually moving an active ticket")
+                raise ValueError(
+                    "Stop the board before manually moving an active ticket"
+                )
             if op == "move":
                 self.move_ticket(ticket_id, str(request["column"]))
             elif op == "archive":
@@ -684,7 +786,12 @@ class Supervisor:
                 target = state.setdefault("developer", {})
             else:
                 target = next(
-                    (r for r in state.setdefault("reviewers", []) if r.get("id") == slot), None
+                    (
+                        r
+                        for r in state.setdefault("reviewers", [])
+                        if r.get("id") == slot
+                    ),
+                    None,
                 )
                 if target is None:
                     target = {"id": slot}
@@ -710,7 +817,9 @@ class Supervisor:
             slot = str(request["slot"])
             if self.runtime.data["execution"] == "running":
                 raise ValueError("Stop board before changing reviewer slots")
-            state["reviewers"] = [r for r in state.get("reviewers", []) if r.get("id") != slot]
+            state["reviewers"] = [
+                r for r in state.get("reviewers", []) if r.get("id") != slot
+            ]
             self.save()
         elif op == "log":
             ticket_id = str(request["ticket"])
@@ -718,12 +827,18 @@ class Supervisor:
             if not slot.replace("-", "").replace("_", "").isalnum():
                 raise ValueError("Invalid slot")
             path = self.state_dir / "logs" / f"{ticket_id}-{slot}.log"
-            return {"log": path.read_text(encoding="utf-8")[-100_000:] if path.exists() else ""}
+            return {
+                "log": path.read_text(encoding="utf-8")[-100_000:]
+                if path.exists()
+                else ""
+            }
         else:
             raise ValueError("Unsupported command: " + str(op))
         return self.snapshot()
 
-    async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def handle(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         try:
             data = await reader.readline()
             if len(data) > MAX_INPUT:
@@ -734,7 +849,13 @@ class Supervisor:
             # Only local Unix socket clients can connect.
             result = await self.dispatch(req)
             payload = {"ok": True, "result": result}
-        except (ValueError, OSError, RuntimeError, KeyError, json.JSONDecodeError) as exc:
+        except (
+            ValueError,
+            OSError,
+            RuntimeError,
+            KeyError,
+            json.JSONDecodeError,
+        ) as exc:
             payload = {"ok": False, "error": str(exc)}
         writer.write((json.dumps(payload, ensure_ascii=False) + "\n").encode())
         with suppress(ConnectionError, BrokenPipeError):
@@ -767,7 +888,9 @@ class Supervisor:
             self.socket.unlink(missing_ok=True)
 
 
-async def request(project: Path, message: dict[str, Any], timeout: float = 10) -> dict[str, Any]:
+async def request(
+    project: Path, message: dict[str, Any], timeout: float = 10
+) -> dict[str, Any]:
     path = Board(project).root / ".state" / "supervisor.sock"
     reader, writer = await asyncio.wait_for(
         asyncio.open_unix_connection(str(path), limit=8 * 1024 * 1024), timeout=timeout
@@ -790,10 +913,12 @@ async def request(project: Path, message: dict[str, Any], timeout: float = 10) -
 def ensure_supervisor(project: Path) -> None:
     """Spawn one independent process if none is serving the project."""
     import time
+
     project = project.resolve()
     board = Board(project)
     board.ensure()
     import socket
+
     path = board.root / ".state" / "supervisor.sock"
     for attempt in range(40):
         try:
@@ -807,10 +932,21 @@ def ensure_supervisor(project: Path) -> None:
                 log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 with log.open("a", encoding="utf-8") as output:
                     subprocess.Popen(
-                        [os.sys.executable, "-m", "kanbeat", "--project",
-                         str(project), "supervisor"],
-                        cwd=project, stdin=subprocess.DEVNULL, stdout=output,
-                        stderr=output, start_new_session=True,
+                        [
+                            os.sys.executable,
+                            "-m",
+                            "kanbeat",
+                            "--project",
+                            str(project),
+                            "supervisor",
+                        ],
+                        cwd=project,
+                        stdin=subprocess.DEVNULL,
+                        stdout=output,
+                        stderr=output,
+                        start_new_session=True,
                     )
             time.sleep(0.1)
-    raise RuntimeError("Supervisor failed to start; inspect .kanbeat/.state/supervisor.log")
+    raise RuntimeError(
+        "Supervisor failed to start; inspect .kanbeat/.state/supervisor.log"
+    )
