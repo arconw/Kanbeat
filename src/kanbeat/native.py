@@ -207,6 +207,25 @@ def process_identity(pid: int) -> str | None:
         return None
 
 
+async def terminate_process(proc: asyncio.subprocess.Process | None) -> None:
+    if not proc or proc.returncode is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGINT)
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=3)
+    except asyncio.TimeoutError:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            await asyncio.wait_for(proc.wait(), timeout=3)
+        except (ProcessLookupError, asyncio.TimeoutError):
+            if proc.returncode is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                await proc.wait()
+
+
 class NativeRun:
     def __init__(
         self,
@@ -233,23 +252,7 @@ class NativeRun:
         await self._terminate()
 
     async def _terminate(self) -> None:
-        proc = self.process
-        if not proc or proc.returncode is not None:
-            return
-        try:
-            os.killpg(proc.pid, signal.SIGINT)
-        except ProcessLookupError:
-            return
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=3)
-        except asyncio.TimeoutError:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-                await asyncio.wait_for(proc.wait(), timeout=3)
-            except (ProcessLookupError, asyncio.TimeoutError):
-                if proc.returncode is None:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                    await proc.wait()
+        await terminate_process(self.process)
 
     async def execute(self) -> Outcome:
         if self.stopping:

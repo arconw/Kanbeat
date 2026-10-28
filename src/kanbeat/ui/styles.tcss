@@ -87,3 +87,6 @@ Confirm, LogView, TicketView, Assignment, TicketActions, NewTicket {
 .modal-actions Button { min-width: 10; height: 3; }
 #log-scroll { height: 1fr; padding: 1 2; }
 #log-text { height: auto; color: #c4d8ea; }
+
+TerminalView { align: center middle; }
+TerminalDisplay { width: 1fr; height: 1fr; background: #0b1019; }
