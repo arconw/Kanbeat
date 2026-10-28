@@ -1,4 +1,5 @@
 """Kanbeat command entry point. All UI clients connect to the same supervisor."""
+
 from __future__ import annotations
 
 import argparse
@@ -25,8 +26,10 @@ def parser() -> argparse.ArgumentParser:
     new.add_argument("--column", choices=("backlog", "todo"), default="backlog")
     move = sub.add_parser("move", help="Move ticket to Kanban column")
     move.add_argument("ticket")
-    move.add_argument("column", choices=("backlog", "todo", "progress", "review",
-                                         "done", "failed", "archive"))
+    move.add_argument(
+        "column",
+        choices=("backlog", "todo", "progress", "review", "done", "failed", "archive"),
+    )
     return p
 
 
@@ -44,20 +47,37 @@ def main() -> None:
         elif args.command in (None, "run"):
             ensure_supervisor(project)
             from .ui.app import KanbeatApp
+
             KanbeatApp(project).run()
         elif args.command == "list":
             board = Board(project)
             for ticket in board.scan()[0]:
-                print(f"{ticket.column:10} {ticket.order:5} {ticket.id:6} {ticket.title}")
+                print(
+                    f"{ticket.column:10} {ticket.order:5} {ticket.id:6} {ticket.title}"
+                )
         elif args.command == "new":
-            asyncio.run(_send(project, {
-                "op": "create", "title": args.title,
-                "body": args.description, "column": args.column,
-            }))
+            asyncio.run(
+                _send(
+                    project,
+                    {
+                        "op": "create",
+                        "title": args.title,
+                        "body": args.description,
+                        "column": args.column,
+                    },
+                )
+            )
         elif args.command == "move":
-            asyncio.run(_send(project, {
-                "op": "move", "ticket": args.ticket, "column": args.column,
-            }))
+            asyncio.run(
+                _send(
+                    project,
+                    {
+                        "op": "move",
+                        "ticket": args.ticket,
+                        "column": args.column,
+                    },
+                )
+            )
         else:
             asyncio.run(_send(project, {"op": args.command}))
     except (RuntimeError, ValueError, OSError) as exc:

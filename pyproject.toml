@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kanbeat"
-version = "0.2.0"
+version = "0.3.0"
 description = "Filesystem-native Kanban with a persistent local AI harness supervisor"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ dependencies = ["textual>=3.0"]
 
 [project.optional-dependencies]
 terminal = ["textual-tty>=0.4"]
-dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.9", "build>=1.2", "twine>=6"]
 
 [project.scripts]
 kanbeat = "kanbeat.cli:main"
@@ -22,3 +22,7 @@ packages = ["src/kanbeat"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff.lint]
+select = ["E9", "F"]

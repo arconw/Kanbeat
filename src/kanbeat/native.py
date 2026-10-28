@@ -3,6 +3,7 @@
 The CLI still owns its model, credentials, tools and sandbox settings.
 This is headless task execution, not an embedded interactive terminal.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,11 +25,20 @@ def available(name: str) -> bool:
     return name in HARNESS and shutil.which(HARNESS[name]) is not None
 
 
-def command(name: str, prompt: str, session_id: str | None) -> tuple[list[str], bytes | None]:
+def command(
+    name: str, prompt: str, session_id: str | None
+) -> tuple[list[str], bytes | None]:
     """Native CLI argv; ticket contents are never interpolated into a shell."""
     if name == "codex":
         if session_id:
-            return ["codex", "exec", "resume", session_id, "-", "--json"], prompt.encode()
+            return [
+                "codex",
+                "exec",
+                "resume",
+                session_id,
+                "-",
+                "--json",
+            ], prompt.encode()
         return ["codex", "exec", "--json", "-"], prompt.encode()
     if name == "claude":
         argv = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
@@ -90,7 +100,9 @@ class EventStream:
                 self.session_id = sid
             if kind == "result":
                 self.finished = True
-                self.failed = bool(event.get("is_error")) or event.get("subtype") != "success"
+                self.failed = (
+                    bool(event.get("is_error")) or event.get("subtype") != "success"
+                )
                 self.answer = str(event.get("result") or "")
                 if self.failed:
                     self.error = self.answer[:400]
@@ -119,11 +131,20 @@ class EventStream:
                 msg = event.get("message") or {}
                 if isinstance(msg, dict) and msg.get("role") == "assistant":
                     chunks = msg.get("content") or []
-                    self.answer = "\n".join(
-                        str(c.get("text")) for c in chunks
-                        if isinstance(c, dict) and c.get("type") == "text"
-                    ) or self.answer
-                    self.failed = msg.get("stopReason") in ("error", "aborted")
+                    self.answer = (
+                        "\n".join(
+                            str(c.get("text"))
+                            for c in chunks
+                            if isinstance(c, dict) and c.get("type") == "text"
+                        )
+                        or self.answer
+                    )
+                    if msg.get("stopReason") in ("error", "aborted"):
+                        self.failed = True
+                        self.error = str(
+                            msg.get("errorMessage")
+                            or "Pi assistant " + msg["stopReason"]
+                        )[:400]
             if kind in ("agent_end", "agent_settled"):
                 self.finished = True
                 if event.get("aborted"):
@@ -136,22 +157,32 @@ class EventStream:
             re.search(
                 r"(?:session|thread).{0,90}"
                 r"(?:not found|does not exist|unknown|missing|cannot resume|no such)",
-                error_text, re.I,
-            ) or re.search(
+                error_text,
+                re.I,
+            )
+            or re.search(
                 r"(?:not found|cannot find|could not find|no such|unknown)"
                 r".{0,90}(?:session|thread)",
-                error_text, re.I,
+                error_text,
+                re.I,
             )
         )
         ok = (
-            return_code == 0 and not self.failed and self.events > 0 and
-            (self.finished or self.harness == "opencode")
+            return_code == 0
+            and not self.failed
+            and self.events > 0
+            and (self.finished or self.harness == "opencode")
         )
-        reason = "completed" if ok else (
-            self.error or stderr.strip()[-400:] or f"exit={return_code}, no completion event"
+        reason = (
+            "completed"
+            if ok
+            else (
+                self.error
+                or stderr.strip()[-400:]
+                or f"exit={return_code}, no completion event"
+            )
         )
         return Outcome(ok, reason, self.session_id, self.answer, missing)
-
 
 
 def process_identity(pid: int) -> str | None:
@@ -167,7 +198,9 @@ def process_identity(pid: int) -> str | None:
             return "linux:" + fields[19]
         output = subprocess.check_output(
             ["ps", "-p", str(pid), "-o", "lstart="],
-            stderr=subprocess.DEVNULL, timeout=2, text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            text=True,
         ).strip()
         return "ps:" + output if output else None
     except (OSError, ValueError, IndexError, subprocess.SubprocessError):
@@ -176,8 +209,12 @@ def process_identity(pid: int) -> str | None:
 
 class NativeRun:
     def __init__(
-        self, harness: str, prompt: str, session_id: str | None,
-        cwd: Path, log_path: Path,
+        self,
+        harness: str,
+        prompt: str,
+        session_id: str | None,
+        cwd: Path,
+        log_path: Path,
         on_session: Callable[[str], None] | None = None,
         on_process: Callable[[int, str | None], None] | None = None,
     ):
@@ -193,6 +230,9 @@ class NativeRun:
 
     async def stop(self) -> None:
         self.stopping = True
+        await self._terminate()
+
+    async def _terminate(self) -> None:
         proc = self.process
         if not proc or proc.returncode is not None:
             return
@@ -223,55 +263,103 @@ class NativeRun:
             log.flush()
             try:
                 self.process = await asyncio.create_subprocess_exec(
-                    *args, cwd=self.cwd,
-                    stdin=asyncio.subprocess.PIPE if stdin_payload is not None else asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True, limit=2 * 1024 * 1024,
+                    *args,
+                    cwd=self.cwd,
+                    stdin=asyncio.subprocess.PIPE
+                    if stdin_payload is not None
+                    else asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                    limit=2 * 1024 * 1024,
                 )
             except OSError as exc:
                 return Outcome(False, str(exc), self.session_id, "")
             proc = self.process
-            self.on_process(proc.pid, process_identity(proc.pid))
-            if self.stopping:
-                await self.stop()
-                return Outcome(False, "interrupted during launch", self.session_id, "")
 
             async def read_stderr() -> None:
                 assert proc.stderr is not None
                 while chunk := await proc.stderr.read(4096):
                     if len(error_bytes) < 8192:
-                        error_bytes.extend(chunk[:8192 - len(error_bytes)])
+                        error_bytes.extend(chunk[: 8192 - len(error_bytes)])
                     log.write(chunk.decode("utf-8", "replace"))
                     log.flush()
 
             stderr_task = asyncio.create_task(read_stderr())
-            if stdin_payload is not None and proc.stdin is not None:
-                proc.stdin.write(stdin_payload)
-                await proc.stdin.drain()
-                proc.stdin.close()
-            assert proc.stdout is not None
-            async for raw in proc.stdout:
+
+            async def drain_stdout() -> None:
+                assert proc.stdout is not None
+                while await proc.stdout.read(65536):
+                    pass
+
+            try:
+                self.on_process(proc.pid, process_identity(proc.pid))
+                if self.stopping:
+                    await self.stop()
+                    return Outcome(
+                        False, "interrupted during launch", self.session_id, ""
+                    )
+                if stdin_payload is not None and proc.stdin is not None:
+                    proc.stdin.write(stdin_payload)
+                    await proc.stdin.drain()
+                    proc.stdin.close()
+                assert proc.stdout is not None
+                async for raw in proc.stdout:
+                    try:
+                        event = json.loads(raw)
+                    except (ValueError, UnicodeError):
+                        log.write(raw.decode("utf-8", "replace")[:2000])
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    try:
+                        stream.push(event)
+                    except (ValueError, TypeError, KeyError):
+                        continue
+                    if stream.session_id and stream.session_id != self.session_id:
+                        self.session_id = stream.session_id
+                        self.on_session(self.session_id)
+                    if event.get("type") in (
+                        "item.completed",
+                        "text",
+                        "result",
+                        "message_end",
+                        "error",
+                    ):
+                        summary = stream.answer or stream.error
+                        if summary:
+                            log.write(summary[-3000:] + "\n")
+                            log.flush()
+                code = await proc.wait()
+                await stderr_task
+                if self.stopping:
+                    return Outcome(
+                        False,
+                        "interrupted by board Stop",
+                        stream.session_id,
+                        stream.answer,
+                    )
+                return stream.result(code, error_bytes.decode("utf-8", "replace"))
+            except (OSError, ValueError) as exc:
+                return Outcome(
+                    False,
+                    f"Native CLI transport error: {type(exc).__name__}: {exc}",
+                    stream.session_id or self.session_id,
+                    stream.answer,
+                )
+            finally:
+                if proc.stdin is not None:
+                    proc.stdin.close()
+                drain_task = None
                 try:
-                    event = json.loads(raw)
-                except (ValueError, UnicodeError):
-                    log.write(raw.decode("utf-8", "replace")[:2000])
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                try:
-                    stream.push(event)
-                except (ValueError, TypeError, KeyError):
-                    continue
-                if stream.session_id and stream.session_id != self.session_id:
-                    self.session_id = stream.session_id
-                    self.on_session(self.session_id)
-                if event.get("type") in ("item.completed", "text", "result", "message_end", "error"):
-                    summary = stream.answer or stream.error
-                    if summary:
-                        log.write(summary[-3000:] + "\n")
-                        log.flush()
-            code = await proc.wait()
-            await stderr_task
-            if self.stopping:
-                return Outcome(False, "interrupted by board Stop", stream.session_id, stream.answer)
-            return stream.result(code, error_bytes.decode("utf-8", "replace"))
+                    if proc.returncode is None:
+                        drain_task = asyncio.create_task(drain_stdout())
+                        await self._terminate()
+                finally:
+                    tasks = [stderr_task] + (
+                        [drain_task] if drain_task is not None else []
+                    )
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
