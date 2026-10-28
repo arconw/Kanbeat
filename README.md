@@ -72,16 +72,14 @@ Use the global option to reference the project when running outside the project'
     order: 100
     developer:
       harness: codex
-      cp: ""
-      session: null
     reviewers:
       - id: reviewer-1
         harness: claude
-        cp: ""
-        session: null
     ---
     ## Goal
     Validate auth and handle edge cases.
+
+Optional role fields use **sparse frontmatter**: `cp` and `session` are only written when set. Clearing a value removes its field on the next save. Empty `developer` and `reviewers` sections and unset `review_iteration` are omitted too. Existing Markdown files are compacted the next time TaskBeat saves them.
 
 Files without frontmatter are also recognized, **safely defaulting to Backlog** rather than running automatically. Fields not owned by TaskBeat are preserved when the file is rewritten. Never put secrets in ticket Markdown: Custom Prompts in tickets are visible as plain text.
 
