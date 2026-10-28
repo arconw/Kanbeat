@@ -2,7 +2,7 @@
 
 A filesystem-native Kanban with one persistent local supervisor and multiple rich terminal clients. Native coding CLIs do the work. The filesystem determines the ticket status.
 
-> **Early rewrite, v0.3.0. Not yet a production release.** The filesystem-native board, supervisor, and headless CLI event transport have an initial implementation. Transition hooks run through isolated native CLI sessions. Interactive embedded harness terminals and custom session groups are not implemented yet.
+> **Early rewrite, v0.3.1. Not yet a production release.** The filesystem-native board, supervisor, and headless CLI event transport have an initial implementation. Transition hooks run through isolated native CLI sessions. Interactive embedded harness terminals and custom session groups are not implemented yet.
 
 [Standalone design specification](docs/design/design.html)
 
@@ -152,9 +152,13 @@ If a session no longer exists, the worker attempts a fresh run in the same slot.
 
 Edit project settings via Settings in TUI, or `.kanbeat/config.json`. The `.state` directory is ignored by Git, but `.kanbeat` tickets, column directories, `INSTRUCTIONS.md` and `config.json` are intentionally **not** ignored. Treat CP and logs as sensitive local data.
 
-Unix socket path lengths are limited by the OS (typically 104–108 bytes including
-the socket filename). Use a short project path if startup reports
-`AF_UNIX path too long`; long-path socket fallback is not implemented.
+Short projects use `.kanbeat/.state/supervisor.sock`. Long project paths use a
+stable SHA-256-derived socket name in `~/.tmp/kanbeat-sockets/`, shared by all
+clients for that canonical project path. The socket directory is private (0700),
+the socket is 0600, and the ownership lock stays inside the project's `.state`.
+Distinct projects use distinct socket names; symlink aliases resolve to the same
+project. No TCP listener is used. The home runtime path itself must fit the OS
+Unix-socket limit. See [Issue #5](https://github.com/arconw/Kanbeat/issues/5).
 
 The project root is the current working directory by default. Use `kanbeat --project /path/to/project` to select another root.
 
