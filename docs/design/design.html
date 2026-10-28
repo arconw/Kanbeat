@@ -128,7 +128,7 @@ This Markdown is read-only to you. Never edit, rename or move it.
 # Later, after content changes and the current turn completes:
 Ticket #002 has changed. Re-read &lt;current-ticket-path&gt;,
 reconcile the updated requirements with existing work, and continue.
-Do not modify the ticket.</pre><p>Changing just the order prefix, slug or location does not count as a content edit; dynamically resolved paths prevent stale references. During Review/QA, verdicts tied to a superseded content hash cannot approve the revised ticket. Each affected Reviewer slot must produce an updated verdict for the current hash, still <strong>without</strong> receiving Developer or peer Reviewer transcripts.</p><p class="small"><strong>Implementation status:</strong> this hash-and-re-read lifecycle is a design contract, not yet implemented in the first rewrite.</p></div>
+Do not modify the ticket.</pre><p>Changing just the order prefix, slug or location does not count as a content edit; dynamically resolved paths prevent stale references. During Review/QA, verdicts tied to a superseded content hash cannot approve the revised ticket. Each affected Reviewer slot must produce an updated verdict for the current hash, still <strong>without</strong> receiving Developer or peer Reviewer transcripts.</p><p class="small"><strong>Implementation status:</strong> initial hash-and-re-read lifecycle implemented in supervisor. Compatibility and end-to-end execution remain unverified.</p></div>
 <p>At normal stage completion, supervisor moves the ticket file. When Reviewers disagree, a short review feedback summary may be given to Developer during the next iteration, but never the full Reviewer transcript. No special worktree handling or Git diff calculation.</p>
 <p>Custom between-stage hook: a configurable harness and prompt may run after ticket transitions, for optional GitHub issue closing and other automations. Hook failure is separate from ticket success and does not automatically revert ticket state. Durable idempotency is a later implementation slice.</p></section>
 <section id="review"><h2>08 / Reviewer isolation and slot replacement</h2>
@@ -147,12 +147,12 @@ Do not modify the ticket.</pre><p>Changing just the order prefix, slug or locati
 <tr><td>Assigned CLI missing</td><td>Switch only that slot to configured Default Harness, start fresh.</td></tr>
 <tr><td>Default CLI missing</td><td>Global Stop and notification, manual remediation and Play.</td></tr>
 <tr><td>Native session unavailable</td><td>Fresh execution in same role/slot, agent checks working tree.</td></tr>
-<tr><td>Ordinary launch/turn failure</td><td>Three attempts, then move ticket to Failed and notify.</td></tr>
+<tr><td>Ordinary launch/turn failure</td><td>Three attempts, then move ticket to Failed, interrupt remaining Reviewer workers, and notify.</td></tr>
 <tr><td>Stop during running turn</td><td>Interrupt and terminate process. No retry penalty. Keep column and session reference.</td></tr>
 <tr><td>Missing .state before startup</td><td>Stop; statuses still derived from directories; default assignments after Play.</td></tr>
 <tr><td>Malformed filename / duplicate ID</td><td>Surface errors and suspend dispatch, never silently discard a task.</td></tr>
 <tr><td>Multiple active tickets</td><td>Never dispatch another ticket; surface conflict.</td></tr>
-<tr><td>Manually edit Markdown</td><td>External editor writes files and the board view updates. After each active turn, compare content SHA-256. If changed, re-resolve the path by ID and ask the same native session to re-read the read-only ticket before accepting completion/verdict. Design only; not yet implemented.</td></tr>
+<tr><td>Manually edit Markdown</td><td>External editor writes files, and the board and open ticket viewer refresh. The supervisor compares SHA-256 after each active turn; if changed, it re-resolves the current path and asks the same native session to re-read before accepting completion/verdict. Requires real-CLI validation.</td></tr>
 <tr><td>Deliberate live-state deletion</td><td>Explicit non-goal. No special defenses.</td></tr></table></section>
 <section id="phases"><h2>12 / Implementation status and next slices</h2>
 <table class="table"><tr><th>Layer</th><th>Status</th><th>Next action</th></tr>
@@ -161,7 +161,7 @@ Do not modify the ticket.</pre><p>Changing just the order prefix, slug or locati
 <tr><td>Play / Stop</td><td>Initial implementation</td><td>Per-CLI graceful-exit verification</td></tr>
 <tr><td>Structured native CLI execution</td><td>Initial implementation</td><td>Version-specific event/resume compatibility verification</td></tr>
 <tr><td>Rich interactive TUI</td><td>Initial UI</td><td>Embed PTY, custom sessions and deeper UI polish</td></tr>
-<tr><td>Ticket content change detection</td><td>Design only</td><td>SHA-256 per turn, same-session re-read, reviewer verdict revision checks</td></tr><tr><td>Transition hooks</td><td>Design only</td><td>Idempotent hook ledger and harness invocation</td></tr>
+<tr><td>Ticket content change detection</td><td>Initial implementation</td><td>Verify SHA-256 per turn, same-session re-read and reviewer verdict revision checks with real CLIs</td></tr><tr><td>Transition hooks</td><td>Design only</td><td>Idempotent hook ledger and harness invocation</td></tr>
 <tr><td>Tests</td><td>Written but not run</td><td>Manual verification by repository owner</td></tr></table>
 <p>Kanbeat deliberately favors a small, deterministic dispatcher over a general multi-agent platform. A ticket is a document. A status is a directory. A worker is a native CLI. The supervisor coordinates the handoffs. The user controls Play and Stop.</p></section>
 <footer>Kanbeat · Product and architecture baseline v0.2 · Standalone HTML · 28 October 2026</footer>

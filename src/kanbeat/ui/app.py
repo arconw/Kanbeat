@@ -82,15 +82,15 @@ class TicketView(ModalScreen[None]):
         state = self.ticket.get("state") or {}
         with Vertical(classes="full"):
             with Horizontal(classes="modal-header"):
-                yield Static("TICKET " + self.ticket["id"] + " · " + self.ticket["title"], classes="modal-name")
+                yield Static("TICKET " + self.ticket["id"] + " · " + self.ticket["title"], classes="modal-name", id="ticket-heading")
                 yield Button("× Close", id="close")
             with VerticalScroll(classes="content"):
                 yield Static(
                     "FILE  " + self.ticket["filename"] + "   •   " +
                     self.ticket["column"].upper(),
-                    classes="hint",
+                    classes="hint", id="ticket-location",
                 )
-                yield Markdown(self.ticket["body"])
+                yield Markdown(self.ticket["body"], id="ticket-markdown")
                 yield Static("HARNESS SLOTS", classes="section-title")
                 with Horizontal(classes="slot-row"):
                     yield Static("Developer", classes="slot-name")
@@ -98,7 +98,7 @@ class TicketView(ModalScreen[None]):
                     yield Button("Logs", id="dev-log")
                     yield Static(
                         (state.get("runtime") or {}).get("developer", {}).get("status", "idle"),
-                        classes="runtime",
+                        classes="runtime", id="developer-runtime",
                     )
                 for slot in state.get("reviewers") or []:
                     sid = slot.get("id", "reviewer")
@@ -109,6 +109,37 @@ class TicketView(ModalScreen[None]):
                         yield Button("Remove", id="remove-" + sid)
                 yield Button("+ Reviewer", id="add-reviewer")
             yield Static("Ticket Markdown is read-only here. Edit its .md file in your editor.", classes="hint")
+
+    def on_mount(self) -> None:
+        self.set_interval(1.5, self.refresh_ticket)
+
+    async def refresh_ticket(self) -> None:
+        """Mirror external file changes without editing or recreating the dialog."""
+        latest = self.app.find_ticket(self.ticket["id"])
+        if latest is None:
+            self.query_one("#ticket-location", Static).update(
+                "Ticket is no longer present on this board"
+            )
+            return
+        if latest["body"] != self.ticket["body"]:
+            await self.query_one("#ticket-markdown", Markdown).update(latest["body"])
+        if (
+            latest["filename"] != self.ticket["filename"]
+            or latest["column"] != self.ticket["column"]
+        ):
+            self.query_one("#ticket-location", Static).update(
+                "FILE  " + latest["filename"] + "   •   " +
+                latest["column"].upper()
+            )
+        if latest["title"] != self.ticket["title"]:
+            self.query_one("#ticket-heading", Static).update(
+                "TICKET " + latest["id"] + " · " + latest["title"]
+            )
+        dev = (latest.get("state") or {}).get("runtime") or {}
+        self.query_one("#developer-runtime", Static).update(
+            dev.get("developer", {}).get("status", "idle")
+        )
+        self.ticket = latest
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         name = event.button.id or ""

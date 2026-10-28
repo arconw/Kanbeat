@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import subprocess
 from typing import Any, Callable
 
 HARNESS = {"codex": "codex", "claude": "claude", "opencode": "opencode", "pi": "pi"}
@@ -41,7 +42,7 @@ def command(name: str, prompt: str, session_id: str | None) -> tuple[list[str], 
         argv.append(prompt)
         return argv, None
     if name == "pi":
-        argv = ["pi", "--mode", "json", "--print"]
+        argv = ["pi", "--mode", "json"]
         if session_id:
             argv += ["--session", session_id]
         argv.append(prompt)
@@ -106,6 +107,8 @@ class EventStream:
             # OpenCode run exits after its turn; no universal end event across versions.
         elif self.harness == "pi":
             sid = event.get("sessionId") or event.get("session_id")
+            if kind == "session":
+                sid = event.get("id") or sid
             if isinstance(sid, str) and sid:
                 self.session_id = sid
             if kind == "session" and isinstance(event.get("session"), dict):
@@ -120,8 +123,7 @@ class EventStream:
                         str(c.get("text")) for c in chunks
                         if isinstance(c, dict) and c.get("type") == "text"
                     ) or self.answer
-                    if msg.get("stopReason") in ("error", "aborted"):
-                        self.failed = True
+                    self.failed = msg.get("stopReason") in ("error", "aborted")
             if kind in ("agent_end", "agent_settled"):
                 self.finished = True
                 if event.get("aborted"):
@@ -143,11 +145,33 @@ class EventStream:
         return Outcome(ok, reason, self.session_id, self.answer, missing)
 
 
+
+def process_identity(pid: int) -> str | None:
+    """OS-level birth fingerprint used before stopping a crash-orphaned worker.
+
+    Never kill an arbitrary reused PID. Linux uses /proc start ticks; other
+    POSIX systems use the process start time reported by ps.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat")
+        if stat.exists():
+            fields = stat.read_text(encoding="utf-8").rsplit(") ", 1)[1].split()
+            return "linux:" + fields[19]
+        output = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            stderr=subprocess.DEVNULL, timeout=2, text=True,
+        ).strip()
+        return "ps:" + output if output else None
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
 class NativeRun:
     def __init__(
         self, harness: str, prompt: str, session_id: str | None,
         cwd: Path, log_path: Path,
         on_session: Callable[[str], None] | None = None,
+        on_process: Callable[[int, str | None], None] | None = None,
     ):
         self.harness = harness
         self.prompt = prompt
@@ -155,6 +179,7 @@ class NativeRun:
         self.cwd = cwd
         self.log_path = log_path
         self.on_session = on_session or (lambda _value: None)
+        self.on_process = on_process or (lambda _pid, _identity: None)
         self.process: asyncio.subprocess.Process | None = None
         self.stopping = False
 
@@ -179,6 +204,8 @@ class NativeRun:
                     await proc.wait()
 
     async def execute(self) -> Outcome:
+        if self.stopping:
+            return Outcome(False, "interrupted before start", self.session_id, "")
         args, stdin_payload = command(self.harness, self.prompt, self.session_id)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         stream = EventStream(self.harness)
@@ -196,6 +223,10 @@ class NativeRun:
             except OSError as exc:
                 return Outcome(False, str(exc), self.session_id, "")
             proc = self.process
+            self.on_process(proc.pid, process_identity(proc.pid))
+            if self.stopping:
+                await self.stop()
+                return Outcome(False, "interrupted during launch", self.session_id, "")
 
             async def read_stderr() -> None:
                 assert proc.stderr is not None

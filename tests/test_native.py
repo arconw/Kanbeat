@@ -1,3 +1,4 @@
+"""Structured native turn completion and session ID parsing."""
 from kanbeat.native import EventStream, VERDICT, command
 
 
@@ -24,13 +25,38 @@ def test_claude_result_and_verdict():
     assert VERDICT.search(outcome.answer).group(1) == "approve"
 
 
+def test_pi_settled_completion_reads_session_header_and_last_message():
+    events = EventStream("pi")
+    events.push({"type": "session", "version": 3, "id": "pi-session"})
+    events.push({"type": "message_end", "message": {
+        "role": "assistant", "stopReason": "stop",
+        "content": [{"type": "text", "text": "KANBEAT_VERDICT: approve"}],
+    }})
+    events.push({"type": "agent_end"})
+    events.push({"type": "agent_settled"})
+    result = events.result(0, "")
+    assert result.ok
+    assert result.session_id == "pi-session"
+    assert VERDICT.search(result.answer)
+
+
+def test_pi_aborted_message_is_failure_even_with_zero_exit():
+    events = EventStream("pi")
+    events.push({"type": "session", "id": "pi-session"})
+    events.push({"type": "message_end", "message": {
+        "role": "assistant", "stopReason": "aborted", "content": [],
+    }})
+    events.push({"type": "agent_settled", "aborted": True})
+    assert not events.result(0, "").ok
+
+
 def test_error_is_not_completion():
     events = EventStream("codex")
     events.push({"type": "turn.failed", "error": "failure"})
     assert not events.result(1, "").ok
 
 
-def test_command_is_argv_without_permission_override():
+def test_commands_do_not_override_user_permissions():
     for harness in ("codex", "claude", "opencode", "pi"):
         argv, _ = command(harness, "Finish safely", None)
         assert argv[0] == harness
