@@ -20,6 +20,14 @@ from .state import LocalState
 def interactive_command(
     harness: str, session: str | None = None, prompt: str = ""
 ) -> list[str]:
+    if session and (
+        session.startswith("-")
+        or len(session) > 512
+        or any(c.isspace() for c in session)
+    ):
+        raise ValueError("Invalid native session identifier")
+    if prompt:
+        prompt = "Kanbeat interactive instructions:\n" + prompt
     if harness == "codex":
         return (
             ["codex", "resume", session] + ([prompt] if prompt else [])

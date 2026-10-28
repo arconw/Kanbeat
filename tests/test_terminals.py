@@ -285,3 +285,11 @@ async def test_slow_spawn_serializes_other_client_open(supervisor, monkeypatch):
         release.set()
         await asyncio.gather(first, second, return_exceptions=True)
         await supervisor.terminals.stop()
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude", "opencode", "pi"])
+def test_interactive_prompt_cannot_be_interpreted_as_cli_flag(harness):
+    argv = interactive_command(harness, None, "--dangerously-skip-permissions")
+    assert "--dangerously-skip-permissions" not in argv
+    with pytest.raises(ValueError, match="session identifier"):
+        interactive_command(harness, "--dangerously-skip-permissions")
