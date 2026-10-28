@@ -28,6 +28,34 @@ HARNESS_OPTIONS = [
 STATUS_OPTIONS = [(name.replace("_", " ").title(), name) for name in STATES]
 
 
+class _ComposedChildren:
+    """Declarative tree assembly using public compose(), not Textual internals.
+
+    This helper lets the page factory construct a widget hierarchy before mount.
+    """
+    def __init__(self, *args: Any, **kwargs: Any):
+        self._declared_children: list[Any] = []
+        super().__init__(*args, **kwargs)
+
+    def add(self, widget: Any) -> None:
+        self._declared_children.append(widget)
+
+    def compose(self) -> ComposeResult:
+        yield from self._declared_children
+
+
+class PageVertical(_ComposedChildren, Vertical):
+    pass
+
+
+class PageHorizontal(_ComposedChildren, Horizontal):
+    pass
+
+
+class PageScroll(_ComposedChildren, VerticalScroll):
+    pass
+
+
 class ConfirmDialog(ModalScreen[bool]):
     def __init__(self, message: str):
         super().__init__()
@@ -332,130 +360,130 @@ class TaskBeatApp(App[None]):
             await viewport.mount(self._settings_page())
 
     def _board(self) -> Vertical:
-        root = Vertical(id="board-page")
-        bar = Horizontal(classes="page-toolbar")
-        bar.compose_add_child(Static("BOARD / PROJECT PIPELINE", classes="page-title"))
-        bar.compose_add_child(Button(
+        root = PageVertical(id="board-page")
+        bar = PageHorizontal(classes="page-toolbar")
+        bar.add(Static("BOARD / PROJECT PIPELINE", classes="page-title"))
+        bar.add(Button(
             "Exit select" if self.select_mode else "Select mode",
             id=self._register("select"),
         ))
-        bar.compose_add_child(Button("+ Ticket", id=self._register("new")))
-        bar.compose_add_child(Button("Archive", id=self._register("tab", "archive")))
+        bar.add(Button("+ Ticket", id=self._register("new")))
+        bar.add(Button("Archive", id=self._register("tab", "archive")))
         if self.select_mode:
-            bar.compose_add_child(Button("Bulk: Todo", id=self._register("bulk", "", "todo")))
-            bar.compose_add_child(Button("Bulk: Archive", id=self._register("bulk", "", "archive")))
-        root.compose_add_child(bar)
-        lanes = Horizontal(id="lanes")
+            bar.add(Button("Bulk: Todo", id=self._register("bulk", "", "todo")))
+            bar.add(Button("Bulk: Archive", id=self._register("bulk", "", "archive")))
+        root.add(bar)
+        lanes = PageHorizontal(id="lanes")
         rows = self.store.list()
         for status in ("backlog", "todo", "progress", "review", "done", "failed"):
             group = [t for t in rows if t.status == status]
-            lane = VerticalScroll(classes="lane")
-            lane.compose_add_child(Static(f"{status.upper()}   {len(group):02d}", classes="lane-title"))
+            lane = PageScroll(classes="lane")
+            lane.add(Static(f"{status.upper()}   {len(group):02d}", classes="lane-title"))
             for ticket in group:
-                card = Vertical(classes="ticket-card")
-                with_title = Horizontal(classes="ticket-top")
-                with_title.compose_add_child(Button(
+                card = PageVertical(classes="ticket-card")
+                with_title = PageHorizontal(classes="ticket-top")
+                with_title.add(Button(
                     ticket.title[:52], id=self._register("open", ticket.id), classes="card-title"
                 ))
-                with_title.compose_add_child(Button(
+                with_title.add(Button(
                     "···", id=self._register("actions", ticket.id), classes="card-menu"
                 ))
-                card.compose_add_child(with_title)
+                card.add(with_title)
                 summary = ticket.body.strip().replace("\n", " ")
-                card.compose_add_child(Static(summary[:120] or "No description", classes="ticket-summary"))
+                card.add(Static(summary[:120] or "No description", classes="ticket-summary"))
                 if self.select_mode:
                     checkbox = Checkbox("Select", value=ticket.id in self.selected)
                     checkbox.name = ticket.id
-                    card.compose_add_child(checkbox)
+                    card.add(checkbox)
                 elif ticket.status in ("progress", "review"):
-                    card.compose_add_child(Static("◌ AGENT ACTIVE", classes="state-running"))
+                    card.add(Static("◌ AGENT ACTIVE", classes="state-running"))
                 elif ticket.status == "failed":
-                    card.compose_add_child(Static("× FAILED", classes="state-failed"))
-                lane.compose_add_child(card)
-            lanes.compose_add_child(lane)
-        root.compose_add_child(lanes)
+                    card.add(Static("× FAILED", classes="state-failed"))
+                lane.add(card)
+            lanes.add(lane)
+        root.add(lanes)
         return root
 
     def _session_page(self) -> VerticalScroll:
-        page = VerticalScroll(id="session-page")
-        page.compose_add_child(Static("SESSIONS / PERSISTENT WORKSPACES", classes="page-title"))
-        task_group = Collapsible(title="Tasks (collapsed by default)", collapsed=True)
+        page = PageScroll(id="session-page")
+        page.add(Static("SESSIONS / PERSISTENT WORKSPACES", classes="page-title"))
+        task_group = PageVertical(classes="session-section")
         for ticket in self.store.list():
-            task_group.compose_add_child(Static(f"{ticket.id} · {ticket.title}", classes="session-heading"))
+            task_group.add(Static(f"{ticket.id} · {ticket.title}", classes="session-heading"))
             configs = [("developer", ticket.developer)] + [
                 (str(r.get("id")), r) for r in ticket.reviewers
             ]
             for role, config in configs:
                 target = config.get("session")
                 if target:
-                    task_group.compose_add_child(
+                    task_group.add(
                         Button(
                             f"↗ {role}  ·  {config.get('harness', 'default')}  ·  {target[:12]}",
                             id=self._register("session", str(target)),
                             classes="session-button",
                         )
                     )
-        page.compose_add_child(task_group)
-        page.compose_add_child(Static("CUSTOM SESSIONS", classes="section-label"))
-        row = Horizontal(classes="form-row")
-        row.compose_add_child(Input(placeholder="Session name", id="custom-name"))
-        row.compose_add_child(Input(value="My workspace", placeholder="Section", id="custom-group"))
-        row.compose_add_child(Select(HARNESS_OPTIONS, value="codex", id="custom-harness"))
-        row.compose_add_child(Button("+ Create", id=self._register("custom-session")))
-        page.compose_add_child(row)
+        page.add(Collapsible(task_group, title="Tasks (collapsed by default)", collapsed=True))
+        page.add(Static("CUSTOM SESSIONS", classes="section-label"))
+        row = PageHorizontal(classes="form-row")
+        row.add(Input(placeholder="Session name", id="custom-name"))
+        row.add(Input(value="My workspace", placeholder="Section", id="custom-group"))
+        row.add(Select(HARNESS_OPTIONS, value="codex", id="custom-harness"))
+        row.add(Button("+ Create", id=self._register("custom-session")))
+        page.add(row)
         groups: dict[str, list[tuple[str, dict[str, Any]]]] = defaultdict(list)
         for target, info in self.sessions.load_registry().items():
             if not info.get("ticket_id"):
                 groups[str(info.get("group") or "My workspace")].append((target, info))
         for group_name, entries in sorted(groups.items()):
-            section = Vertical(classes="session-section")
-            section.compose_add_child(Static(group_name, classes="session-heading"))
+            section = PageVertical(classes="session-section")
+            section.add(Static(group_name, classes="session-heading"))
             for target, info in entries:
-                buttons = Horizontal(classes="form-row")
-                buttons.compose_add_child(
+                buttons = PageHorizontal(classes="form-row")
+                buttons.add(
                     Button(
                         "↗ " + str(info.get("title") or target) + " (" + str(info.get("harness")) + ")",
                         id=self._register("session", target),
                     )
                 )
-                buttons.compose_add_child(Button("Stop", id=self._register("stop", target)))
-                section.compose_add_child(buttons)
-            page.compose_add_child(section)
+                buttons.add(Button("Stop", id=self._register("stop", target)))
+                section.add(buttons)
+            page.add(section)
         return page
 
     def _archive_page(self) -> VerticalScroll:
-        page = VerticalScroll(id="archive-page")
-        page.compose_add_child(Static("ARCHIVE / OUT OF SCOPE", classes="page-title"))
+        page = PageScroll(id="archive-page")
+        page.add(Static("ARCHIVE / OUT OF SCOPE", classes="page-title"))
         for ticket in self.store.list(archived=True):
-            row = Horizontal(classes="archive-row")
-            row.compose_add_child(Static(ticket.title + " · " + ticket.id, classes="archive-title"))
-            row.compose_add_child(Button("Backlog", id=self._register("restore", ticket.id, "backlog")))
-            row.compose_add_child(Button("Todo", id=self._register("restore", ticket.id, "todo")))
-            row.compose_add_child(Button("Delete", id=self._register("delete", ticket.id), variant="error"))
-            page.compose_add_child(row)
+            row = PageHorizontal(classes="archive-row")
+            row.add(Static(ticket.title + " · " + ticket.id, classes="archive-title"))
+            row.add(Button("Backlog", id=self._register("restore", ticket.id, "backlog")))
+            row.add(Button("Todo", id=self._register("restore", ticket.id, "todo")))
+            row.add(Button("Delete", id=self._register("delete", ticket.id), variant="error"))
+            page.add(row)
         return page
 
     def _settings_page(self) -> VerticalScroll:
         config = self.store.config()
-        page = VerticalScroll(id="settings-page")
-        page.compose_add_child(Static("SETTINGS / PROJECT DEFAULTS", classes="page-title"))
-        page.compose_add_child(Static("Default harness", classes="field-label"))
-        page.compose_add_child(Select(HARNESS_OPTIONS, value=config["default_harness"], id="default-harness"))
+        page = PageScroll(id="settings-page")
+        page.add(Static("SETTINGS / PROJECT DEFAULTS", classes="page-title"))
+        page.add(Static("Default harness", classes="field-label"))
+        page.add(Select(HARNESS_OPTIONS, value=config["default_harness"], id="default-harness"))
         for field, label in (
             ("global_cp", "Global CP"),
             ("developer_prompt", "Developer prompt"),
             ("reviewer_prompt", "Reviewer prompt"),
         ):
-            page.compose_add_child(Static(label, classes="field-label"))
-            page.compose_add_child(TextArea(str(config.get(field) or ""), id=field, classes="settings-editor"))
-        page.compose_add_child(Static("TRANSITION HOOK (CONFIGURED, EXECUTION PENDING)", classes="section-label"))
+            page.add(Static(label, classes="field-label"))
+            page.add(TextArea(str(config.get(field) or ""), id=field, classes="settings-editor"))
+        page.add(Static("TRANSITION HOOK (CONFIGURED, EXECUTION PENDING)", classes="section-label"))
         hook = config.get("transition_hook", {})
-        page.compose_add_child(Select(
+        page.add(Select(
             [("Disabled", "")] + HARNESS_OPTIONS,
             value=hook.get("harness") or "", id="hook-harness",
         ))
-        page.compose_add_child(TextArea(str(hook.get("prompt") or ""), id="hook-prompt", classes="settings-editor"))
-        page.compose_add_child(Button("Save settings", id=self._register("save-settings"), variant="primary"))
+        page.add(TextArea(str(hook.get("prompt") or ""), id="hook-prompt", classes="settings-editor"))
+        page.add(Button("Save settings", id=self._register("save-settings"), variant="primary"))
         return page
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
