@@ -2,7 +2,7 @@
 
 A filesystem-native Kanban with one persistent local supervisor and multiple rich terminal clients. Native coding CLIs do the work. The filesystem determines the ticket status.
 
-> **Early rewrite, v0.2.0. Not yet a production release.** The filesystem-native board, supervisor, and headless CLI event transport have an initial implementation. Interactive embedded harness terminals, custom session groups, and transition-hook execution are not implemented yet.
+> **Early rewrite, v0.3.0. Not yet a production release.** The filesystem-native board, supervisor, and headless CLI event transport have an initial implementation. Transition hooks run through isolated native CLI sessions. Interactive embedded harness terminals and custom session groups are not implemented yet.
 
 [Standalone design specification](docs/design/design.html)
 
@@ -131,13 +131,52 @@ No custom agent implementation is embedded. Kanbeat uses documented native comma
 
 If a session no longer exists, the worker attempts a fresh run in the same slot. This is not equivalent to rolling back tools or Git modifications. Stop interrupts process groups, then terminates unresponsive workers. Custom non-board sessions must not be interrupted by board Stop. On an ordinary supervisor restart, the board starts stopped; previously launched board-owned processes are matched by PID and OS process-start identity before any orphan shutdown is attempted. If the process cannot be identified safely, Play remains blocked pending manual resolution. External moves of active tickets interrupt their old workers; failed parallel reviews interrupt remaining Reviewer processes.
 
-**Limitations:** JSON event shapes and session recovery vary by installed CLI version. Reliable interactive PTY embedding is not implemented in this initial rewrite; the Sessions tab is currently a read-only output viewer. Runtime session IDs are only available for CLIs/events that disclose them. Transition hooks are specified but not yet executed. You should verify your chosen CLI version before relying on the workflow unattended.
+**Limitations:** JSON event shapes and session recovery vary by installed CLI version. Reliable interactive PTY embedding is not implemented in this initial rewrite; the Sessions tab is currently a read-only output viewer. Runtime session IDs are only available for CLIs/events that disclose them. You should verify your chosen CLI version before relying on the workflow unattended.
 
 ## Configuration
 
 Edit project settings via Settings in TUI, or `.kanbeat/config.json`. The `.state` directory is ignored by Git, but `.kanbeat` tickets, column directories, `INSTRUCTIONS.md` and `config.json` are intentionally **not** ignored. Treat CP and logs as sensitive local data.
 
+Unix socket path lengths are limited by the OS (typically 104–108 bytes including
+the socket filename). Use a short project path if startup reports
+`AF_UNIX path too long`; long-path socket fallback is not implemented.
+
 The project root is the current working directory by default. Use `kanbeat --project /path/to/project` to select another root.
+
+## Transition hooks
+
+Configure an optional native harness and prompt in Settings or `config.json`:
+
+```json
+{
+  "transition_hook": {
+    "harness": "claude",
+    "prompt": "Update the GitHub issue linked in the ticket after this transition."
+  }
+}
+```
+
+An empty prompt disables hooks; an empty harness selects the project default at
+queue time. Every column change made through Kanbeat (including manual moves,
+archive/restore and failure transitions) queues one hook. Creating, reordering,
+deleting or externally moving a file does not queue a hook. Pending hooks run
+serially on Play, before the next board turn. Each starts a fresh native session
+with the transition event ID and current canonical ticket path, without worker
+history, ticket body copies or worker CP. The configured hook prompt alone defines
+its automation; hooks retain native CLI permissions and authentication.
+
+Hook failures notify the user and preserve the ticket's new column. Missing hook
+harnesses fail that hook without default fallback or stopping the board. Stop
+interrupts running hooks too. The local ledger is in `.kanbeat/.state/supervisor.json`
+under `hooks`, and output is in `.kanbeat/.state/logs/hook-<event-id>.log`.
+
+Completed, failed and interrupted events are never replayed automatically. On
+restart the board stays stopped, pending events wait for Play, and interrupted
+hooks require manual inspection of their external effects. A running hook's
+outcome can be uncertain after a crash. The ledger and file rename are separate
+writes: a crash between them can leave a moved ticket without a queued hook.
+Deleting `.state` loses the ledger. This is not an exactly-once guarantee for
+external services; make hook operations idempotent and inspect before retrying.
 
 ## Development
 
@@ -146,6 +185,24 @@ python -m pip install -e '.[dev]'
 pytest
 ```
 
-Tests are included, **not run** during this rewrite per project owner request.
+CI runs regression tests and headless TUI checks on Python 3.11–3.14 on Linux,
+plus Python 3.14 on macOS. It also checks Ruff diagnostics, builds wheel/sdist,
+validates distribution metadata and smoke-tests clean installs with bundled TUI
+styles. Test and distribution artifacts are attached to Actions runs. Dependabot
+tracks Python and Actions dependency updates. Tags matching `v*` run the same CI;
+there is no automatic PyPI publication.
+
+Local equivalent:
+
+```sh
+python -m ruff check src tests
+python -m pytest
+python -m build --outdir .tmp/dist
+python -m twine check .tmp/dist/*
+```
+
+Native harness event/resume compatibility still needs validation against live
+installed vendor CLIs; CI uses deterministic fake harnesses and real local
+subprocesses, without model calls.
 
 The old `.tasks` layout is not automatically migrated. Existing users must manually copy/reformat tickets to the new directory/filename convention. No destructive auto-conversion is performed.

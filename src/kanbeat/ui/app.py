@@ -11,7 +11,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Markdown, Select, Static, TextArea
 
-from ..supervisor import ensure_supervisor, request
+from ..supervisor import request
 
 COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed")
 ALL_COLUMNS = COLUMNS + ("archive",)
@@ -293,7 +293,13 @@ class Settings(VerticalScroll):
         ):
             yield Static(title, classes="field")
             yield TextArea(str(self.config.get(field) or ""), id="cfg-" + field, classes="settings-editor")
-        yield Static("TRANSITION HOOK (reserved for next implementation slice)", classes="section-title")
+        yield Static("TRANSITION HOOK", classes="section-title")
+        hook = self.config.get("transition_hook") or {}
+        yield Select([("Project default", "")] + HARNESS,
+                     value=hook.get("harness") or "", allow_blank=False, id="cfg-hook-harness")
+        yield TextArea(str(hook.get("prompt") or ""), id="cfg-hook-prompt", classes="settings-editor")
+        yield Static("Empty prompt disables hooks. Hooks run after moves on Play. "
+                     "Failures never revert tickets; interrupted hooks are not replayed.", classes="hint")
         yield Button("Save settings", id="settings-save", variant="primary")
 
 
@@ -549,6 +555,10 @@ class KanbeatApp(App[None]):
             }
             for field in ("global_cp", "developer_prompt", "reviewer_prompt"):
                 config[field] = self.query_one("#cfg-" + field, TextArea).text
+            config["transition_hook"] = {
+                "harness": self.query_one("#cfg-hook-harness", Select).value,
+                "prompt": self.query_one("#cfg-hook-prompt", TextArea).text,
+            }
             await self.execute({"op": "save_config", "values": config})
 
     @work

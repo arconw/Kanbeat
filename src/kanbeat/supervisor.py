@@ -16,9 +16,10 @@ import signal
 import subprocess
 from typing import Any
 
-from .filesystem import Board, Ticket, ACTIVE, COLUMNS
+from .filesystem import Board, Ticket, ACTIVE
 from .native import NativeRun, Outcome, VERDICT, available, process_identity
 from .state import LocalState
+from .hooks import TransitionHooks
 
 MAX_INPUT = 1024 * 1024
 HARNESS_NAMES = ("codex", "claude", "opencode", "pi")
@@ -29,6 +30,7 @@ class Supervisor:
         self.board = Board(project)
         self.board.ensure()
         self.runtime = LocalState(self.board)
+        self.hooks = TransitionHooks(self.runtime)
         self.state_dir = self.board.root / ".state"
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.socket = self.state_dir / "supervisor.sock"
@@ -52,6 +54,12 @@ class Supervisor:
         # A stale socket is safe to remove only while holding the exclusive lock.
         if self.socket.exists():
             self.socket.unlink()
+
+    def move_ticket(self, ticket_id: str, column: str) -> Ticket:
+        before = self.board.find(ticket_id)
+        after = self.board.move(ticket_id, column)
+        self.hooks.enqueue(before, after)
+        return after
 
     def save(self) -> None:
         self.runtime.save()
@@ -218,7 +226,7 @@ class Supervisor:
         ticket = self.current_ticket(ticket_id, stage, iteration)
         if ticket is None:
             return
-        self.board.move(ticket_id, "failed")
+        self.move_ticket(ticket_id, "failed")
         self.notice(message, "error")
         # Stop other parallel reviewers before dispatching the next Todo ticket.
         await self.stop_stale_jobs(self.board.scan()[0])
@@ -385,7 +393,7 @@ class Supervisor:
         self.job_scopes.clear()
         self.cancelled.clear()
         self.jobs.clear()
-        for state in self.runtime.data["tickets"].values():
+        for state in [*self.runtime.data["tickets"].values(), {"runtime": self.hooks.entries}]:
             for item in state.get("runtime", {}).values():
                 if item.get("status") in ("running", "starting", "recovering"):
                     item["status"] = "interrupted"
@@ -395,7 +403,7 @@ class Supervisor:
         self.notice(reason)
 
     async def play(self) -> None:
-        for state in self.runtime.data["tickets"].values():
+        for state in [*self.runtime.data["tickets"].values(), {"runtime": self.hooks.entries}]:
             for item in state.get("runtime", {}).values():
                 if item.get("status") != "recovery_blocked":
                     continue
@@ -429,7 +437,9 @@ class Supervisor:
         previous = self.runtime.data.get("execution") == "running"
         if previous:
             self.runtime.data["execution"] = "stopped"
-        for ticket_id, state in self.runtime.data["tickets"].items():
+        recovery = list(self.runtime.data["tickets"].items())
+        recovery.append(("transition-hooks", {"runtime": self.hooks.entries}))
+        for ticket_id, state in recovery:
             for slot, entry in state.get("runtime", {}).items():
                 pid = entry.get("pid")
                 token = entry.get("process_identity")
@@ -501,6 +511,17 @@ class Supervisor:
             self.runtime.clean_deleted_tickets({ticket.id for ticket in tickets})
             if self.runtime.data["execution"] != "running":
                 return
+            if any(entry.get("status") == "recovery_blocked" for entry in self.hooks.entries.values()):
+                return
+            if any(key.startswith("hook:") and not job.done() for key, job in self.jobs.items()):
+                return
+            pending = next((event_id for event_id, entry in self.hooks.entries.items()
+                            if entry.get("status") == "pending"), None)
+            if pending is not None:
+                self.jobs["hook:" + pending] = asyncio.create_task(
+                    self.hooks.execute(pending, self.runs)
+                )
+                return
             default = str(self.runtime.config["default_harness"])
             if not available(default):
                 await self.stop("Default Harness unavailable. Configure it and press Play.")
@@ -517,7 +538,8 @@ class Supervisor:
                         self._seen_queue = False
                     return
                 self._seen_queue = True
-                active = [self.board.move(queue[0].id, "progress")]
+                self.move_ticket(queue[0].id, "progress")
+                return
             ticket = active[0]
             self._seen_queue = True
             state = self.ticket_state(ticket.id)
@@ -547,7 +569,7 @@ class Supervisor:
                     runtime["developer"]["status"] = "stale"
                     self.save()
             if ticket.column == "review" and not state.get("reviewers"):
-                self.board.move(ticket.id, "done")
+                self.move_ticket(ticket.id, "done")
                 state["phase"] = "done"
                 self.save()
                 return
@@ -566,7 +588,7 @@ class Supervisor:
                         runtime["developer"].get("task_hash") == current_hash
                         and self.content_hash(self.board.find(ticket.id)) == current_hash
                     ):
-                        self.board.move(ticket.id, "review")
+                        self.move_ticket(ticket.id, "review")
                         state["phase"] = ""
                         self.save()
             else:
@@ -589,9 +611,9 @@ class Supervisor:
                             state["feedback"] = "\n\n".join(
                                 v.get("feedback", "") for v in rejected
                             )
-                            self.board.move(ticket.id, "progress")
+                            self.move_ticket(ticket.id, "progress")
                         else:
-                            self.board.move(ticket.id, "done")
+                            self.move_ticket(ticket.id, "done")
                         state["phase"] = ""
                         self.save()
 
@@ -609,6 +631,7 @@ class Supervisor:
             "errors": errors, "notices": self.runtime.data.get("notices", []),
             "config": self.runtime.config,
             "custom": self.runtime.data.get("custom", {}),
+            "hooks": self.hooks.entries,
         }
 
     async def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -634,11 +657,11 @@ class Supervisor:
             if ticket.column in ACTIVE and self.runtime.data["execution"] == "running":
                 raise ValueError("Stop the board before manually moving an active ticket")
             if op == "move":
-                self.board.move(ticket_id, str(request["column"]))
+                self.move_ticket(ticket_id, str(request["column"]))
             elif op == "archive":
-                self.board.move(ticket_id, "archive")
+                self.move_ticket(ticket_id, "archive")
             elif op == "restore":
-                self.board.move(ticket_id, str(request.get("column") or "backlog"))
+                self.move_ticket(ticket_id, str(request.get("column") or "backlog"))
             elif op == "reorder":
                 self.board.reorder(ticket_id, int(request["direction"]))
             else:

@@ -6,3 +6,6 @@ dist/
 *.egg-info/
 # The tickets, status directories and config ARE part of the project.
 .kanbeat/.state/
+
+.tmp/
+.ruff_cache/

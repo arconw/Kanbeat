@@ -1,8 +1,8 @@
 """Private recoverable runtime. Tickets and columns never depend on .state."""
 from __future__ import annotations
 
-from pathlib import Path
 import json
+from copy import deepcopy
 from typing import Any
 
 from .filesystem import atomic_json, Board
@@ -41,16 +41,30 @@ class LocalState:
 
     def _config(self) -> dict[str, Any]:
         if not self.config_path.exists():
-            return dict(DEFAULT_CONFIG)
+            return deepcopy(DEFAULT_CONFIG)
         data = json.loads(self.config_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("config.json must be an object")
-        return {**DEFAULT_CONFIG, **data}
+        config = {**deepcopy(DEFAULT_CONFIG), **data}
+        config["transition_hook"] = self.validate_hook(config["transition_hook"])
+        return config
 
     def save(self) -> None:
         atomic_json(self.path, self.data)
 
+    @staticmethod
+    def validate_hook(hook: Any) -> dict[str, str]:
+        if not isinstance(hook, dict):
+            raise ValueError("Transition hook must be an object")
+        if hook.get("harness", "") not in ("", "codex", "claude", "opencode", "pi"):
+            raise ValueError("Invalid transition hook harness")
+        if not isinstance(hook.get("prompt", ""), str):
+            raise ValueError("Transition hook prompt must be text")
+        return {"harness": hook.get("harness", ""), "prompt": hook.get("prompt", "")}
+
     def save_config(self, values: dict[str, Any]) -> None:
+        if "transition_hook" in values:
+            values = {**values, "transition_hook": self.validate_hook(values["transition_hook"])}
         editable = set(DEFAULT_CONFIG)
         for key in editable:
             if key in values:
