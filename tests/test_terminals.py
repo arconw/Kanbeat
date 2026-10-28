@@ -248,3 +248,40 @@ async def test_invalid_terminal_size_is_rejected(supervisor):
                 )
     finally:
         await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_slow_spawn_serializes_other_client_open(supervisor, monkeypatch):
+    from kanbeat.terminals import TerminalSession
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original = TerminalSession.start
+
+    async def delayed_start(session, argv):
+        entered.set()
+        await release.wait()
+        await original(session, argv)
+
+    monkeypatch.setattr(TerminalSession, "start", delayed_start)
+    ticket = supervisor.board.create("Task")
+    first = asyncio.create_task(
+        supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+    )
+    await entered.wait()
+    second = asyncio.create_task(
+        supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+    )
+    await asyncio.sleep(0)
+    try:
+        assert len(supervisor.terminals.entries) == 1
+        assert next(iter(supervisor.terminals.entries.values()))["status"] == "starting"
+        assert not second.done()
+        release.set()
+        results = await asyncio.gather(first, second)
+        assert results[0] == results[1]
+        assert len(supervisor.terminals.sessions) == 1
+    finally:
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+        await supervisor.terminals.stop()

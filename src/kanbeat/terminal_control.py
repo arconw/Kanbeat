@@ -29,7 +29,7 @@ async def terminal_request(
             if (
                 entry.get("ticket") == ticket.id
                 and entry.get("slot") == slot
-                and entry.get("status") == "running"
+                and entry.get("status") in ("starting", "running")
             ):
                 return {"terminal": terminal_id}
         harness, session = supervisor.selected_harness(assignment)
