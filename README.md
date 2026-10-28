@@ -97,9 +97,33 @@ Review/QA --all Reviewer slots approve--> Done
 
 Each normal developer turn is executed through the native CLI's structured non-interactive mode. A successful completed turn moves its ticket to Review/QA. Developer can write tests but should not execute them. Reviewers test, prefer headless where suitable, and return a **verdict** in their final response: `KANBEAT_VERDICT: approve` or `KANBEAT_VERDICT: changes_requested`. Reviewer outcomes are collected per slot. One rejection returns the task to Progress with short feedback; all approvals advance to Done. Zero reviewers automatically advance Review/QA to Done.
 
-A Reviewer receives the **original ticket snapshot**, its own role/global/slot CP and workflow instructions. It is never automatically given the Developer transcript, terminal history, CP, or other Reviewers' transcripts. A replacement **within the same reviewer slot** can receive that same slot's bounded prior output as untrusted context when harness is changed. Different reviewer slots never exchange histories.
+A Reviewer receives the **path to the current canonical ticket Markdown file**, its own role/global/slot CP and workflow instructions. The Reviewer reads the ticket directly from disk, independently inspects the working tree, and must not edit, rename or move the ticket. It is never automatically given the Developer transcript, terminal history, CP, or other Reviewers' transcripts. A replacement **within the same reviewer slot** can receive that same slot's bounded prior output as untrusted context when harness is changed. Different reviewer slots never exchange histories.
 
 Only one ticket may be in Progress or Review/QA for the dispatcher to start work. If there are multiple, the supervisor suspends dispatch and reports an error. `failed/` is a manual-recovery column.
+
+## Live ticket updates and agent prompts (design contract; not yet implemented)
+
+**Pass the ticket path, not a copy of its Markdown contents.** On a fresh Developer or Reviewer turn, the supervisor resolves the current ticket path from its stable ID and sends a short instruction, for example:
+
+```text
+Read .kanbeat/progress/0-002-authentication.md and complete the task described
+there. This ticket is read-only for you: never edit, rename or move it.
+Kanbeat alone manages ticket lifecycle and runtime.
+```
+
+The same rule applies in Review/QA, using its current `.kanbeat/review/...` path. Agents may change project code, but they **must not modify ticket files or technical Kanbeat state**. Tickets remain user-editable in an external editor at any time; Kanbeat's TUI is read-only.
+
+For every active worker turn, the supervisor stores a **SHA-256 hash of the ticket's Markdown contents** alongside the worker's runtime data in `.kanbeat/.state/`. After the turn ends, **before accepting completion, a Developer stage transition, or a Reviewer verdict**, it reads the current ticket by stable ID and compares content hashes. When the body changed:
+
+- Do **not** interrupt a running turn, restart the harness, or discard its native session.
+- Resolve the **current file path** again from the ticket ID (filename, order, slug and status directory can have changed).
+- Send a follow-up in the **same native worker session**: `Ticket #002 has changed. Re-read <current-ticket-path>, reconcile the updated requirements with your existing work, and continue. Do not modify the ticket.`
+- Keep the ticket on the current stage until a subsequent successful turn has processed the latest content. Update the stored hash for that turn.
+- In Review/QA, previously recorded verdicts for an older ticket revision **cannot approve the updated task**. Each affected Reviewer slot must re-read it and deliver a verdict for the current revision before moving to Done. Preserve Reviewer-to-Reviewer and Developer-to-Reviewer transcript isolation.
+
+A filename-only rename or reorder that leaves the Markdown contents unchanged **does not** trigger a new agent turn. A stage change made by the supervisor changes the path, not the underlying requirements. Hashes detect **content changes**, not timestamps, filenames, or Git diffs.
+
+This is a **specified behavior, not a claim that the current supervisor already implements hash tracking or follow-up re-dispatch**.
 
 ## Native CLI lifecycle
 
