@@ -37,7 +37,7 @@ def test_reviewer_context_does_not_include_developer_output(tmp_path: Path):
     prompt = supervisor.prompt(ticket, "reviewer-1", False)
     assert "Original description" in prompt
     assert "developer-session-secret" not in prompt
-    assert "TASKBEAT_VERDICT" in prompt
+    assert "KANBEAT_VERDICT" in prompt
 
 
 def test_archived_ticket_not_dispatched(tmp_path: Path):

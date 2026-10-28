@@ -2,7 +2,7 @@
 
 A filesystem-native Kanban with one persistent local supervisor and multiple rich terminal clients. Native coding CLIs do the work. The filesystem determines the ticket status.
 
-> **Early rewrite, v0.2.0. Not yet a production release.** The code is a fresh architecture, not a migration of the old TaskBeat dispatcher. The core workflow and headless CLI event transport are implemented; interactive embedded harness terminals, custom session groups, and transition-hook execution still require separate implementation.
+> **Early rewrite, v0.2.0. Not yet a production release.** The filesystem-native board, supervisor, and headless CLI event transport have an initial implementation. Interactive embedded harness terminals, custom session groups, and transition-hook execution are not implemented yet.
 
 [Standalone design specification](docs/design/design.html)
 
