@@ -11,6 +11,7 @@ from contextlib import suppress
 import fcntl
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import signal
@@ -21,6 +22,7 @@ from .filesystem import Board, Ticket, ACTIVE
 from .native import NativeRun, Outcome, VERDICT, available, process_identity
 from .state import LocalState
 from .hooks import TransitionHooks
+from .ipc import socket_path, prepare_socket_directory, remove_socket, bind_socket
 
 MAX_INPUT = 1024 * 1024
 HARNESS_NAMES = ("codex", "claude", "opencode", "pi")
@@ -34,7 +36,7 @@ class Supervisor:
         self.hooks = TransitionHooks(self.runtime)
         self.state_dir = self.board.root / ".state"
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.socket = self.state_dir / "supervisor.sock"
+        self.socket = socket_path(self.board.project)
         self.lock_path = self.state_dir / "supervisor.lock"
         self.lock_stream = None
         self.server: asyncio.AbstractServer | None = None
@@ -53,8 +55,8 @@ class Supervisor:
         except BlockingIOError as exc:
             raise RuntimeError("Supervisor already owns this project") from exc
         # A stale socket is safe to remove only while holding the exclusive lock.
-        if self.socket.exists():
-            self.socket.unlink()
+        prepare_socket_directory(self.socket)
+        remove_socket(self.socket)
 
     def move_ticket(self, ticket_id: str, column: str) -> Ticket:
         before = self.board.find(ticket_id)
@@ -866,12 +868,16 @@ class Supervisor:
 
     async def serve(self) -> None:
         self.acquire()
-        await self.recover_orphans()
-        self.server = await asyncio.start_unix_server(
-            self.handle, path=str(self.socket), limit=8 * 1024 * 1024
-        )
-        os.chmod(self.socket, 0o600)
         try:
+            await self.recover_orphans()
+            sock = bind_socket(self.socket)
+            try:
+                self.server = await asyncio.start_unix_server(
+                    self.handle, sock=sock, limit=8 * 1024 * 1024
+                )
+            except BaseException:
+                sock.close()
+                raise
             while True:
                 try:
                     await self.reconcile()
@@ -882,16 +888,25 @@ class Supervisor:
                         self._reported.add(message)
                 await asyncio.sleep(1)
         finally:
-            await self.stop("Supervisor exiting")
-            self.server.close()
-            await self.server.wait_closed()
-            self.socket.unlink(missing_ok=True)
+            try:
+                await self.stop("Supervisor exiting")
+            finally:
+                if self.server is not None:
+                    self.server.close()
+                    await self.server.wait_closed()
+                try:
+                    remove_socket(self.socket)
+                except (OSError, RuntimeError) as exc:
+                    logging.getLogger(__name__).warning("Socket cleanup: %s", exc)
+                if self.lock_stream is not None:
+                    self.lock_stream.close()
+                    self.lock_stream = None
 
 
 async def request(
     project: Path, message: dict[str, Any], timeout: float = 10
 ) -> dict[str, Any]:
-    path = Board(project).root / ".state" / "supervisor.sock"
+    path = socket_path(project)
     reader, writer = await asyncio.wait_for(
         asyncio.open_unix_connection(str(path), limit=8 * 1024 * 1024), timeout=timeout
     )
@@ -919,7 +934,7 @@ def ensure_supervisor(project: Path) -> None:
     board.ensure()
     import socket
 
-    path = board.root / ".state" / "supervisor.sock"
+    path = socket_path(project)
     for attempt in range(40):
         try:
             with socket.socket(socket.AF_UNIX) as client:
