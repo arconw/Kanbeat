@@ -57,6 +57,12 @@ A reviewer uses the concurrency-safe verdict command:
     taskbeat review task-123 reviewer-1 approve --iteration <current-iteration-id>
     taskbeat review task-123 reviewer-2 changes_requested --iteration <current-iteration-id>
 
+### Review/QA context boundary
+
+**A Reviewer receives only the original ticket task as its task context**, together with its own reviewer/global prompt (if set) and minimal workflow instructions (reviewer ID, iteration, status/reporting command). TaskBeat does **not** feed it the Developer's session logs, transcript, messages, terminal output, Developer CP or a summary of the Developer's work. The Reviewer independently examines the actual repository changes and runs tests. Reviewer sessions also do not exchange their histories with each other.
+
+Transcript handoff on harness switch/reset, where supported, is restricted to the **same worker role/session lineage**. A Developer → Reviewer transition never performs a log handoff.
+
 Each review worker has an independent ID. After *all* reviewers submit, TaskBeat returns the ticket to Progress if anyone requested changes or sends it to Done if all approved. Zero reviewers means Review automatically reaches Done.
 
 Use the global option to reference the project when running outside the project's directory:
