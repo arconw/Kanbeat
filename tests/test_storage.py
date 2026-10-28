@@ -79,6 +79,50 @@ def test_unknown_metadata_is_preserved(tmp_path: Path):
     assert store.read(ticket.id).meta["external_tool_field"]["custom"] == 42
 
 
+def test_new_ticket_has_no_empty_role_metadata(tmp_path: Path):
+    store = TicketStore(tmp_path)
+    ticket = store.create("No agents configured yet")
+    text = ticket.path.read_text(encoding="utf-8")
+    assert "developer:" not in text
+    assert "reviewers:" not in text
+    assert "cp:" not in text
+    assert "session:" not in text
+
+
+def test_empty_cp_and_session_disappear_on_save(tmp_path: Path):
+    store = TicketStore(tmp_path)
+    ticket = store.create("Compact config")
+    ticket.meta["developer"] = {
+        "harness": "codex", "cp": "   ", "session": None, "custom": ""
+    }
+    ticket.meta["reviewers"] = [
+        {"id": "reviewer-1", "harness": "claude", "cp": "", "session": ""}
+    ]
+    ticket.meta["review_iteration"] = None
+    store.save(ticket)
+    saved = store.read(ticket.id)
+    assert saved.developer == {"harness": "codex", "custom": ""}
+    assert saved.reviewers == [{"id": "reviewer-1", "harness": "claude"}]
+    assert "review_iteration" not in saved.meta
+    assert "cp:" not in saved.path.read_text(encoding="utf-8")
+    assert "session:" not in saved.path.read_text(encoding="utf-8")
+
+
+def test_optional_values_are_persisted_then_removed(tmp_path: Path):
+    store = TicketStore(tmp_path)
+    ticket = store.create("Session metadata")
+    ticket.meta["developer"] = {
+        "harness": "pi", "cp": "Keep changes small", "session": "tb-session-42"
+    }
+    store.save(ticket)
+    assert store.read(ticket.id).developer["session"] == "tb-session-42"
+    assert store.read(ticket.id).developer["cp"] == "Keep changes small"
+    ticket.meta["developer"]["session"] = None
+    ticket.meta["developer"]["cp"] = ""
+    store.save(ticket)
+    assert store.read(ticket.id).developer == {"harness": "pi"}
+
+
 def test_path_traversal_rejected(tmp_path: Path):
     store = TicketStore(tmp_path)
     with pytest.raises(ValueError, match="Unsafe"):
