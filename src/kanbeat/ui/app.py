@@ -154,7 +154,7 @@ class Assignment(ModalScreen[None]):
                 yield Static("SLOT CONFIGURATION · " + self.slot, classes="modal-name")
                 yield Button("×", id="close")
             yield Static("Harness", classes="field")
-            yield Select(HARNESS, value=value.get("harness") or "codex", id="harness")
+            yield Select([("Project default", "")] + HARNESS, value=value.get("harness") or "", id="harness")
             yield Static("Custom Prompt", classes="field")
             yield TextArea(str(value.get("cp") or ""), id="cp")
             with Horizontal(classes="modal-actions"):
@@ -413,7 +413,9 @@ class KanbeatApp(App[None]):
             )
             if signature != self._signature or force:
                 self._signature = signature
-                await self.render_page()
+                # Avoid wiping unsaved settings text while the board is active.
+                if force or self.tab != "settings":
+                    await self.render_page()
         except (RuntimeError, OSError) as exc:
             self.notify(str(exc), severity="error", timeout=4)
         finally:
