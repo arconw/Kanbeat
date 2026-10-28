@@ -223,3 +223,20 @@ async def test_crash_recovery_keeps_session_but_stops_dispatch(tmp_path: Path):
     assert supervisor.runtime.data["execution"] == "stopped"
     assert state["developer"]["session"] == "native-session-id"
     assert state["runtime"]["developer"]["status"] == "interrupted"
+
+@pytest.mark.asyncio
+async def test_play_after_orphan_was_resolved(tmp_path: Path, monkeypatch):
+    import kanbeat.supervisor as module
+
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Safe retry", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["runtime"]["developer"] = {
+        "status": "recovery_blocked", "pid": 123456,
+        "process_identity": "linux:111",
+    }
+    monkeypatch.setattr(module, "process_identity", lambda pid: None)
+    monkeypatch.setattr(module, "available", lambda name: True)
+    await supervisor.play()
+    assert supervisor.runtime.data["execution"] == "running"
+    assert state["runtime"]["developer"]["status"] == "interrupted"

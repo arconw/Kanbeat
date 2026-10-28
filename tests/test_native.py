@@ -63,3 +63,8 @@ def test_commands_do_not_override_user_permissions():
         assert "--dangerously-skip-permissions" not in argv
         assert "--yolo" not in argv
         assert "--auto" not in argv
+
+def test_missing_session_error_alternative_word_order():
+    events = EventStream("codex")
+    events.push({"type": "error", "message": "Could not find session s-123"})
+    assert events.result(1, "Could not find session s-123").resume_missing

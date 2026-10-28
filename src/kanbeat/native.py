@@ -131,10 +131,18 @@ class EventStream:
                     self.error = "Pi run aborted"
 
     def result(self, return_code: int, stderr: str) -> Outcome:
-        missing = bool(re.search(
-            r"(?:session|thread).{0,90}(?:not found|does not exist|unknown|missing|cannot resume)",
-            stderr + " " + self.error, re.I,
-        ))
+        error_text = stderr + " " + self.error
+        missing = bool(
+            re.search(
+                r"(?:session|thread).{0,90}"
+                r"(?:not found|does not exist|unknown|missing|cannot resume|no such)",
+                error_text, re.I,
+            ) or re.search(
+                r"(?:not found|cannot find|could not find|no such|unknown)"
+                r".{0,90}(?:session|thread)",
+                error_text, re.I,
+            )
+        )
         ok = (
             return_code == 0 and not self.failed and self.events > 0 and
             (self.finished or self.harness == "opencode")

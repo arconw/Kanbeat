@@ -159,6 +159,7 @@ class Supervisor:
         # A missing explicitly selected harness implies a clean fallback.
         assignment["harness"] = default
         assignment.pop("session", None)
+        assignment.pop("pending_handoff", None)
         return default, None
 
     def current_ticket(self, ticket_id: str, stage: str, iteration: int) -> Ticket | None:
@@ -388,20 +389,29 @@ class Supervisor:
             for item in state.get("runtime", {}).values():
                 if item.get("status") in ("running", "starting", "recovering"):
                     item["status"] = "interrupted"
-                item.pop("pid", None)
-                item.pop("process_identity", None)
+                if item.get("status") != "recovery_blocked":
+                    item.pop("pid", None)
+                    item.pop("process_identity", None)
         self.notice(reason)
 
     async def play(self) -> None:
-        if any(
-            item.get("status") == "recovery_blocked"
-            for state in self.runtime.data["tickets"].values()
-            for item in state.get("runtime", {}).values()
-        ):
-            raise ValueError(
-                "An orphaned native worker could not be safely stopped. "
-                "Resolve that process before pressing Play."
-            )
+        for state in self.runtime.data["tickets"].values():
+            for item in state.get("runtime", {}).values():
+                if item.get("status") != "recovery_blocked":
+                    continue
+                pid = item.get("pid")
+                saved = item.get("process_identity")
+                current = process_identity(int(pid)) if pid is not None else None
+                if current is None or (saved and current != saved):
+                    # The old process is gone or this PID belongs to someone else.
+                    item["status"] = "interrupted"
+                    item.pop("pid", None)
+                    item.pop("process_identity", None)
+                else:
+                    raise ValueError(
+                        "An orphaned worker is still running. Stop it manually "
+                        "before pressing Play."
+                    )
         default = str(self.runtime.config["default_harness"])
         if not available(default):
             await self.stop("Default Harness unavailable. Set a valid default and press Play.")
