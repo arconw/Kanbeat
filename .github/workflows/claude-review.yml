@@ -1,0 +1,31 @@
+name: Claude Auto Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Review this pull request. Focus on:
+            - bugs and logic errors
+            - security issues
+            - unhandled edge cases and error paths
+            - violations of the project conventions described in CLAUDE.md
+
+            Leave inline comments on specific lines. Skip nitpicks and purely
+            stylistic remarks. If everything looks fine, say so briefly.
