@@ -50,6 +50,7 @@ kanbeat move 001 backlog
 .kanbeat/
 ├── INSTRUCTIONS.md            # only read when explicitly asked
 ├── config.json                # project defaults, Git-trackable
+├── ids.json                   # persistent ticket ID high-water mark, Git-trackable
 ├── backlog/
 │   └── 0-001-future-search.md
 ├── todo/
@@ -84,6 +85,20 @@ Add token validation to the API.
 Creating `.kanbeat` automatically creates `INSTRUCTIONS.md` for a separately instructed agent to author tickets. It is **not** injected into coding agents automatically.
 
 The first number is **numeric sort order**. The second, e.g. `002`, is the ticket ID and must be unique across all column and archive directories. The slug is readable; changing order and status never changes ID. No metadata is added to Markdown by Kanbeat.
+
+`ids.json` reserves monotonically increasing IDs before ticket creation. Keep it
+with the board in Git: deleting archived tickets or disposable `.state` must not
+reset ticket identity. Kanbeat records imported IDs before deleting archived
+tickets too. Failed creates can leave gaps, which are intentional. External ticket
+authors must still choose unused IDs; history deleted outside Kanbeat before the
+ID ledger exists cannot be reconstructed automatically.
+
+Reordering normally renames only the two exchanged tickets; equal-order ties may
+require normalizing the column's numeric prefixes. Every individual rename keeps
+the `.md` suffix, ID and body. An interruption may leave a partial order change,
+but tickets remain visible. Leftover `.kanbeat-rename-*` files from older versions
+are reported as errors for manual filename restoration; they are never silently
+ignored or rewritten.
 
 If `.state` is absent at startup, board status still comes from directories and execution starts **stopped**. Without assignments, configured defaults are used after the user presses Play. Deleting `.state` while the system is actively running is not a supported operation.
 

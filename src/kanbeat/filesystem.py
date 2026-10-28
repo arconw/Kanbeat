@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import json
+import fcntl
+from contextlib import contextmanager
 import os
 import tempfile
 from typing import Any
@@ -68,6 +71,11 @@ class Board:
             if not directory.is_dir():
                 continue
             for path in directory.iterdir():
+                if path.name.startswith(".kanbeat-rename-"):
+                    errors.append(
+                        f"Interrupted legacy reorder: {column}/{path.name}; restore its Markdown filename manually"
+                    )
+                    continue
                 if not path.is_file() or path.suffix != ".md":
                     continue
                 match = FILENAME.fullmatch(path.name)
@@ -117,26 +125,56 @@ class Board:
             raise ValueError(f"Ticket ID not uniquely found: {ticket_id}")
         return matches[0]
 
+    @contextmanager
+    def id_lock(self):
+        path = self.root / ".state" / "ids.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+b") as stream:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            yield
+
+    def remember_ids(self, tickets: list[Ticket]) -> int:
+        path = self.root / "ids.json"
+        previous = 0
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(data, dict)
+                or type(data.get("last_id")) is not int
+                or data["last_id"] < 0
+            ):
+                raise ValueError("ids.json must contain a nonnegative integer last_id")
+            previous = data["last_id"]
+        number = max(previous, max((int(t.id) for t in tickets), default=0))
+        atomic_json(path, {"last_id": number})
+        return number
+
     def _next_id(self, tickets: list[Ticket]) -> str:
-        number = max((int(t.id) for t in tickets), default=0) + 1
+        number = self.remember_ids(tickets) + 1
+        atomic_json(self.root / "ids.json", {"last_id": number})
         return str(number).zfill(3)
 
     def create(self, title: str, body: str = "", column: str = "backlog") -> Ticket:
         if column not in COLUMNS or column == "archive":
             raise ValueError("New tickets must be placed on the board")
-        tickets, errors = self.scan()
-        if errors:
-            raise ValueError("Fix invalid tickets before creating more: " + errors[0])
-        ticket_id = self._next_id(tickets)
-        order = max((t.order for t in tickets if t.column == column), default=-10) + 10
-        slug = SLUG.sub("-", title.lower()).strip("-") or "ticket"
-        slug = slug[:72].rstrip("-")
-        path = self.root / column / f"{order}-{ticket_id}-{slug}.md"
-        text = "# " + title.strip() + "\n\n" + body.strip() + "\n"
-        # exclusive create: do not overwrite a file created externally
-        with path.open("x", encoding="utf-8") as stream:
-            stream.write(text)
-        return self.find(ticket_id)
+        with self.id_lock():
+            tickets, errors = self.scan()
+            if errors:
+                raise ValueError(
+                    "Fix invalid tickets before creating more: " + errors[0]
+                )
+            ticket_id = self._next_id(tickets)
+            order = (
+                max((t.order for t in tickets if t.column == column), default=-10) + 10
+            )
+            slug = SLUG.sub("-", title.lower()).strip("-") or "ticket"
+            slug = slug[:72].rstrip("-")
+            path = self.root / column / f"{order}-{ticket_id}-{slug}.md"
+            text = "# " + title.strip() + "\n\n" + body.strip() + "\n"
+            # exclusive create: do not overwrite a file created externally
+            with path.open("x", encoding="utf-8") as stream:
+                stream.write(text)
+            return self.find(ticket_id)
 
     def move(self, ticket_id: str, column: str) -> Ticket:
         if column not in COLUMNS:
@@ -165,26 +203,31 @@ class Board:
         target = index + direction
         if not 0 <= target < len(neighbors):
             return
+        other = neighbors[target]
         neighbors[index], neighbors[target] = neighbors[target], neighbors[index]
-        # Two-phase renaming avoids conflicts and preserves file bodies.
-        renames: list[tuple[Path, Path]] = []
-        for rank, item in enumerate(neighbors):
-            temporary = item.path.with_name(f".kanbeat-rename-{item.id}")
-            item.path.rename(temporary)
-            renames.append(
-                (
-                    temporary,
-                    self.root / item.column / f"{rank * 10}-{item.id}-{item.slug}.md",
-                )
-            )
-        for temporary, destination in renames:
-            temporary.rename(destination)
+        renames = (
+            [(ticket, other.order), (other, ticket.order)]
+            if ticket.order != other.order
+            else [(item, rank * 10) for rank, item in enumerate(neighbors)]
+        )
+        for item, order in renames:
+            destination = item.path.with_name(f"{order}-{item.id}-{item.slug}.md")
+            if destination == item.path:
+                continue
+            if destination.exists():
+                raise FileExistsError(destination)
+            item.path.rename(destination)
 
     def remove_archived(self, ticket_id: str) -> None:
-        ticket = self.find(ticket_id)
-        if ticket.column != "archive":
-            raise ValueError("Only archived tickets can be deleted")
-        ticket.path.unlink()
+        with self.id_lock():
+            ticket = self.find(ticket_id)
+            if ticket.column != "archive":
+                raise ValueError("Only archived tickets can be deleted")
+            tickets, errors = self.scan()
+            if errors:
+                raise ValueError("Fix invalid tickets before deleting: " + errors[0])
+            self.remember_ids(tickets)
+            ticket.path.unlink()
 
 
 def atomic_json(path: Path, data: dict[str, Any]) -> None:

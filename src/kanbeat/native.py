@@ -139,7 +139,12 @@ class EventStream:
                         )
                         or self.answer
                     )
-                    self.failed = msg.get("stopReason") in ("error", "aborted")
+                    if msg.get("stopReason") in ("error", "aborted"):
+                        self.failed = True
+                        self.error = str(
+                            msg.get("errorMessage")
+                            or "Pi assistant " + msg["stopReason"]
+                        )[:400]
             if kind in ("agent_end", "agent_settled"):
                 self.finished = True
                 if event.get("aborted"):
@@ -225,6 +230,9 @@ class NativeRun:
 
     async def stop(self) -> None:
         self.stopping = True
+        await self._terminate()
+
+    async def _terminate(self) -> None:
         proc = self.process
         if not proc or proc.returncode is not None:
             return
@@ -268,10 +276,6 @@ class NativeRun:
             except OSError as exc:
                 return Outcome(False, str(exc), self.session_id, "")
             proc = self.process
-            self.on_process(proc.pid, process_identity(proc.pid))
-            if self.stopping:
-                await self.stop()
-                return Outcome(False, "interrupted during launch", self.session_id, "")
 
             async def read_stderr() -> None:
                 assert proc.stderr is not None
@@ -282,41 +286,80 @@ class NativeRun:
                     log.flush()
 
             stderr_task = asyncio.create_task(read_stderr())
-            if stdin_payload is not None and proc.stdin is not None:
-                proc.stdin.write(stdin_payload)
-                await proc.stdin.drain()
-                proc.stdin.close()
-            assert proc.stdout is not None
-            async for raw in proc.stdout:
-                try:
-                    event = json.loads(raw)
-                except (ValueError, UnicodeError):
-                    log.write(raw.decode("utf-8", "replace")[:2000])
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                try:
-                    stream.push(event)
-                except (ValueError, TypeError, KeyError):
-                    continue
-                if stream.session_id and stream.session_id != self.session_id:
-                    self.session_id = stream.session_id
-                    self.on_session(self.session_id)
-                if event.get("type") in (
-                    "item.completed",
-                    "text",
-                    "result",
-                    "message_end",
-                    "error",
-                ):
-                    summary = stream.answer or stream.error
-                    if summary:
-                        log.write(summary[-3000:] + "\n")
-                        log.flush()
-            code = await proc.wait()
-            await stderr_task
-            if self.stopping:
+
+            async def drain_stdout() -> None:
+                assert proc.stdout is not None
+                while await proc.stdout.read(65536):
+                    pass
+
+            try:
+                self.on_process(proc.pid, process_identity(proc.pid))
+                if self.stopping:
+                    await self.stop()
+                    return Outcome(
+                        False, "interrupted during launch", self.session_id, ""
+                    )
+                if stdin_payload is not None and proc.stdin is not None:
+                    proc.stdin.write(stdin_payload)
+                    await proc.stdin.drain()
+                    proc.stdin.close()
+                assert proc.stdout is not None
+                async for raw in proc.stdout:
+                    try:
+                        event = json.loads(raw)
+                    except (ValueError, UnicodeError):
+                        log.write(raw.decode("utf-8", "replace")[:2000])
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    try:
+                        stream.push(event)
+                    except (ValueError, TypeError, KeyError):
+                        continue
+                    if stream.session_id and stream.session_id != self.session_id:
+                        self.session_id = stream.session_id
+                        self.on_session(self.session_id)
+                    if event.get("type") in (
+                        "item.completed",
+                        "text",
+                        "result",
+                        "message_end",
+                        "error",
+                    ):
+                        summary = stream.answer or stream.error
+                        if summary:
+                            log.write(summary[-3000:] + "\n")
+                            log.flush()
+                code = await proc.wait()
+                await stderr_task
+                if self.stopping:
+                    return Outcome(
+                        False,
+                        "interrupted by board Stop",
+                        stream.session_id,
+                        stream.answer,
+                    )
+                return stream.result(code, error_bytes.decode("utf-8", "replace"))
+            except (OSError, ValueError) as exc:
                 return Outcome(
-                    False, "interrupted by board Stop", stream.session_id, stream.answer
+                    False,
+                    f"Native CLI transport error: {type(exc).__name__}: {exc}",
+                    stream.session_id or self.session_id,
+                    stream.answer,
                 )
-            return stream.result(code, error_bytes.decode("utf-8", "replace"))
+            finally:
+                if proc.stdin is not None:
+                    proc.stdin.close()
+                drain_task = None
+                try:
+                    if proc.returncode is None:
+                        drain_task = asyncio.create_task(drain_stdout())
+                        await self._terminate()
+                finally:
+                    tasks = [stderr_task] + (
+                        [drain_task] if drain_task is not None else []
+                    )
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)

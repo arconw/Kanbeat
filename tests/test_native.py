@@ -94,3 +94,31 @@ def test_missing_session_error_alternative_word_order():
     events = EventStream("codex")
     events.push({"type": "error", "message": "Could not find session s-123"})
     assert events.result(1, "Could not find session s-123").resume_missing
+
+
+def test_pi_failure_survives_later_successful_assistant_message():
+    events = EventStream("pi")
+    events.push(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "error",
+                "errorMessage": "Provider failed",
+            },
+        }
+    )
+    events.push(
+        {
+            "type": "turn_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "stop",
+                "content": [{"type": "text", "text": "Finished"}],
+            },
+        }
+    )
+    events.push({"type": "agent_settled"})
+    outcome = events.result(0, "")
+    assert not outcome.ok
+    assert outcome.reason == "Provider failed"

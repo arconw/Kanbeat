@@ -156,7 +156,7 @@ Do not modify the ticket.</pre><p>Changing just the order prefix, slug or locati
 <tr><td>Deliberate live-state deletion</td><td>Explicit non-goal. No special defenses.</td></tr></table></section>
 <section id="phases"><h2>12 / Implementation status and next slices</h2>
 <table class="table"><tr><th>Layer</th><th>Status</th><th>Next action</th></tr>
-<tr><td>Filesystem-native tickets</td><td>Initial implementation</td><td>Atomic multi-file reorder transaction, robust external edits</td></tr>
+<tr><td>Filesystem-native tickets</td><td>Initial implementation</td><td>Direct Markdown renames preserve visibility on interrupted reorder; persistent ID high-water mark prevents reuse. Multi-file reorder remains non-transactional.</td></tr>
 <tr><td>Single supervisor + IPC</td><td>Initial implementation</td><td>Crash reconciliation and event subscriptions</td></tr>
 <tr><td>Play / Stop</td><td>Initial implementation</td><td>Per-CLI graceful-exit verification</td></tr>
 <tr><td>Structured native CLI execution</td><td>Initial implementation</td><td>Version-specific event/resume compatibility verification</td></tr>
