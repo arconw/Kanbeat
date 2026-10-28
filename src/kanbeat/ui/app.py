@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -123,12 +124,7 @@ class TicketView(ModalScreen[None]):
         elif name.startswith("log-"):
             self.app.push_screen(LogView(self.ticket["id"], name[4:]))
         elif name.startswith("remove-"):
-            result = await self.app.push_screen_wait(Confirm("Remove reviewer slot " + name[7:] + "?"))
-            if result:
-                await self.app.execute({
-                    "op": "remove_reviewer", "ticket": self.ticket["id"], "slot": name[7:]
-                })
-                self.dismiss(None)
+            self.confirm_remove(name[7:])
         elif name == "add-reviewer":
             reviewers = (self.ticket.get("state") or {}).get("reviewers") or []
             occupied = {r.get("id") for r in reviewers}
@@ -136,6 +132,16 @@ class TicketView(ModalScreen[None]):
             while "reviewer-" + str(number) in occupied:
                 number += 1
             self.app.push_screen(Assignment(self.ticket, "reviewer-" + str(number)))
+
+
+    @work
+    async def confirm_remove(self, slot: str) -> None:
+        approved = await self.app.push_screen_wait(Confirm("Remove reviewer slot " + slot + "?"))
+        if approved:
+            if await self.app.execute({
+                "op": "remove_reviewer", "ticket": self.ticket["id"], "slot": slot
+            }):
+                self.dismiss(None)
 
 
 class Assignment(ModalScreen[None]):
@@ -467,12 +473,7 @@ class KanbeatApp(App[None]):
                 self.selection.add(ticket_id)
             await self.render_page()
         elif name == "bulk-archive":
-            if await self.push_screen_wait(Confirm("Archive selected tickets?")):
-                for ticket_id in sorted(self.selection):
-                    await self.execute({"op": "archive", "ticket": ticket_id})
-                self.selection.clear()
-                self.select_mode = False
-                await self.render_page()
+            self.confirm_bulk_archive()
         elif name == "new-ticket":
             self.push_screen(NewTicket())
         elif name.startswith("view-"):
@@ -486,8 +487,7 @@ class KanbeatApp(App[None]):
         elif name.startswith("restore-"):
             await self.execute({"op": "restore", "ticket": name[8:], "column": "backlog"})
         elif name.startswith("delete-"):
-            if await self.push_screen_wait(Confirm("Permanently delete archived ticket?")):
-                await self.execute({"op": "delete", "ticket": name[7:]})
+            self.confirm_delete(name[7:])
         elif name.startswith("log-"):
             _, tid, slot = name.split("-", 2)
             await self.push_screen(LogView(tid, slot))
@@ -498,3 +498,24 @@ class KanbeatApp(App[None]):
             for field in ("global_cp", "developer_prompt", "reviewer_prompt"):
                 config[field] = self.query_one("#cfg-" + field, TextArea).text
             await self.execute({"op": "save_config", "values": config})
+
+    @work
+    async def confirm_bulk_archive(self) -> None:
+        selected = sorted(self.selection)
+        if not selected:
+            return
+        approved = await self.push_screen_wait(Confirm("Archive selected tickets?"))
+        if approved:
+            for ticket_id in selected:
+                await self.execute({"op": "archive", "ticket": ticket_id})
+            self.selection.clear()
+            self.select_mode = False
+            await self.render_page()
+
+    @work
+    async def confirm_delete(self, ticket_id: str) -> None:
+        approved = await self.push_screen_wait(
+            Confirm("Permanently delete archived ticket " + ticket_id + "?")
+        )
+        if approved:
+            await self.execute({"op": "delete", "ticket": ticket_id})
