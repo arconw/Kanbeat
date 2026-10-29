@@ -70,6 +70,74 @@ async def test_groups_sessions_and_board_ownership(supervisor):
 
 
 @pytest.mark.asyncio
+async def test_harness_config_session_is_reused_and_restarted(supervisor):
+    first = (
+        await supervisor.dispatch({"op": "session_config_open", "harness": "claude"})
+    )["terminal"]
+    entry = supervisor.terminals.entries[first]
+    assert entry["owner"] == "custom"
+    assert entry["role"] == "config"
+    assert entry["harness"] == "claude"
+    assert entry["title"] == "Configure claude"
+    try:
+        again = await supervisor.dispatch(
+            {"op": "session_config_open", "harness": "claude"}
+        )
+        assert again["terminal"] == first
+        assert len(supervisor.terminals.sessions) == 1
+        await supervisor.terminals.stop()
+        assert entry["status"] == "stopped"
+        reopened = await supervisor.dispatch(
+            {"op": "session_config_open", "harness": "claude"}
+        )
+        assert reopened["terminal"] == first
+        assert supervisor.terminals.get(first).entry["status"] == "running"
+        default = await supervisor.dispatch(
+            {"op": "session_config_open", "harness": ""}
+        )
+        default_entry = supervisor.terminals.entries[default["terminal"]]
+        assert default_entry["harness"] == "codex"
+        entry["status"] = "stopping"
+        supervisor.save()
+        with pytest.raises(ValueError, match="still stopping"):
+            await supervisor.dispatch(
+                {"op": "session_config_open", "harness": "claude"}
+            )
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_harness_config_session_recovers_detached_active_record(supervisor):
+    terminal_id = (
+        await supervisor.dispatch({"op": "session_config_open", "harness": "pi"})
+    )["terminal"]
+    entry = supervisor.terminals.entries[terminal_id]
+    try:
+        await supervisor.terminals.stop()
+        supervisor.terminals.sessions.pop(terminal_id)
+        entry["status"] = "running"
+        supervisor.save()
+        reopened = await supervisor.dispatch(
+            {"op": "session_config_open", "harness": "pi"}
+        )
+        assert reopened["terminal"] == terminal_id
+        assert supervisor.terminals.get(terminal_id).entry["status"] == "running"
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_harness_config_session_rejects_unavailable_harness(
+    supervisor, monkeypatch
+):
+    monkeypatch.setattr("kanbeat.session_groups.available", lambda name: name != "pi")
+    with pytest.raises(ValueError, match="unavailable: pi"):
+        await supervisor.dispatch({"op": "session_config_open", "harness": "pi"})
+    assert not supervisor.terminals.entries
+
+
+@pytest.mark.asyncio
 async def test_restart_retains_identity_and_persisted_settings(supervisor):
     group = (await supervisor.dispatch({"op": "group_create", "name": "Tools"}))[
         "group"

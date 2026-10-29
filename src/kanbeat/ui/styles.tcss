@@ -50,6 +50,9 @@ StartupScreen { background: #0b1019; align: center middle; }
     margin: 1 0;
 }
 .field { color: #95a8bf; margin-top: 1; text-style: bold; }
+.field-row { height: 3; }
+.field-row Select { width: 1fr; }
+.field-row Button { min-width: 10; margin-left: 1; }
 .settings-editor { height: 7; margin-bottom: 1; }
 .hint { color: #8d9fb4; padding: 1; height: auto; }
 .runtime { color: #7be0d1; min-width: 13; width: auto; height: 3; content-align: center middle; background: #142839; margin: 0 1; text-style: bold; }

@@ -168,6 +168,8 @@ If a session no longer exists, the worker attempts a fresh run in the same slot.
 
 The Sessions tab lists task terminals (a Developer or Reviewer slot of a ticket, available while the board is stopped) and independent sessions that you organise into your own groups. Independent sessions keep running when you detach and when the board is stopped. The supervisor owns every PTY; TUI clients only display and forward input, so several clients can open the same terminal.
 
+Harness selectors in Settings, slot configuration and New session include an Open button. It starts or reattaches one persistent native TUI session per harness in the project. Kanbeat does not yet capture or copy model/effort settings from that session; use it to configure the native CLI, then start new sessions.
+
 The full lifecycle, stop rules, groups and persistence are documented in [terminals.md](terminals.md).
 
 ## Configuration
