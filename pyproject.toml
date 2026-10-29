@@ -8,7 +8,7 @@ version = "0.7.0"
 description = "Filesystem-native Kanban with a persistent local AI harness supervisor"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["textual>=8.2", "textual-tty>=0.4,<0.5", "bittty>=0.1.4,<0.2"]
+dependencies = ["textual>=8.2", "textual-tty>=0.4,<0.5", "bittty>=0.1.4,<0.2", "websockets>=15,<18"]
 
 [project.optional-dependencies]
 terminal = ["textual-tty>=0.4"]
