@@ -129,6 +129,7 @@ jobs:
             (cd .tmp/assets && printf -- '- %s\n' *.tar.gz)
           } > .tmp/notes.md
       - name: Create or refresh the draft release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
