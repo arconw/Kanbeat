@@ -53,7 +53,7 @@ Download and trust behavior depends on the download tool and local macOS policy.
 
 ## Update
 
-For each active project, run `kanbeat --project /path/to/project shutdown` and close its clients. If independent sessions are running, the command requires `shutdown --yes` to confirm stopping them. Board `stop` alone keeps the supervisor alive and is not sufficient for switching binaries. Unpack the new version next to the old one and repoint the symlink:
+For each active project, run `kanbeat --project /path/to/project shutdown` and close its clients. If independent sessions are running, the command requires `shutdown --yes` to confirm stopping them. Board `stop` alone keeps the supervisor alive and is not sufficient for switching binaries. The command waits up to 20 seconds for cleanup. If it times out, shutdown may still be in progress; wait for the supervisor to exit before replacing binaries. Unpack the new version next to the old one and repoint the symlink:
 
 ```sh
 ln -sfn ~/.local/opt/kanbeat-NEW ~/.local/opt/kanbeat

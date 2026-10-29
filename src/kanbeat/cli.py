@@ -54,7 +54,10 @@ async def shutdown(project: Path, confirmed: bool) -> None:
         if not socket_path(project).exists():
             return
         await asyncio.sleep(0.05)
-    raise RuntimeError("Supervisor shutdown did not complete within 20 seconds")
+    raise RuntimeError(
+        "Shutdown was requested but not confirmed within 20 seconds; cleanup may "
+        "still be running. Wait for the supervisor to exit before replacing binaries."
+    )
 
 
 def main() -> None:
