@@ -53,7 +53,7 @@ Screen { background: #0b1019; color: #d9e4f3; }
 .slot-row { height: 4; align-vertical: middle; background: #1d2b3d; margin-bottom: 1; }
 .slot-name { width: 1fr; content-align-vertical: middle; padding-left: 1; }
 .slot-row Button { min-width: 10; }
-Confirm, LogView, TicketView, Assignment, TicketActions, NewTicket {
+BackdropModal {
     align: center middle;
     background: #050a12 85%;
 }

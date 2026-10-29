@@ -6,7 +6,7 @@ from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
+from .modal import BackdropModal
 from textual.widgets import Button, Collapsible, Input, Select, Static, TextArea
 
 from .options import HARNESS
@@ -20,7 +20,7 @@ def group_options(snapshot):
     ]
 
 
-class GroupForm(ModalScreen[None]):
+class GroupForm(BackdropModal[None]):
     def __init__(self, group_id: str = ""):
         super().__init__()
         self.group_id = group_id
@@ -56,7 +56,7 @@ class GroupForm(ModalScreen[None]):
                 self.dismiss(None)
 
 
-class NewSession(ModalScreen[None]):
+class NewSession(BackdropModal[None]):
     def compose(self) -> ComposeResult:
         with VerticalScroll(classes="sm"):
             yield Static("NEW INDEPENDENT SESSION", classes="section-title")
@@ -115,7 +115,7 @@ class NewSession(ModalScreen[None]):
                 self.app.notify(str(exc), severity="error")
 
 
-class SessionActions(ModalScreen[None]):
+class SessionActions(BackdropModal[None]):
     def __init__(self, entry: dict[str, Any]):
         super().__init__()
         self.entry = entry

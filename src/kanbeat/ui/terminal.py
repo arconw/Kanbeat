@@ -7,7 +7,7 @@ from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
+from .modal import BackdropModal
 from textual.widgets import Button, Static
 from textual_tty.monitor import Monitor
 
@@ -41,7 +41,7 @@ class TerminalDisplay(Monitor):
             await self.screen.resize_terminal(event.size.height, event.size.width)
 
 
-class TerminalView(ModalScreen[None]):
+class TerminalView(BackdropModal[None]):
     BINDINGS = [Binding("ctrl+backslash", "detach", "Detach", priority=True)]
 
     def __init__(self, terminal_id: str):
