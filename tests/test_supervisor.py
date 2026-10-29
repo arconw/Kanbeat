@@ -18,9 +18,7 @@ async def test_failed_native_stop_awaits_other_workers_and_preserves_blocked_job
     supervisor = Supervisor(tmp_path)
     ticket = supervisor.board.create("Blocked native stop")
     key = supervisor.slot_key(ticket.id, "developer")
-    supervisor.ticket_state(ticket.id)["runtime"] = {
-        "developer": {"status": "running"}
-    }
+    supervisor.ticket_state(ticket.id)["runtime"] = {"developer": {"status": "running"}}
 
     class CannotStop:
         async def stop(self):

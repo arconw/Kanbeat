@@ -354,7 +354,9 @@ class Terminals:
         )
         errors = [result for result in results if isinstance(result, BaseException)]
         if errors:
-            raise RuntimeError("One or more task PTYs could not be stopped") from errors[0]
+            raise RuntimeError(
+                "One or more task PTYs could not be stopped"
+            ) from errors[0]
 
     async def reconcile(self, tickets) -> None:
         columns = {ticket.id: ticket.column for ticket in tickets}
@@ -370,7 +372,9 @@ class Terminals:
         )
         errors = [result for result in results if isinstance(result, BaseException)]
         if errors:
-            raise RuntimeError("One or more moved task PTYs could not stop") from errors[0]
+            raise RuntimeError(
+                "One or more moved task PTYs could not stop"
+            ) from errors[0]
 
     def running(self, owner: str | None = None) -> bool:
         return any(
