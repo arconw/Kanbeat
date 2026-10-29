@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 from rich.text import Text
+from rich.markup import escape
 
-from textual import work
+from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from .modal import BackdropModal
@@ -11,6 +12,7 @@ from textual.widgets import Button, Collapsible, Input, Select, Static, TextArea
 
 from .options import HARNESS
 from .terminal import TerminalView
+from .session_rows import SessionRow, SessionSection, TaskSessions
 
 
 def group_options(snapshot):
@@ -204,58 +206,122 @@ class SessionsView(VerticalScroll):
         super().__init__(id="sessions-page")
         self.snapshot = snapshot
 
+    def entries(self, group_id):
+        return [
+            entry
+            for entry in self.snapshot.get("terminals", {}).values()
+            if entry.get("owner") == "custom" and entry.get("group", "") == group_id
+        ]
+
+    @staticmethod
+    def groups(snapshot):
+        return {
+            "": {"name": "Ungrouped"},
+            **snapshot.get("custom", {}).get("groups", {}),
+        }
+
+    def group_section(self, group_id, group):
+        key = "group-" + (group_id or "ungrouped")
+        entries = self.entries(group_id)
+        section = SessionSection(
+            key,
+            f"{group['name']} · {len(entries)}",
+            self.app.preferences.is_collapsed(key),
+        )
+        if group_id:
+            controls = Horizontal(classes="slot-row")
+            controls.compose_add_child(
+                Static(group["name"], classes="slot-name", markup=False)
+            )
+            controls.compose_add_child(Button("Rename", id="rename-group-" + group_id))
+            controls.compose_add_child(Button("Remove", id="remove-group-" + group_id))
+            section.compose_add_child(controls)
+        for entry in entries:
+            section.compose_add_child(SessionRow(entry))
+        return section
+
     def compose(self) -> ComposeResult:
         with Horizontal(classes="toolbar"):
             yield Static("SESSIONS / NATIVE TERMINALS", classes="page-heading")
             yield Button("New group", id="new-group")
             yield Button("New session", id="new-session", variant="primary")
-        with Collapsible(title="Tasks", collapsed=True):
+        with SessionSection(
+            "tasks", "Tasks", self.app.preferences.is_collapsed("tasks", True)
+        ):
             for ticket in self.snapshot.get("tickets", []):
-                state = ticket.get("state") or {}
-                yield Static(
-                    ticket["title"] + " · " + ticket["id"], classes="session-heading"
-                )
-                for slot in ["developer"] + [
-                    row["id"] for row in state.get("reviewers", [])
-                ]:
-                    with Horizontal(classes="slot-row"):
-                        yield Static(slot, classes="slot-name")
-                        yield Button(
-                            "Terminal",
-                            id=f"term-{ticket['id']}-{slot}",
-                            disabled=self.snapshot.get("execution") == "running",
-                        )
-                        yield Button("Logs", id=f"log-{ticket['id']}-{slot}")
-        groups = {
-            "": {"name": "Ungrouped"},
-            **self.snapshot.get("custom", {}).get("groups", {}),
-        }
-        terminals = self.snapshot.get("terminals", {})
-        for group_id, group in groups.items():
-            with Horizontal(classes="slot-row"):
-                yield Static(group["name"], classes="slot-name", markup=False)
-                if group_id:
-                    yield Button("Rename", id="rename-group-" + group_id)
-                    yield Button("Remove", id="remove-group-" + group_id)
-            for terminal_id, entry in terminals.items():
-                if entry.get("owner") != "custom" or entry.get("group", "") != group_id:
-                    continue
-                with Horizontal(classes="slot-row"):
-                    yield Static(
-                        f"{entry['title']} / {entry['harness']} / {entry['status']}",
-                        classes="slot-name",
-                        markup=False,
-                    )
-                    yield Button(
-                        "Open",
-                        id="open-session-" + terminal_id,
-                        disabled=not entry.get("attached"),
-                    )
-                    yield Button("Actions", id="session-actions-" + terminal_id)
+                yield TaskSessions(ticket, self.snapshot.get("execution") == "running")
+        for group_id, group in self.groups(self.snapshot).items():
+            yield self.group_section(group_id, group)
         yield Static(
             "Detach keeps sessions alive. Board Stop affects task terminals only. Independent session Stop always asks for confirmation.",
             classes="hint",
         )
+
+    @on(Collapsible.Toggled)
+    def remember_collapse(self, event: Collapsible.Toggled) -> None:
+        section = event.collapsible
+        if isinstance(section, SessionSection):
+            event.stop()
+            try:
+                self.app.preferences.remember(section.name, section.collapsed)
+            except OSError as exc:
+                self.app.notify(
+                    "Could not save session layout: " + str(exc), severity="error"
+                )
+
+    async def update_snapshot(self, snapshot):
+        self.snapshot = snapshot
+        tasks = self.query_one("#section-tasks > Contents")
+        wanted_tasks = {ticket["id"]: ticket for ticket in snapshot.get("tickets", [])}
+        current_tasks = {row.ticket["id"]: row for row in tasks.query(TaskSessions)}
+        for ticket_id, row in current_tasks.items():
+            if ticket_id not in wanted_tasks:
+                await row.remove()
+        for ticket_id, ticket in wanted_tasks.items():
+            if ticket_id in current_tasks:
+                await current_tasks[ticket_id].update_ticket(
+                    ticket, snapshot.get("execution") == "running"
+                )
+            else:
+                await tasks.mount(
+                    TaskSessions(ticket, snapshot.get("execution") == "running")
+                )
+        groups = self.groups(snapshot)
+        wanted_sections = {"section-group-" + (key or "ungrouped") for key in groups}
+        for section in list(self.query(SessionSection)):
+            if section.id != "section-tasks" and section.id not in wanted_sections:
+                await section.remove()
+        wanted_entries = snapshot.get("terminals", {})
+        for row in list(self.query(SessionRow)):
+            entry = wanted_entries.get(row.entry["id"])
+            if entry is None or entry.get("group", "") != row.entry.get("group", ""):
+                await row.remove()
+        for group_id, group in groups.items():
+            section_id = "section-group-" + (group_id or "ungrouped")
+            sections = list(self.query("#" + section_id))
+            if not sections:
+                await self.mount(
+                    self.group_section(group_id, group), before=self.query_one(".hint")
+                )
+                continue
+            section = sections[0]
+            entries = self.entries(group_id)
+            title = escape(f"{group['name']} · {len(entries)}")
+            if section.title != title:
+                section.title = title
+                if group_id:
+                    section.query_one(".slot-name", Static).update(group["name"])
+            content = section.query_one("Contents")
+            wanted = {entry["id"]: entry for entry in entries}
+            rows = {row.entry["id"]: row for row in content.query(SessionRow)}
+            for terminal_id, row in rows.items():
+                if terminal_id not in wanted:
+                    await row.remove()
+            for terminal_id, entry in wanted.items():
+                if terminal_id in rows:
+                    rows[terminal_id].update_entry(entry)
+                else:
+                    await content.mount(SessionRow(entry))
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         name = event.button.id or ""

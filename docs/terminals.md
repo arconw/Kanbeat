@@ -37,6 +37,8 @@ Custom groups and session-management controls are implemented in
 
 ## Independent sessions and groups
 
+Sessions shows each named group and Ungrouped as a collapsible section, matching Tasks, with its session count in the heading. Collapse choices, including Tasks, survive status refreshes, tab navigation and restarting the client. Choices are stored locally per project in `.kanbeat/.state/ui.json`; currently open clients keep their own view, while a newly opened client loads the last saved choices.
+
 Sessions provides New group and New session. Choose a native harness, a group,
 an optional initial prompt and, if available, an explicit native session ID.
 Independent sessions can start while the board is running. Board Play/Stop never
