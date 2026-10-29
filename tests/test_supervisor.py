@@ -95,6 +95,41 @@ async def test_supervisor_exit_stops_independent_pty_despite_board_stop_error(
     assert calls == ["board", "independent"]
 
 
+@pytest.mark.asyncio
+async def test_reconcile_blocks_only_unresolved_pty_not_healthy_terminal(
+    tmp_path, monkeypatch
+):
+    supervisor = Supervisor(tmp_path)
+    supervisor.runtime.data["execution"] = "running"
+    supervisor.terminals.entries["pty"] = {
+        "id": "pty",
+        "owner": "board",
+        "status": "running",
+    }
+    calls = []
+
+    async def skip_terminal_reconcile(_tickets):
+        return None
+
+    async def skip_stale_jobs(_tickets):
+        return None
+
+    def observed_available(name):
+        calls.append(name)
+        return True
+
+    monkeypatch.setattr(supervisor.terminals, "reconcile", skip_terminal_reconcile)
+    monkeypatch.setattr(supervisor, "stop_stale_jobs", skip_stale_jobs)
+    monkeypatch.setattr("kanbeat.supervisor.available", observed_available)
+    await supervisor.reconcile()
+    assert calls == [supervisor.runtime.config["default_harness"]]
+
+    supervisor.terminals.entries["pty"]["status"] = "recovery_blocked"
+    calls.clear()
+    await supervisor.reconcile()
+    assert not calls
+
+
 def test_missing_state_is_stopped(tmp_path: Path):
     board = Board(tmp_path)
     board.ensure()

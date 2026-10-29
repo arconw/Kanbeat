@@ -652,8 +652,13 @@ class Supervisor:
             self.runtime.clean_deleted_tickets({ticket.id for ticket in tickets})
             if self.runtime.data["execution"] != "running":
                 return
-            # Never schedule another writer while a task PTY is unresolved.
-            if self.terminals.running("board"):
+            # Block new writers only for an unresolved task PTY, not a
+            # healthy terminal already managed by the supervisor.
+            if any(
+                entry.get("owner") == "board"
+                and entry.get("status") == "recovery_blocked"
+                for entry in self.terminals.entries.values()
+            ):
                 return
             if any(
                 entry.get("status") == "recovery_blocked"
