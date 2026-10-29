@@ -83,7 +83,8 @@ class TaskSessions(Vertical):
             (
                 entry
                 for entry in reversed(matches)
-                if entry.get("status") in ("starting", "running", "recovery_blocked")
+                if entry.get("status")
+                in ("starting", "running", "stopping", "recovery_blocked")
             ),
             None,
         )

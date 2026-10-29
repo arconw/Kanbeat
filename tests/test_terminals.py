@@ -133,6 +133,106 @@ async def test_stopping_status_is_visible_and_prevents_restart(supervisor, monke
 
 
 @pytest.mark.asyncio
+async def test_stop_failure_restores_running_status(supervisor, monkeypatch):
+    from kanbeat import terminals
+
+    terminal_id = await supervisor.terminals.create("codex", owner="custom")
+    session = supervisor.terminals.get(terminal_id)
+    real_terminate = terminals.terminate_process
+
+    async def failed_termination(proc):
+        raise OSError("termination failed")
+
+    monkeypatch.setattr(terminals, "terminate_process", failed_termination)
+    try:
+        with pytest.raises(OSError, match="termination failed"):
+            await session.stop()
+        assert session.entry["status"] == "running"
+        assert supervisor.terminals.running("custom")
+    finally:
+        monkeypatch.setattr(terminals, "terminate_process", real_terminate)
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stop_restores_running_status(supervisor, monkeypatch):
+    from kanbeat import terminals
+
+    terminal_id = await supervisor.terminals.create("codex", owner="custom")
+    session = supervisor.terminals.get(terminal_id)
+    real_terminate = terminals.terminate_process
+    entered = asyncio.Event()
+
+    async def hanging_termination(proc):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(terminals, "terminate_process", hanging_termination)
+    job = asyncio.create_task(session.stop())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert session.entry["status"] == "stopping"
+        job.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await job
+        assert session.entry["status"] == "running"
+        assert supervisor.terminals.running("custom")
+    finally:
+        job.cancel()
+        await asyncio.gather(job, return_exceptions=True)
+        monkeypatch.setattr(terminals, "terminate_process", real_terminate)
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_open_rejects_task_terminal_that_is_still_stopping(
+    supervisor, monkeypatch
+):
+    from kanbeat import terminals
+    from kanbeat.ui.session_rows import TaskSessions
+
+    ticket = supervisor.board.create("Task")
+    terminal_id = (
+        await supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+    )["terminal"]
+    session = supervisor.terminals.get(terminal_id)
+    real_terminate = terminals.terminate_process
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_termination(proc):
+        entered.set()
+        await release.wait()
+        await real_terminate(proc)
+
+    monkeypatch.setattr(terminals, "terminate_process", delayed_termination)
+    job = asyncio.create_task(session.stop())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        snapshot = supervisor.snapshot()
+        ticket_view = next(row for row in snapshot["tickets"] if row["id"] == ticket.id)
+        assert "PTY stopping" in TaskSessions.slot_status(
+            ticket_view, "developer", snapshot["terminals"]
+        )
+        with pytest.raises(ValueError, match="still stopping"):
+            await supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+        release.set()
+        await asyncio.wait_for(job, timeout=8)
+        reopened = await supervisor.dispatch(
+            {"op": "terminal_open", "ticket": ticket.id}
+        )
+        assert reopened["terminal"] != terminal_id
+        assert (
+            supervisor.terminals.get(reopened["terminal"]).entry["status"] == "running"
+        )
+    finally:
+        release.set()
+        await asyncio.gather(job, return_exceptions=True)
+        monkeypatch.setattr(terminals, "terminate_process", real_terminate)
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
 async def test_board_stop_does_not_stop_independent_terminal(supervisor):
     board_id = await supervisor.terminals.create("codex", owner="board")
     custom_id = await supervisor.terminals.create("claude", owner="custom")

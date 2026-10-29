@@ -207,7 +207,14 @@ class TerminalSession:
             self.entry["status"] = "stopping"
             self.state.save()
             self.touch()
-            await terminate_process(self.process)
+            try:
+                await terminate_process(self.process)
+            except BaseException:
+                if self.process.returncode is None:
+                    self.entry["status"] = "running"
+                    self.state.save()
+                    self.touch()
+                raise
         if self.waiter is not None:
             await self.waiter
 
