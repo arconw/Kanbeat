@@ -101,9 +101,8 @@ class EventStream:
                 self.activity = "idle"
             if kind in ("turn.failed", "error"):
                 self.failed = True
+                self.activity = "error"
                 self.error = str(event.get("message") or event.get("error") or kind)
-                if kind == "turn.failed":
-                    self.activity = "error"
         elif self.harness == "claude":
             sid = event.get("session_id")
             if isinstance(sid, str) and sid:

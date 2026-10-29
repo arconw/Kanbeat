@@ -85,6 +85,11 @@ def test_native_activity_uses_explicit_events_only():
     codex.push({"type": "turn.completed"})
     assert codex.activity == "idle"
 
+    codex_error = EventStream("codex")
+    codex_error.push({"type": "turn.started"})
+    codex_error.push({"type": "error", "message": "stream failed"})
+    assert codex_error.activity == "error"
+
     claude = EventStream("claude")
     claude.push({"type": "system", "session_id": "abc"})
     assert claude.activity is None
