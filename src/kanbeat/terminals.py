@@ -10,7 +10,7 @@ import termios
 from typing import Any
 import uuid
 
-from bittty import Board
+from .terminal_history import HistoryBoard
 
 from .launcher import internal_environment, pty_child_command
 from .native import terminate_process, process_identity
@@ -60,7 +60,9 @@ class TerminalSession:
         self.state = state
         self.entry = entry
         self.id = entry["id"]
-        self.board = Board(width=entry.get("cols", 80), height=entry.get("rows", 24))
+        self.board = HistoryBoard(
+            width=entry.get("cols", 80), height=entry.get("rows", 24)
+        )
         self.board.host.attach(self)
         self.process = None
         self.fd: int | None = None
@@ -69,6 +71,21 @@ class TerminalSession:
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self.log = None
         self.stop_requested = False
+        self.revision = 0
+        self.changed = asyncio.Event()
+
+    def touch(self) -> None:
+        self.revision += 1
+        self.changed.set()
+        self.changed = asyncio.Event()
+
+    async def wait_for_change(self, revision: int, timeout: float) -> None:
+        if self.revision != revision:
+            return
+        try:
+            await asyncio.wait_for(self.changed.wait(), timeout)
+        except asyncio.TimeoutError:
+            pass
 
     async def start(self, argv: list[str]) -> None:
         master, slave = pty.openpty()
@@ -106,13 +123,21 @@ class TerminalSession:
             os.close(slave)
 
     def write(self, data: str) -> None:
+        self.write_bytes(data.encode("utf-8"))
+
+    def write_bytes(self, payload: bytes) -> None:
+        if self.fd is not None and not self.queue_bytes(payload):
+            self.entry["dropped_replies"] = self.entry.get("dropped_replies", 0) + 1
+            self.touch()
+
+    def queue_bytes(self, payload: bytes) -> bool:
         if self.fd is None:
-            return
-        payload = data.encode("utf-8")
+            raise ValueError("Terminal input is closed")
         if len(self.pending) + len(payload) > 65536:
-            raise ValueError("Terminal input queue is full")
+            return False
         self.pending.extend(payload)
         self.flush()
+        return True
 
     def flush(self) -> None:
         if self.fd is None:
@@ -149,12 +174,14 @@ class TerminalSession:
             pass
         except OSError:
             self.close()
+        self.touch()
 
     def resize(self, rows: int, cols: int) -> None:
         if not 1 <= rows <= 100 or not 1 <= cols <= 240:
             raise ValueError("Terminal size must be 1..100 rows and 1..240 columns")
         self.entry.update(rows=rows, cols=cols)
         self.board.resize(cols, rows)
+        self.touch()
         if self.fd is not None:
             fcntl.ioctl(
                 self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0)
@@ -172,6 +199,7 @@ class TerminalSession:
             self.entry.pop("pid", None)
             self.entry.pop("process_identity", None)
             self.state.save()
+            self.touch()
 
     async def stop(self) -> None:
         self.stop_requested = True
@@ -191,12 +219,27 @@ class TerminalSession:
             self.log.close()
             self.log = None
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, history_position: int | None = None) -> dict[str, Any]:
+        if history_position is not None and type(history_position) is not int:
+            raise ValueError("History position must be an integer")
+        screen = self.board.capture_pane()
+        position = self.board.history_total
+        historical = history_position is not None and history_position < position
+        if historical:
+            position, screen = self.board.history_window(history_position)
         return {
             **self.entry,
-            "screen": self.board.capture_pane(),
+            "revision": self.revision,
+            "screen": screen,
+            "history_start": self.board.history_start,
+            "history_total": self.board.history_total,
+            "scroll_position": position,
+            "historical": historical,
+            "mouse_tracking": self.board.modes.mouse_protocol.name != "OFF",
+            "alternate_screen": self.board.blitter.in_alt_screen,
+            "alternate_scroll": self.board.modes.alternate_scroll_mode,
             "cursor": [self.board.cursor.x, self.board.cursor.y],
-            "cursor_visible": self.board.modes.cursor_visible,
+            "cursor_visible": self.board.modes.cursor_visible and not historical,
             "text": self.board.capture_text(),
         }
 
@@ -247,6 +290,7 @@ class Terminals:
         )
         entry["status"] = "starting"
         entry.pop("exit_code", None)
+        entry.pop("dropped_replies", None)
         self.state.save()
         session = TerminalSession(self.state, entry)
         self.sessions[entry["id"]] = session

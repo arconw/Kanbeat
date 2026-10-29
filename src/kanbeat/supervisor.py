@@ -760,12 +760,14 @@ class Supervisor:
             "snapshot",
             "log",
             "terminal_snapshot",
+            "terminal_wait",
         ):
             raise RuntimeError("Supervisor is shutting down")
         if request.get("op") in (
             "snapshot",
             "log",
             "terminal_snapshot",
+            "terminal_wait",
             "terminal_input",
             "terminal_resize",
         ):

@@ -28,8 +28,7 @@ TUIs and cannot always be discovered automatically.
 
 The built-in terminal supports ANSI colors, cursor movement, alternate screens,
 Unicode, named/function/control keys and bracketed paste through textual-tty/bittty.
-Viewport dimensions are bounded to 240 columns and 100 rows. Native mouse reporting
-and forwarding clipboard OSC requests are not enabled by Kanbeat's display client.
+Viewport dimensions are bounded to 240 columns and 100 rows. The mouse wheel is forwarded using the application's active mouse protocol (including SGR) or alternate-scroll mode. Full-screen applications without mouse reporting receive Page Up/Down. Shift+wheel always opens local primary-screen output history, and the Live button returns to current output. Plain output history retains up to 2,000 scrolled lines while the supervisor lives, survives detaching clients, and stays anchored while new output arrives. Alternate-screen applications own their dialogue history; their redraws are not copied into primary scrollback. History is a read-only text view; the live native screen retains its ANSI styles. Clipboard OSC requests are not forwarded.
 
 Implemented for [Issue #2](https://github.com/arconw/Kanbeat/issues/2).
 Custom groups and session-management controls are implemented in
@@ -55,3 +54,24 @@ a known native ID resumes vendor history, otherwise a fresh native context start
 No active process is silently restarted. Unresolved crash-orphan identities block
 restart/removal until manually resolved. Deleting `.state` intentionally discards
 this optional organization and local session metadata, not ticket status.
+
+## Input and rendering latency
+
+The terminal waits for screen revisions instead of polling at 150 ms. Ordered input batches use a bounded queue with backpressure; a full native input buffer delays sending rather than dropping keys. Malformed batches are rejected before any bytes reach the PTY. Detach drains queued input for up to two seconds and reports an unconfirmed remainder if the process is unresponsive. Connection failures are reported rather than retried with potentially duplicated input.
+
+Only changed screen rows are fed to the display. The header and detach hint are at the top; the terminal fills the remaining viewport to the bottom.
+
+A local deterministic benchmark using a real PTY, Unix RPC and the Textual terminal display, with a fixture that delays each output flush by 30 ms, measured:
+
+| Measurement | v0.6.1 baseline | Updated transport |
+| --- | --- | --- |
+| Single-key median / p95 | 119.0 / 120.5 ms | 35.3 / 36.6 ms |
+| 40-key burst, all visible | 419.5 ms | 37.4 ms |
+
+These are 60-sample local observations with a fixture CLI, not a guarantee for vendor CLIs or terminal emulators. Native CLI rendering, machine load and the display tick still contribute latency. Reproduce the updated measurement with:
+
+```sh
+python tools/benchmark_terminal.py --work .tmp/terminal-benchmark --delay 0.03
+```
+
+The work directory must be fresh. The benchmark calls no vendor CLI or model.
