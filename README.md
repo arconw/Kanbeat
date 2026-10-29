@@ -1,230 +1,127 @@
 # Kanbeat
 
-A filesystem-native Kanban with one persistent local supervisor and multiple rich terminal clients. Native coding CLIs do the work. The filesystem determines the ticket status.
+A filesystem-native Kanban board for AI coding agents. A ticket is a Markdown file, its status is the directory it lives in, and one persistent local supervisor per project runs your own installed coding CLIs against the queue. Any number of terminal clients can attach to that supervisor.
 
-> **Early rewrite, v0.5.0. Not yet a production release.** The filesystem-native board, supervisor, and headless CLI event transport have an initial implementation. Transition hooks run through isolated native CLI sessions. Interactive task terminals are available while the board is stopped. Custom groups and independent native sessions are available in Sessions. See [interactive terminals](docs/terminals.md).
+> **Early release (v0.5.1), not production-ready.** The board, supervisor, structured worker flow, transition hooks, persistent terminals and session groups are implemented and covered by automated tests, but those tests use deterministic fake CLIs. End-to-end worker/event/resume compatibility with live vendor CLIs is not yet validated, and agents edit your working tree. Read [Limitations](#limitations) first.
 
-[Standalone design specification](docs/design/design.html)
+![Kanbeat board: creating tickets and moving them between columns](docs/media/board.gif)
 
-## Principles
+*Recorded from the real TUI against a real supervisor. The tickets are moved by hand; no agent ran. See [how the demos are made](docs/media.md).*
 
-- One supervisor per project, any number of TUI clients. Closing TUI does **not** stop execution.
-- `kanbeat` starts or joins the project's supervisor.
-- `Play` resumes dispatch. `Stop` interrupts board-owned CLI processes and terminates them, saving native session IDs when the CLI reports them. The supervisor stays alive.
-- Stop does not change ticket columns. Play attempts native resume for unfinished slots; the CLI may need to recheck which changes were already made.
-- The supervisor starts **stopped** if the state directory is absent, or when recovering from supervisor restart.
-- The first numeric filename segment is order, the second is a unique stable ticket ID.
-- Tickets are plain Markdown with **no frontmatter**, transcript or runtime metadata.
-- Status = directory. Order = first filename number. ID = second number. `archive/` is out of scope.
-- Sequential tickets; 0..N parallel reviewers on **one active ticket only**. Separate reviewer slots have isolated contexts.
-- Default harness unavailable: global Stop with notification. Missing assigned harness: use default, fresh session. Missing native session: fresh session in same role.
-- No special handling for intentional deletion of active runtime files.
-- Native CLI flags never override user permissions, sandbox or authentication settings.
-- No worktree management, automatic git reset, git cleanup or diff ownership.
+## What it does
+
+- **Files are the board.** Tickets live in `.kanbeat/<column>/<order>-<id>-<slug>.md`. Moving a file moves the ticket, and you can edit tickets in any editor. No frontmatter, no hidden metadata.
+- **One supervisor per project.** `kanbeat` starts or joins it. Closing a TUI never stops work, and several terminals can watch the same board.
+- **Play and Stop.** Play lets the supervisor dispatch the Todo queue to your coding CLI. Stop interrupts task workers and leaves every ticket where it is; independent sessions keep running.
+- **Developer, then Review/QA.** A developer turn moves a ticket to Review/QA, where zero or more reviewer slots with isolated contexts approve it or send it back with feedback.
+- **Bring your own CLI.** Codex CLI, Claude Code, OpenCode and Pi run through their native structured modes with your own login, permissions and sandbox. Kanbeat embeds no agent and never overrides those settings.
+- **Native terminals.** The supervisor owns interactive terminals for task slots (while the board is stopped) and for independent sessions you organise into groups. Detach and reattach from any client.
+- **Transition hooks.** Optionally run a prompt in a fresh native session after each column change Kanbeat makes.
+- **Scriptable.** `kanbeat new`, `list`, `move`, `play` and `stop` work from the shell.
+
+## Demos
+
+Both recordings use no coding CLI and no model: the Todo column stays empty, and terminals run a plain stand-in script, as the captions say.
+
+![Play and Stop with two clients on one supervisor](docs/media/play-stop.gif)
+
+*Play and Stop, and a second client joining the same supervisor. Closing the first client does not stop it.*
+
+![Sessions: groups and a supervisor-owned terminal](docs/media/sessions.gif)
+
+*Sessions: groups, a new independent session, a terminal that survives detaching, and the same session opened from a second client. The process in the terminal is a stand-in shell script, not a vendor CLI.*
+
+## Supported platforms
+
+| Platform | Status |
+| --- | --- |
+| Linux | Tested in CI on Python 3.11, 3.12, 3.13 and 3.14. |
+| macOS | Tested in CI on Python 3.14. |
+| WSL | A Linux runtime, but not yet tested on a Windows host. |
+| Native Windows | Not supported: the supervisor uses POSIX APIs. A port is tracked in [#11](https://github.com/arconw/Kanbeat/issues/11). |
+
+Kanbeat is not published on PyPI or Homebrew and has no prebuilt installers yet. Release and installer work is tracked in [#10](https://github.com/arconw/Kanbeat/issues/10).
+
+## Prerequisites
+
+- Python 3.11 or newer, and Git (the install command below fetches the release tag from GitHub).
+- [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/) for an isolated install; plain `pip` in a virtual environment also works.
+- At least one native CLI installed on your `PATH` and already authenticated: `codex`, `claude`, `opencode` or `pi`. Kanbeat does not log in for you.
+- A terminal about 130 columns wide to see all six board columns without scrolling.
 
 ## Installation
 
-Requires Python 3.11+, a Unix-like system, and at least one installed and authenticated native CLI: Codex CLI (`codex`), Claude Code (`claude`), OpenCode (`opencode`), Pi (`pi`).
+Install the `v0.5.1` release tag from GitHub into an isolated environment:
 
 ```sh
-python -m pip install -e .
+uv tool install git+https://github.com/arconw/Kanbeat.git@v0.5.1
+```
+
+If the command is not on your PATH after installation, run `uv tool update-shell` and reopen your terminal.
+
+Or, with pipx:
+
+```sh
+pipx install git+https://github.com/arconw/Kanbeat.git@v0.5.1
+```
+
+Use `pipx ensurepath` if needed. Without uv or pipx, use a virtual environment:
+
+```sh
+python -m venv ~/.venvs/kanbeat
+~/.venvs/kanbeat/bin/python -m pip install git+https://github.com/arconw/Kanbeat.git@v0.5.1
+~/.venvs/kanbeat/bin/kanbeat --help
+```
+
+Run `~/.venvs/kanbeat/bin/kanbeat`, or add that `bin` directory to your `PATH`. To work on Kanbeat itself, see [Development](docs/guide.md#development).
+
+## First use
+
+Run Kanbeat from the root of the project you want agents to work on. Use a clean Git branch or worktree: Kanbeat does not manage worktrees or undo changes.
+
+```sh
 cd /path/to/my-project
 kanbeat
 ```
 
-Open a second terminal in the **same** project and launch `kanbeat` again: it connects to the same supervisor. A different project directory starts an independent supervisor.
+The first run creates `.kanbeat/` and starts a background supervisor for the project. Then:
+
+1. Press **+ Ticket**, give it a title and put it in **Backlog** or **Todo**. Tickets are plain Markdown files; edit them in your editor to add detail.
+2. Open **Settings** and check that the default harness is a CLI you have installed and logged in to.
+3. Press **Play**. The supervisor picks the first Todo ticket and hands its path to the native CLI. **This starts a real agent that can edit your working tree and uses your CLI account.**
+4. Press **Stop** at any time. Open `kanbeat` in another terminal in the same project to watch the same board.
+
+The board starts stopped, so creating and moving tickets never starts an agent by itself. The same actions work from the shell:
 
 ```sh
-kanbeat list
 kanbeat new "Implement auth" --column todo --description "Add token validation"
+kanbeat list
+kanbeat move 001 backlog
 kanbeat play
 kanbeat stop
-kanbeat move 001 backlog
 ```
 
-`kanbeat supervisor` runs a foreground supervisor for debugging. The normal CLI starts a detached supervisor automatically.
+Commit `.kanbeat/` with your project so the board travels with it, and add `.kanbeat/.state/` to your `.gitignore`: it holds local runtime data and logs.
 
-## On-disk layout
+## Limitations
 
-```text
-.kanbeat/
-├── INSTRUCTIONS.md            # only read when explicitly asked
-├── config.json                # project defaults, Git-trackable
-├── ids.json                   # persistent ticket ID high-water mark, Git-trackable
-├── backlog/
-│   └── 0-001-future-search.md
-├── todo/
-│   ├── 0-002-authentication.md
-│   └── 10-003-token-refresh.md
-├── progress/
-├── review/
-├── done/
-├── failed/
-├── archive/
-└── .state/                    # Git-ignored, optional, recreatable
-    ├── supervisor.json        # Play/Stop, slots, session IDs, review verdicts
-    ├── supervisor.sock        # local Unix IPC socket
-    ├── supervisor.lock
-    ├── supervisor.log
-    └── logs/                  # native CLI output, not task content
-```
+- Early release. Behaviour, file layout and configuration may still change, and the old `.tasks` layout is not migrated.
+- Only Linux and macOS are supported. WSL is untested and native Windows does not work.
+- Not yet validated against live vendor CLIs. Event formats and session resume differ between CLI versions; check your CLI version before running unattended.
+- Kanbeat does not manage Git: no worktrees, branches, resets or cleanups. Agents change your working tree directly.
+- One ticket is active at a time. Only reviewers run in parallel.
+- The TUI shows ticket Markdown read-only; edit the files externally.
+- Task terminals need a stopped board, and edits made in them are rechecked on Play rather than reported as completion.
+- Transition hooks are not exactly-once; make their actions safe to repeat.
+- Native terminals do not forward mouse reporting or clipboard requests.
 
-The file `0-002-authentication.md` contains only:
+## Documentation
 
-```md
-# Implement authentication
+- [Guide](docs/guide.md): ticket format, flow, live updates, native CLI lifecycle, configuration, hooks and development.
+- [Interactive terminals](docs/terminals.md): terminal and session lifecycle, groups and limits.
+- [Design specification](docs/design/design.html): product and architecture design.
+- [Demo recordings](docs/media.md): how the GIFs are captured and what they do and do not show.
 
-Add token validation to the API.
+## Community
 
-## Acceptance criteria
-
-- Validate access tokens.
-- Handle expiration.
-```
-
-Creating `.kanbeat` automatically creates `INSTRUCTIONS.md` for a separately instructed agent to author tickets. It is **not** injected into coding agents automatically.
-
-The first number is **numeric sort order**. The second, e.g. `002`, is the ticket ID and must be unique across all column and archive directories. The slug is readable; changing order and status never changes ID. No metadata is added to Markdown by Kanbeat.
-
-`ids.json` reserves monotonically increasing IDs before ticket creation. Keep it
-with the board in Git: deleting archived tickets or disposable `.state` must not
-reset ticket identity. Kanbeat records imported IDs before deleting archived
-tickets too. Failed creates can leave gaps, which are intentional. External ticket
-authors must still choose unused IDs; history deleted outside Kanbeat before the
-ID ledger exists cannot be reconstructed automatically.
-
-Reordering normally renames only the two exchanged tickets; equal-order ties may
-require normalizing the column's numeric prefixes. Every individual rename keeps
-the `.md` suffix, ID and body. An interruption may leave a partial order change,
-but tickets remain visible. Leftover `.kanbeat-rename-*` files from older versions
-are reported as errors for manual filename restoration; they are never silently
-ignored or rewritten.
-
-If `.state` is absent at startup, board status still comes from directories and execution starts **stopped**. Without assignments, configured defaults are used after the user presses Play. Deleting `.state` while the system is actively running is not a supported operation.
-
-## Flow
-
-```text
-Backlog --manual--> Todo --Play--> Progress --Developer turn done-->
-Review/QA --all Reviewer slots approve--> Done
-          \--any changes_requested--> Progress
-```
-
-Each normal developer turn is executed through the native CLI's structured non-interactive mode. A successful completed turn moves its ticket to Review/QA. Developer can write tests but should not execute them. Reviewers test, prefer headless where suitable, and return a **verdict** in their final response: `KANBEAT_VERDICT: approve` or `KANBEAT_VERDICT: changes_requested`. Reviewer outcomes are collected per slot. One rejection returns the task to Progress with short feedback; all approvals advance to Done. Zero reviewers automatically advance Review/QA to Done.
-
-A Reviewer receives the **path to the current canonical ticket Markdown file**, its own role/global/slot CP and workflow instructions. The Reviewer reads the ticket directly from disk, independently inspects the working tree, and must not edit, rename or move the ticket. It is never automatically given the Developer transcript, terminal history, CP, or other Reviewers' transcripts. A replacement **within the same reviewer slot** can receive that same slot's bounded prior output as untrusted context when harness is changed. Different reviewer slots never exchange histories.
-
-Only one ticket may be in Progress or Review/QA for the dispatcher to start work. If there are multiple, the supervisor suspends dispatch and reports an error. `failed/` is a manual-recovery column.
-
-## Live ticket updates and agent prompts
-
-**Pass the ticket path, not a copy of its Markdown contents.** On a fresh Developer or Reviewer turn, the supervisor resolves the current ticket path from its stable ID and sends a short instruction, for example:
-
-```text
-Read .kanbeat/progress/0-002-authentication.md and complete the task described
-there. This ticket is read-only for you: never edit, rename or move it.
-Kanbeat alone manages ticket lifecycle and runtime.
-```
-
-The same rule applies in Review/QA, using its current `.kanbeat/review/...` path. Agents may change project code, but they **must not modify ticket files or technical Kanbeat state**. Tickets remain user-editable in an external editor at any time; Kanbeat's TUI is read-only, and an open ticket viewer updates its body and location as changes are detected.
-
-For every active worker turn, the supervisor stores a **SHA-256 hash of the ticket's Markdown contents** alongside the worker's runtime data in `.kanbeat/.state/`. After the turn ends, **before accepting completion, a Developer stage transition, or a Reviewer verdict**, it reads the current ticket by stable ID and compares content hashes. When the body changed:
-
-- Do **not** interrupt a running turn, restart the harness, or discard its native session.
-- Resolve the **current file path** again from the ticket ID (filename, order, slug and status directory can have changed).
-- Send a follow-up in the **same native worker session**: `Ticket #002 has changed. Re-read <current-ticket-path>, reconcile the updated requirements with your existing work, and continue. Do not modify the ticket.`
-- Keep the ticket on the current stage until a subsequent successful turn has processed the latest content. Update the stored hash for that turn.
-- In Review/QA, previously recorded verdicts for an older ticket revision **cannot approve the updated task**. Each affected Reviewer slot must re-read it and deliver a verdict for the current revision before moving to Done. Preserve Reviewer-to-Reviewer and Developer-to-Reviewer transcript isolation.
-
-A filename-only rename or reorder that leaves the Markdown contents unchanged **does not** trigger a new agent turn. A stage change made by the supervisor changes the path, not the underlying requirements. Hashes detect **content changes**, not timestamps, filenames, or Git diffs.
-
-**Implemented in the supervisor:** per-turn content hashes, native same-session re-read on change, stale Reviewer verdict invalidation, and re-resolving the canonical ticket path by stable ID. This implementation has not yet been validated against live vendor CLI processes.
-
-## Native CLI lifecycle
-
-No custom agent implementation is embedded. Kanbeat uses documented native commands to run each turn and parse structured events. Codex exec JSON, Claude print stream-json, OpenCode run JSON and Pi print JSON are used. A CLI's native session identifier is stored when reported and used for resume. If an assigned harness is gone, the slot switches to the configured default and starts fresh. If the **default** itself is unavailable, the whole board stops and must be restarted manually after configuration.
-
-If a session no longer exists, the worker attempts a fresh run in the same slot. This is not equivalent to rolling back tools or Git modifications. Stop interrupts process groups, then terminates unresponsive workers. Custom non-board sessions must not be interrupted by board Stop. On an ordinary supervisor restart, the board starts stopped; previously launched board-owned processes are matched by PID and OS process-start identity before any orphan shutdown is attempted. If the process cannot be identified safely, Play remains blocked pending manual resolution. External moves of active tickets interrupt their old workers; failed parallel reviews interrupt remaining Reviewer processes.
-
-**Limitations:** JSON event shapes and session recovery vary by installed CLI version. The Sessions tab offers supervisor-owned interactive PTYs alongside structured worker logs; task terminals require a stopped board. See [terminal lifecycle and limits](docs/terminals.md). Runtime session IDs are only available for CLIs/events that disclose them. You should verify your chosen CLI version before relying on the workflow unattended.
-
-## Configuration
-
-Edit project settings via Settings in TUI, or `.kanbeat/config.json`. The `.state` directory is ignored by Git, but `.kanbeat` tickets, column directories, `INSTRUCTIONS.md` and `config.json` are intentionally **not** ignored. Treat CP and logs as sensitive local data.
-
-Short projects use `.kanbeat/.state/supervisor.sock`. Long project paths use a
-stable SHA-256-derived socket name in `~/.tmp/kanbeat-sockets/`, shared by all
-clients for that canonical project path. The socket directory is private (0700),
-the socket is 0600, and the ownership lock stays inside the project's `.state`.
-Distinct projects use distinct socket names; symlink aliases resolve to the same
-project. No TCP listener is used. The home runtime path itself must fit the OS
-Unix-socket limit. See [Issue #5](https://github.com/arconw/Kanbeat/issues/5).
-
-The project root is the current working directory by default. Use `kanbeat --project /path/to/project` to select another root.
-
-## Transition hooks
-
-Configure an optional native harness and prompt in Settings or `config.json`:
-
-```json
-{
-  "transition_hook": {
-    "harness": "claude",
-    "prompt": "Update the GitHub issue linked in the ticket after this transition."
-  }
-}
-```
-
-An empty prompt disables hooks; an empty harness selects the project default at
-queue time. Every column change made through Kanbeat (including manual moves,
-archive/restore and failure transitions) queues one hook. Creating, reordering,
-deleting or externally moving a file does not queue a hook. Pending hooks run
-serially on Play, before the next board turn. Each starts a fresh native session
-with the transition event ID and current canonical ticket path, without worker
-history, ticket body copies or worker CP. The configured hook prompt alone defines
-its automation; hooks retain native CLI permissions and authentication.
-
-Hook failures notify the user and preserve the ticket's new column. Missing hook
-harnesses fail that hook without default fallback or stopping the board. Stop
-interrupts running hooks too. The local ledger is in `.kanbeat/.state/supervisor.json`
-under `hooks`, and output is in `.kanbeat/.state/logs/hook-<event-id>.log`.
-
-Completed, failed and interrupted events are never replayed automatically. On
-restart the board stays stopped, pending events wait for Play, and interrupted
-hooks require manual inspection of their external effects. A running hook's
-outcome can be uncertain after a crash. The ledger and file rename are separate
-writes: a crash between them can leave a moved ticket without a queued hook.
-Deleting `.state` loses the ledger. This is not an exactly-once guarantee for
-external services; make hook operations idempotent and inspect before retrying.
-
-## Development
-
-```sh
-python -m pip install -e '.[dev]'
-pytest
-```
-
-CI runs regression tests and headless TUI checks on Python 3.11–3.14 on Linux,
-plus Python 3.14 on macOS. It also checks Ruff diagnostics and formatting,
-validates workflow syntax and shell snippets with actionlint, builds wheel/sdist,
-validates distribution metadata and smoke-tests clean installs with bundled TUI
-styles. Test and distribution artifacts are attached to Actions runs. Dependabot
-tracks Python and Actions dependency updates. CodeQL scans Python on PRs,
-main pushes and a weekly schedule. Tags matching `v*` run the same CI;
-there is no automatic PyPI publication.
-
-Local equivalent:
-
-```sh
-python -m ruff check src tests
-python -m ruff format --check src tests
-python -m pytest
-python -m build --outdir .tmp/dist
-python -m twine check .tmp/dist/*
-```
-
-Native harness event/resume compatibility still needs validation against live
-installed vendor CLIs; CI uses deterministic fake harnesses and real local
-subprocesses, without model calls.
-
-The old `.tasks` layout is not automatically migrated. Existing users must manually copy/reformat tickets to the new directory/filename convention. No destructive auto-conversion is performed.
+Follow the author's channel, [Arco9 Lab on YouTube](https://www.youtube.com/@arco9-lab), which also covers [simpleVoiceover](https://github.com/arconw/simpleVoiceover). Bug reports and ideas go to [GitHub Issues](https://github.com/arconw/Kanbeat/issues).
