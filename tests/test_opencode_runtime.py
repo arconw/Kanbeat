@@ -105,8 +105,28 @@ async def test_opencode_worker_uses_shared_session_and_attaches(runtime):
         assert again == attached
         with pytest.raises(ValueError, match="Stop the board"):
             await supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+        await supervisor.terminals.stop()
+        with pytest.raises(ValueError, match="Reattach the live session"):
+            await supervisor.terminals.restart(attached["terminal"])
     finally:
         await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_recover_keeps_host_record_when_stop_fails(runtime, monkeypatch):
+    supervisor, _host = runtime
+    record = RuntimeIdentity(
+        "opencode", 123456, "linux:1", "http://127.0.0.1:1"
+    ).to_dict()
+    supervisor.runtime.data["hosts"] = {"opencode": record}
+
+    async def failed_stop(identity):
+        return False
+
+    monkeypatch.setattr("kanbeat.supervisor.stop_recorded", failed_stop)
+    monkeypatch.setattr("kanbeat.supervisor.process_identity", lambda pid: "linux:1")
+    await supervisor.recover_orphans()
+    assert supervisor.runtime.data["hosts"]["opencode"] == record
 
 
 @pytest.mark.asyncio

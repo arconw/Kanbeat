@@ -613,9 +613,16 @@ class Supervisor:
             self.runtime.data["execution"] = "stopped"
         for kind, record in list(self.runtime.data.get("hosts", {}).items()):
             try:
-                await stop_recorded(RuntimeIdentity.from_dict(record))
+                runtime = RuntimeIdentity.from_dict(record)
+            except HostError:
+                self.runtime.data["hosts"].pop(kind, None)
+                continue
+            try:
+                stopped = await stop_recorded(runtime)
             except (HostError, OSError, RuntimeError):
-                pass
+                continue
+            if not stopped and process_identity(runtime.pid) == runtime.identity:
+                continue
             self.runtime.data["hosts"].pop(kind, None)
         recovery = list(self.runtime.data["tickets"].items())
         recovery.append(("transition-hooks", {"runtime": self.hooks.entries}))

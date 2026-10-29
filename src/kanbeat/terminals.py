@@ -339,6 +339,8 @@ class Terminals:
         env: dict[str, str] | None = None,
     ) -> None:
         entry = self.entries[terminal_id]
+        if entry.get("owner") == "attach" and argv is None:
+            raise ValueError("Reattach the live session from its ticket or slot")
         if entry.get("status") in (
             "starting",
             "running",
