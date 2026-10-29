@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'pyproject.toml'
+      - 'src/**'
+      - 'tools/build_release.py'
+      - 'tools/release_notices.py'
+      - 'tools/smoke_release.py'
+      - 'tools/frozen_entry.py'
+      - 'docs/releases.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    name: Archive (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            label: linux-x86_64
+          - runner: ubuntu-22.04-arm
+            label: linux-arm64
+          - runner: macos-15
+            label: macos-arm64
+          - runner: macos-15-intel
+            label: macos-x86_64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install '.[release]'
+      - name: Check tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="$(python -c 'import kanbeat; print(kanbeat.__version__)')"
+          test "$GITHUB_REF_NAME" = "v$version"
+      - run: mkdir -p .tmp
+      - run: python tools/build_release.py --output .tmp/out --work .tmp/work
+      - name: Smoke-test the extracted archive outside the source tree
+        run: |
+          archive="$(ls "$PWD"/.tmp/out/*.tar.gz)"
+          mkdir -p "$GITHUB_WORKSPACE/.tmp/smoke"
+          cd "$GITHUB_WORKSPACE/.tmp/smoke"
+          python -I "$GITHUB_WORKSPACE/tools/smoke_release.py" "$archive" --work "$GITHUB_WORKSPACE/.tmp/smoke/run"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: archive-${{ matrix.label }}
+          path: .tmp/out/*
+          retention-days: 14
+          if-no-files-found: error
+          include-hidden-files: true
+
+  distributions:
+    name: Wheel and sdist
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install build twine
+      - run: python -m build --outdir .tmp/dist
+      - run: python -m twine check .tmp/dist/*
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: distributions
+          path: .tmp/dist/*
+          retention-days: 14
+          if-no-files-found: error
+          include-hidden-files: true
+
+  draft-release:
+    name: Prepare draft release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'arconw/Kanbeat'
+    needs: [archive, distributions]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a tag on reviewed main history
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          path: .tmp/artifacts
+      - name: Collect assets and checksums
+        run: |
+          mkdir -p .tmp/assets
+          cp .tmp/artifacts/archive-*/*.tar.gz .tmp/artifacts/distributions/* .tmp/assets/
+          cd .tmp/assets
+          sha256sum -- *.tar.gz *.whl > SHA256SUMS
+          cat SHA256SUMS
+      - name: Write release notes
+        run: |
+          {
+            echo "Unsigned standalone onedir archives for the platforms listed below, plus the wheel and sdist."
+            echo
+            echo "Verify downloads with SHA256SUMS. macOS archives are not signed or notarized."
+            echo "See docs/releases.md for install, update and removal steps and for platform limits."
+            echo
+            echo "Archives in this release:"
+            (cd .tmp/assets && printf -- '- %s\n' *.tar.gz)
+          } > .tmp/notes.md
+      - name: Create or refresh the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          release_id="$(gh api --paginate "repos/$GH_REPO/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
+          if [ -n "$release_id" ]; then
+            is_draft="$(gh api "repos/$GH_REPO/releases/$release_id" --jq .draft)"
+            if [ "$is_draft" != true ]; then
+              echo "A published release already exists for $TAG; refusing to modify it." >&2
+              exit 1
+            fi
+            gh api --method PATCH "repos/$GH_REPO/releases/$release_id" --field body=@.tmp/notes.md --silent
+            for asset in .tmp/assets/*; do
+              existing="$(gh api "repos/$GH_REPO/releases/$release_id/assets" --paginate --jq ".[] | select(.name == \"$(basename "$asset")\") | .id")"
+              for id in $existing; do
+                gh api --method DELETE "repos/$GH_REPO/releases/assets/$id"
+              done
+              gh api --method POST "https://uploads.github.com/repos/$GH_REPO/releases/$release_id/assets?name=$(basename "$asset")" --header 'Content-Type: application/octet-stream' --input "$asset" --silent
+            done
+          else
+            gh release create "$TAG" .tmp/assets/* --draft --verify-tag --title "Kanbeat ${TAG#v}" --notes-file .tmp/notes.md
+          fi

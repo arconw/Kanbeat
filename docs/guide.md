@@ -2,7 +2,7 @@
 
 Detailed behavior reference. For what Kanbeat is, installation and a first run, start with the [README](../README.md). Interactive terminal details live in [terminals.md](terminals.md); the product and architecture design is in the [standalone design specification](design/design.html).
 
-Kanbeat is an early release (v0.5.1). Everything below describes the implemented behavior; items marked as not validated have not been exercised against live vendor CLIs.
+Kanbeat is an early release. Everything below describes the implemented behavior; items marked as not validated have not been exercised against live vendor CLIs.
 
 - [Principles](#principles)
 - [Command line and TUI](#command-line-and-tui)
@@ -42,11 +42,15 @@ kanbeat move 001 backlog
 kanbeat play
 kanbeat stop
 kanbeat --project /path/to/project   # select another project root
+kanbeat --version
+kanbeat shutdown             # exit the supervisor after cleaning up workers
 ```
 
 The project root is the current working directory by default. `--project` is a top-level option and goes before the subcommand. `kanbeat run` is the explicit form of plain `kanbeat`. `kanbeat supervisor` runs a foreground supervisor for debugging; the normal CLI starts a detached supervisor automatically.
 
 Open a second terminal in the **same** project and launch `kanbeat` again: it connects to the same supervisor. A different project directory starts an independent supervisor. `kanbeat new`, `move`, `play` and `stop` also start the supervisor when none is running.
+
+`kanbeat shutdown` waits for cleanup without starting an absent supervisor. Add `--yes` to confirm stopping independent sessions. See [Releases](releases.md#update) before changing an installed binary.
 
 TUI keys: `1` Board, `2` Sessions, `3` Archive, `4` Settings, `Ctrl+R` refresh, `Ctrl+Q` quit the TUI (the supervisor keeps running), `Ctrl+\` detach from an interactive terminal. Board, Sessions, Archive and Settings are also clickable. The board needs a terminal of roughly 130 columns to show all six columns side by side.
 

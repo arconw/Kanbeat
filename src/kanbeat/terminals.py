@@ -6,13 +6,13 @@ import fcntl
 import os
 import pty
 import struct
-import sys
 import termios
 from typing import Any
 import uuid
 
 from bittty import Board
 
+from .launcher import internal_environment, pty_child_command
 from .native import terminate_process, process_identity
 from .state import LocalState
 
@@ -82,16 +82,13 @@ class TerminalSession:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             self.log = log_path.open("a", encoding="utf-8")
             self.process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-m",
-                "kanbeat.pty_child",
-                *argv,
+                *pty_child_command(argv),
                 cwd=self.state.board.project,
                 stdin=slave,
                 stdout=slave,
                 stderr=slave,
                 start_new_session=True,
-                env={**os.environ, "TERM": "xterm-256color"},
+                env={**internal_environment(), "TERM": "xterm-256color"},
             )
             self.entry.update(
                 status="running",

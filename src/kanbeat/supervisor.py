@@ -25,6 +25,7 @@ from .hooks import TransitionHooks
 from .terminals import Terminals
 from .session_groups import SessionGroups
 from .terminal_control import terminal_request
+from .launcher import app_command, internal_environment
 from .ipc import socket_path, prepare_socket_directory, remove_socket, bind_socket
 
 MAX_INPUT = 1024 * 1024
@@ -50,6 +51,7 @@ class Supervisor:
         self.job_scopes: dict[str, tuple[str, str, int]] = {}
         self.cancelled: set[str] = set()
         self.guard = asyncio.Lock()
+        self.shutdown_requested = asyncio.Event()
         self._seen_queue = False
         self._reported: set[str] = set()
 
@@ -754,6 +756,12 @@ class Supervisor:
         }
 
     async def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
+        if self.shutdown_requested.is_set() and request.get("op") not in (
+            "snapshot",
+            "log",
+            "terminal_snapshot",
+        ):
+            raise RuntimeError("Supervisor is shutting down")
         if request.get("op") in (
             "snapshot",
             "log",
@@ -763,6 +771,8 @@ class Supervisor:
         ):
             return await self._dispatch(request)
         async with self.guard:
+            if self.shutdown_requested.is_set():
+                raise RuntimeError("Supervisor is shutting down")
             return await self._dispatch(request)
 
     async def _dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -773,6 +783,16 @@ class Supervisor:
             return await self.session_groups.dispatch(request)
         if str(op).startswith("terminal_"):
             return await terminal_request(self, request)
+        if op == "shutdown":
+            if (
+                self.terminals.running("custom")
+                and request.get("confirmed") is not True
+            ):
+                raise ValueError(
+                    "Independent sessions are running; use shutdown --yes to confirm stopping them"
+                )
+            self.shutdown_requested.set()
+            return {"shutdown": "requested"}
         if op == "play":
             await self.play()
         elif op == "stop":
@@ -924,7 +944,7 @@ class Supervisor:
             except BaseException:
                 sock.close()
                 raise
-            while True:
+            while not self.shutdown_requested.is_set():
                 try:
                     await self.reconcile()
                 except (RuntimeError, OSError, ValueError) as exc:
@@ -932,7 +952,10 @@ class Supervisor:
                     if message not in self._reported:
                         self.notice("Supervisor: " + message, "error")
                         self._reported.add(message)
-                await asyncio.sleep(1)
+                try:
+                    await asyncio.wait_for(self.shutdown_requested.wait(), timeout=1)
+                except asyncio.TimeoutError:
+                    pass
         finally:
             try:
                 await self.stop("Supervisor exiting")
@@ -994,15 +1017,9 @@ def ensure_supervisor(project: Path) -> None:
                 log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 with log.open("a", encoding="utf-8") as output:
                     subprocess.Popen(
-                        [
-                            os.sys.executable,
-                            "-m",
-                            "kanbeat",
-                            "--project",
-                            str(project),
-                            "supervisor",
-                        ],
+                        app_command("--project", str(project), "supervisor"),
                         cwd=project,
+                        env=internal_environment(),
                         stdin=subprocess.DEVNULL,
                         stdout=output,
                         stderr=output,

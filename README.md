@@ -2,7 +2,7 @@
 
 A filesystem-native Kanban board for AI coding agents. A ticket is a Markdown file, its status is the directory it lives in, and one persistent local supervisor per project runs your own installed coding CLIs against the queue. Any number of terminal clients can attach to that supervisor.
 
-> **Early release (v0.5.1), not production-ready.** The board, supervisor, structured worker flow, transition hooks, persistent terminals and session groups are implemented and covered by automated tests, but those tests use deterministic fake CLIs. End-to-end worker/event/resume compatibility with live vendor CLIs is not yet validated, and agents edit your working tree. Read [Limitations](#limitations) first.
+> **Early release, not production-ready.** The board, supervisor, structured worker flow, transition hooks, persistent terminals and session groups are implemented and covered by automated tests, but those tests use deterministic fake CLIs. End-to-end worker/event/resume compatibility with live vendor CLIs is not yet validated, and agents edit your working tree. Read [Limitations](#limitations) first.
 
 ![Kanbeat board: creating tickets and moving them between columns](docs/media/board.gif)
 
@@ -40,7 +40,7 @@ Both recordings use no coding CLI and no model: the Todo column stays empty, and
 | WSL | A Linux runtime, but not yet tested on a Windows host. |
 | Native Windows | Not supported: the supervisor uses POSIX APIs. A port is tracked in [#11](https://github.com/arconw/Kanbeat/issues/11). |
 
-Kanbeat is not published on PyPI or Homebrew and has no prebuilt installers yet. Release and installer work is tracked in [#10](https://github.com/arconw/Kanbeat/issues/10).
+Kanbeat is not published on PyPI or Homebrew, and no prebuilt installers have been released yet. The source tree can build standalone Linux and macOS archives for a future release; see [Releases](docs/releases.md). Release and installer work is tracked in [#10](https://github.com/arconw/Kanbeat/issues/10).
 
 ## Prerequisites
 

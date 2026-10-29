@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kanbeat"
-version = "0.5.1"
+version = "0.6.0"
 description = "Filesystem-native Kanban with a persistent local AI harness supervisor"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,6 +12,7 @@ dependencies = ["textual>=8.2", "textual-tty>=0.4,<0.5", "bittty>=0.1.4,<0.2"]
 
 [project.optional-dependencies]
 terminal = ["textual-tty>=0.4"]
+release = ["pyinstaller>=6.11,<7", "packaging>=23"]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.9", "build>=1.2", "twine>=6"]
 
 [project.scripts]

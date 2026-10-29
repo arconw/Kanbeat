@@ -17,6 +17,8 @@ import signal
 import subprocess
 from typing import Any, Callable
 
+from .launcher import external_environment
+
 HARNESS = {"codex": "codex", "claude": "claude", "opencode": "opencode", "pi": "pi"}
 VERDICT = re.compile(r"(?m)^KANBEAT_VERDICT:\s*(approve|changes_requested)\s*$")
 
@@ -274,6 +276,7 @@ class NativeRun:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     start_new_session=True,
+                    env=external_environment(),
                     limit=2 * 1024 * 1024,
                 )
             except OSError as exc:
