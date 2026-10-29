@@ -52,7 +52,7 @@ Open a second terminal in the **same** project and launch `kanbeat` again: it co
 
 `kanbeat shutdown` waits for cleanup without starting an absent supervisor. Add `--yes` to confirm stopping independent sessions. See [Releases](releases.md#update) before changing an installed binary.
 
-TUI keys: `1` Board, `2` Sessions, `3` Archive, `4` Settings, `Ctrl+R` refresh, `Ctrl+Q` quit the TUI (the supervisor keeps running), `Ctrl+\` detach from an interactive terminal. Board, Sessions, Archive and Settings are also clickable. The board needs a terminal of roughly 130 columns to show all six columns side by side.
+TUI keys: `1` Board, `2` Sessions, `3` Archive, `4` Settings, `Ctrl+R` refresh, `Ctrl+Q` quit the TUI (the supervisor keeps running), `Ctrl+\` detach from an interactive terminal. Board, Sessions, Archive and Settings are also clickable. The minimum supported size is 80 × 24 characters; roughly 130 columns show all six fixed-width board lanes, and narrower terminals can scroll them horizontally. Dialogs and Settings scroll vertically in shorter terminals. Slot labels, controls and runtime badges have separate space, and invalid saved harness choices show a warning before Save.
 
 Clicking the visible backdrop outside a dialog closes that dialog without saving. A confirmation is cancelled. Clicks inside controls and drags that start inside the dialog do not dismiss it; nested dialogs close one at a time. Full-screen views use their Close/Detach controls, and detaching a terminal keeps its process running.
 

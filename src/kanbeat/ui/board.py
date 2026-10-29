@@ -25,8 +25,21 @@ def summary(ticket: dict[str, Any]) -> str:
 def runtime(ticket: dict[str, Any]) -> str:
     slots = (ticket.get("state") or {}).get("runtime") or {}
     return ", ".join(
-        f"{name}:{info.get('status', '?')}" for name, info in slots.items()
+        f"{slot_label(name)}:{info.get('status', '?')}" for name, info in slots.items()
     )[:88]
+
+
+def slot_label(name: str) -> str:
+    if name == "developer":
+        return "dev"
+    if name.startswith("reviewer-"):
+        return "r" + name[len("reviewer-") :]
+    return name[:8]
+
+
+def card_title(ticket: dict[str, Any]) -> str:
+    title = ticket["title"]
+    return title[:21] + "…" if len(title) > 22 else title
 
 
 class TicketCard(Vertical):
@@ -39,11 +52,11 @@ class TicketCard(Vertical):
     def compose(self) -> ComposeResult:
         with Horizontal(classes="card-head"):
             yield Button(
-                Text(self.ticket["title"][:48]),
+                Text(card_title(self.ticket)),
                 id="view-" + self.ticket["id"],
                 classes="card-title",
             )
-            yield Button("···", id="act-" + self.ticket["id"], classes="card-menu")
+            yield Button("⋯", id="act-" + self.ticket["id"], classes="card-menu")
         yield Static(summary(self.ticket), classes="card-summary", markup=False)
         status = runtime(self.ticket)
         indicator = Static("◌ " + status, classes="card-runtime", markup=False)
@@ -61,7 +74,7 @@ class TicketCard(Vertical):
         self, ticket: dict[str, Any], select_mode: bool, selected: bool
     ) -> None:
         if ticket["title"] != self.ticket["title"]:
-            self.query_one(".card-title", Button).label = Text(ticket["title"][:48])
+            self.query_one(".card-title", Button).label = Text(card_title(ticket))
         if summary(ticket) != summary(self.ticket):
             self.query_one(".card-summary", Static).update(summary(ticket))
         status = runtime(ticket)

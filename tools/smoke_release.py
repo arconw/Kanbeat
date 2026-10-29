@@ -169,12 +169,12 @@ class Smoke:
             )
 
     def supervisor_and_tui(self) -> int:
-        self.cli("new", "Smoke ticket")
+        self.cli("new", "Smoke")
         check(self.socket.exists(), "self-spawned supervisor socket exists")
         self.supervisor = self.supervisor_pid()
         snapshot = self.ipc({"op": "snapshot"})
         check(
-            [t["title"] for t in snapshot["tickets"]] == ["Smoke ticket"],
+            [t["title"] for t in snapshot["tickets"]] == ["Smoke"],
             "supervisor IPC returns the created ticket",
         )
         self.tui()
@@ -205,7 +205,7 @@ class Smoke:
 
         try:
             wait_for(
-                lambda: b"Smoke ticket" in drain(),
+                lambda: b"Smoke" in drain(),
                 "TUI renders the board with its stylesheet",
             )
             check(True, "TUI rendered the board from bundled resources")

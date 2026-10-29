@@ -17,6 +17,15 @@ def harness_value(value, default="codex"):
     )
 
 
+def harness_warning(value, default="codex"):
+    if default == "" and value in (None, ""):
+        return ""
+    if isinstance(value, str) and value in {key for _, key in HARNESS}:
+        return ""
+    shown = "Project default" if default == "" else default.title()
+    return f"Saved harness {repr(value)[:80]} is unavailable. Showing {shown}; Save to replace it."
+
+
 class Settings(VerticalScroll):
     def __init__(self, snapshot: dict[str, Any]):
         super().__init__(id="settings")
@@ -30,6 +39,10 @@ class Settings(VerticalScroll):
             value=harness_value(self.config.get("default_harness")),
             id="cfg-harness",
         )
+        warning = harness_warning(self.config.get("default_harness"))
+        notice = Static(warning, id="cfg-harness-warning", classes="hint", markup=False)
+        notice.display = bool(warning)
+        yield notice
         for field, title in (
             ("global_cp", "Global CP"),
             ("developer_prompt", "Developer Prompt"),
@@ -49,6 +62,12 @@ class Settings(VerticalScroll):
             allow_blank=False,
             id="cfg-hook-harness",
         )
+        warning = harness_warning(hook.get("harness"), "")
+        notice = Static(
+            warning, id="cfg-hook-harness-warning", classes="hint", markup=False
+        )
+        notice.display = bool(warning)
+        yield notice
         yield TextArea(
             str(hook.get("prompt") or ""),
             id="cfg-hook-prompt",
@@ -109,3 +128,11 @@ class Settings(VerticalScroll):
                 else:
                     control.load_text(new)
         self.config = config
+        for selector, value, default in (
+            ("#cfg-harness-warning", config.get("default_harness"), "codex"),
+            ("#cfg-hook-harness-warning", new_hook.get("harness"), ""),
+        ):
+            notice = self.query_one(selector, Static)
+            warning = harness_warning(value, default)
+            notice.update(warning)
+            notice.display = bool(warning)
