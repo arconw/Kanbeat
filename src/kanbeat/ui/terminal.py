@@ -57,6 +57,7 @@ class TerminalDisplay(Monitor):
 
 WAIT_SECONDS = 5
 RETRY_SECONDS = 0.5
+MAX_RETRY_SECONDS = 8
 
 
 class TerminalView(BackdropModal[None]):
@@ -101,6 +102,7 @@ class TerminalView(BackdropModal[None]):
     @work(exclusive=True, group="terminal-watch")
     async def watch_terminal(self) -> None:
         failed = False
+        retry = RETRY_SECONDS
         while True:
             try:
                 epoch = self.view_epoch
@@ -118,11 +120,15 @@ class TerminalView(BackdropModal[None]):
                 if epoch == self.view_epoch:
                     self.apply_snapshot(snapshot)
                 failed = False
+                retry = RETRY_SECONDS
             except (OSError, RuntimeError, ValueError) as exc:
                 if not failed:
                     self.app.notify(str(exc), severity="error")
+                if isinstance(exc, ValueError) or "shutting down" in str(exc).lower():
+                    return
                 failed = True
-                await asyncio.sleep(RETRY_SECONDS)
+                await asyncio.sleep(retry)
+                retry = min(retry * 2, MAX_RETRY_SECONDS)
 
     def apply_snapshot(self, snapshot: dict) -> None:
         self.revision = snapshot["revision"]
@@ -133,6 +139,8 @@ class TerminalView(BackdropModal[None]):
             )
         self.query_one("#terminal-live", Button).disabled = self.scroll_position is None
         title = f"{snapshot['title']} / {snapshot['status']}"
+        if snapshot.get("dropped_replies"):
+            title += f" / {snapshot['dropped_replies']} terminal replies dropped"
         if snapshot["historical"]:
             title += " / output history"
         if title != self.heading:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import Any, TYPE_CHECKING
 
@@ -72,7 +73,18 @@ async def terminal_request(
             if not math.isfinite(timeout):
                 raise ValueError("Terminal wait timeout must be finite")
             timeout = min(max(timeout, 0), MAX_WAIT_SECONDS)
-            await terminal.wait_for_change(revision, timeout)
+            wait_screen = asyncio.create_task(
+                terminal.wait_for_change(revision, timeout)
+            )
+            wait_shutdown = asyncio.create_task(supervisor.shutdown_requested.wait())
+            try:
+                await asyncio.wait(
+                    {wait_screen, wait_shutdown}, return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                for task in (wait_screen, wait_shutdown):
+                    task.cancel()
+                await asyncio.gather(wait_screen, wait_shutdown, return_exceptions=True)
             return terminal.snapshot(request.get("history_position"))
         if op == "terminal_stop":
             if request.get("confirmed") is not True:

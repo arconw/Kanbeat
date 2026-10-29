@@ -126,8 +126,9 @@ class TerminalSession:
         self.write_bytes(data.encode("utf-8"))
 
     def write_bytes(self, payload: bytes) -> None:
-        if self.fd is not None:
-            self.queue_bytes(payload)
+        if self.fd is not None and not self.queue_bytes(payload):
+            self.entry["dropped_replies"] = self.entry.get("dropped_replies", 0) + 1
+            self.touch()
 
     def queue_bytes(self, payload: bytes) -> bool:
         if self.fd is None:
@@ -289,6 +290,7 @@ class Terminals:
         )
         entry["status"] = "starting"
         entry.pop("exit_code", None)
+        entry.pop("dropped_replies", None)
         self.state.save()
         session = TerminalSession(self.state, entry)
         self.sessions[entry["id"]] = session

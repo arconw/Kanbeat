@@ -185,6 +185,21 @@ def test_primary_scrollback_is_bounded_and_keeps_absolute_position():
     assert board.history_total == count
 
 
+def test_scrollback_reads_only_evicted_rows_and_ignores_reverse_scroll(monkeypatch):
+    board = HistoryBoard(width=20, height=3)
+    board.parser.feed("first\r\nsecond\r\nthird")
+    monkeypatch.setattr(
+        board,
+        "capture_text",
+        lambda **kwargs: pytest.fail("full-screen capture in scroll path"),
+    )
+    board.parser.feed("\r\nfourth")
+    assert list(board.history) == ["first" + " " * 15]
+    count = board.history_total
+    board.parser.feed("\x1b[T")
+    assert board.history_total == count
+
+
 def test_legacy_mouse_bytes_are_not_reencoded_as_utf8():
     board = HistoryBoard(width=240, height=10)
     capture = InputCapture()
@@ -293,9 +308,54 @@ async def test_automatic_terminal_replies_are_safe_after_close_and_backpressure(
     _, session = terminal
     monkeypatch.setattr(session, "queue_bytes", lambda payload: False)
     session.board.parser.feed("\x1b[c\x1b[6n")
+    assert session.entry["dropped_replies"] == 2
     session.close()
     session.board.parser.feed("\x1b[c\x1b[6n")
+    assert session.entry["dropped_replies"] == 2
     assert session.fd is None
+
+
+@pytest.mark.asyncio
+async def test_terminal_wait_wakes_when_supervisor_shuts_down(terminal):
+    supervisor, session = terminal
+    task = asyncio.create_task(
+        supervisor.dispatch(
+            {
+                "op": "terminal_wait",
+                "terminal": session.id,
+                "revision": session.revision,
+                "timeout": 8,
+            }
+        )
+    )
+    await asyncio.sleep(0.01)
+    supervisor.shutdown_requested.set()
+    result = await asyncio.wait_for(task, timeout=0.3)
+    assert result["revision"] == session.revision
+
+
+@pytest.mark.asyncio
+async def test_terminal_view_stops_retrying_permanent_snapshot_errors(
+    terminal, monkeypatch
+):
+    supervisor, session = terminal
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    calls = []
+    view = TerminalView(session.id)
+
+    async def missing(*args, **kwargs):
+        calls.append(args)
+        raise ValueError("Terminal is no longer attached")
+
+    monkeypatch.setattr(view, "rpc", missing)
+    async with app.run_test(size=(100, 40)) as pilot:
+        app.push_screen(view)
+        await pilot.pause()
+        await asyncio.sleep(0.65)
+        assert [call for call in calls if call[0] == "terminal_snapshot"] == [
+            ("terminal_snapshot",)
+        ]
 
 
 @pytest.mark.asyncio

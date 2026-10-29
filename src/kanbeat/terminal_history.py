@@ -26,9 +26,10 @@ class HistoryBoard(Board):
             and blitter.left_margin == 0
             and blitter.right_margin == self.width - 1
         ):
-            text = self.capture_text(trim=False).split("\n")
             count = min(lines, self.height)
-            self.history.extend(text[:count])
+            self.history.extend(
+                blitter.current_buffer.get_line_text(row) for row in range(count)
+            )
             self.history_total += count
         self._native_scroll(lines)
 
