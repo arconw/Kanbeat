@@ -496,8 +496,8 @@ async def test_worker_pulse_tracks_activity_without_rebuilding_rows(
     state = supervisor.ticket_state(ticket.id)
     state["reviewers"] = [{"id": "reviewer-1"}]
     state["runtime"] = {
-        "developer": {"status": "running"},
-        "reviewer-1": {"status": "waiting"},
+        "developer": {"status": "running", "activity": "working"},
+        "reviewer-1": {"status": "running", "activity": "waiting"},
     }
     supervisor.runtime.data["execution"] = "running"
     app = client(supervisor, monkeypatch)
@@ -527,6 +527,15 @@ async def test_worker_pulse_tracks_activity_without_rebuilding_rows(
         app.pulse_working()
         assert not dev.has_class("agent-pulse")
         app.animation_level = "full"
+        state["runtime"]["developer"]["activity"] = "idle"
+        await app.refresh_snapshot(force=True)
+        assert "Worker running / idle" in str(dev.render())
+        assert not dev.has_class("agent-working")
+        app.pulse_working()
+        assert not dev.has_class("agent-pulse")
+        state["runtime"]["developer"]["activity"] = "working"
+        await app.refresh_snapshot(force=True)
+        assert dev.has_class("agent-working")
         state["runtime"]["developer"]["status"] = "completed"
         await app.refresh_snapshot(force=True)
         assert app.query_one("#task-sessions-" + ticket.id) is row
@@ -550,8 +559,8 @@ async def test_ticket_modal_pulse_only_for_confirmed_running_worker(
     state = supervisor.ticket_state(ticket.id)
     state["reviewers"] = [{"id": "reviewer-1"}]
     state["runtime"] = {
-        "developer": {"status": "running"},
-        "reviewer-1": {"status": "waiting"},
+        "developer": {"status": "running", "activity": "working"},
+        "reviewer-1": {"status": "running", "activity": "waiting"},
     }
     supervisor.runtime.data["execution"] = "running"
     app = client(supervisor, monkeypatch)
@@ -589,6 +598,18 @@ def test_independent_session_label_includes_exit_and_error():
     assert "\n" not in SessionRow.label(entry)
     assert "\r" not in SessionRow.label(entry)
     assert "\x1b" not in SessionRow.label(entry)
+
+
+def test_worker_status_label_includes_reported_activity():
+    from kanbeat.ui.session_rows import worker_is_active, worker_status_label
+
+    assert (
+        worker_status_label({"status": "running", "activity": "waiting"})
+        == "running / waiting"
+    )
+    assert not worker_is_active({"status": "running", "activity": "waiting"})
+    assert worker_is_active({"status": "running"})
+    assert worker_status_label({"status": "stopped", "activity": "idle"}) == "stopped"
 
 
 def test_malformed_view_preferences_do_not_break_startup(tmp_path):

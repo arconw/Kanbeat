@@ -16,6 +16,7 @@ from textual.widgets import Button, Input, Markdown, Select, Static, TextArea
 from ..supervisor import request
 from .terminal import TerminalView
 from .sessions import SessionsView
+from .session_rows import worker_is_active, worker_status_label
 from .options import HARNESS
 from .board import BoardView
 from .preferences import ViewPreferences
@@ -95,13 +96,13 @@ class TicketView(BackdropModal[None]):
 
     @staticmethod
     def runtime_label(state: dict[str, Any], slot: str) -> str:
-        return str(
-            (state.get("runtime") or {}).get(slot, {}).get("status") or "not started"
-        )
+        entry = (state.get("runtime") or {}).get(slot)
+        return worker_status_label(entry) if entry else "not started"
 
     @staticmethod
     def active_worker(state: dict[str, Any], slot: str) -> bool:
-        return (state.get("runtime") or {}).get(slot, {}).get("status") == "running"
+        entry = (state.get("runtime") or {}).get(slot)
+        return bool(entry and worker_is_active(entry))
 
     def status_classes(self, state: dict[str, Any], slot: str) -> str:
         active = self.app.snapshot.get("execution") == "running" and self.active_worker(

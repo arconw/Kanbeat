@@ -304,6 +304,7 @@ class Supervisor:
             return
         harness, original_session = self.selected_harness(assignment)
         was_stale = entry.get("status") == "stale"
+        entry.pop("activity", None)
         entry.update({"status": "starting", "harness": harness})
         self.save()
 
@@ -311,6 +312,14 @@ class Supervisor:
             session = original_session
             ticket_id = ticket.id
             updated = was_stale
+
+            def activity_changed(activity: str | None) -> None:
+                if activity:
+                    entry["activity"] = activity
+                else:
+                    entry.pop("activity", None)
+                self.save()
+
             try:
                 while key not in self.cancelled:
                     current = self.current_ticket(ticket_id, stage, iteration)
@@ -332,6 +341,7 @@ class Supervisor:
                         on_process=lambda pid, token: self.record_process(
                             ticket_id, worker, pid, token
                         ),
+                        on_activity=activity_changed,
                     )
                     self.runs[key] = native
                     entry["status"] = "running"
@@ -340,6 +350,7 @@ class Supervisor:
                     self.runs.pop(key, None)
                     entry.pop("pid", None)
                     entry.pop("process_identity", None)
+                    entry.pop("activity", None)
                     if native.stopping or key in self.cancelled:
                         entry["status"] = "interrupted"
                         return
@@ -418,6 +429,7 @@ class Supervisor:
                 entry["attempts"] = int(entry.get("attempts", 0)) + 1
                 entry["status"] = "recovering"
                 entry["error"] = str(exc)
+                entry.pop("activity", None)
                 self.notice(f"{ticket.id}/{worker}: {exc}", "warning")
                 if entry["attempts"] >= 3:
                     entry["status"] = "failed"
@@ -431,6 +443,7 @@ class Supervisor:
                 self.runs.pop(key, None)
                 entry.pop("pid", None)
                 entry.pop("process_identity", None)
+                entry.pop("activity", None)
                 self.save()
 
         self.cancelled.discard(key)
@@ -476,6 +489,7 @@ class Supervisor:
             },
         ]:
             for item in state.get("runtime", {}).values():
+                item.pop("activity", None)
                 if item.get("status") in (
                     "running",
                     "starting",
@@ -536,6 +550,7 @@ class Supervisor:
         recovery.append(("interactive-terminals", {"runtime": self.terminals.entries}))
         for ticket_id, state in recovery:
             for slot, entry in state.get("runtime", {}).items():
+                entry.pop("activity", None)
                 pid = entry.get("pid")
                 token = entry.get("process_identity")
                 if pid is None:

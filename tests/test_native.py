@@ -75,6 +75,66 @@ def test_pi_aborted_message_is_failure_even_with_zero_exit():
     assert not events.result(0, "").ok
 
 
+def test_native_activity_uses_explicit_events_only():
+    codex = EventStream("codex")
+    assert codex.activity is None
+    codex.push({"type": "turn.started"})
+    assert codex.activity == "working"
+    codex.push({"type": "item.started"})
+    assert codex.activity == "working"
+    codex.push({"type": "turn.completed"})
+    assert codex.activity == "idle"
+
+    codex_error = EventStream("codex")
+    codex_error.push({"type": "turn.started"})
+    codex_error.push({"type": "error", "message": "stream failed"})
+    assert codex_error.activity == "error"
+
+    claude = EventStream("claude")
+    claude.push({"type": "system", "session_id": "abc"})
+    assert claude.activity is None
+    claude.push({"type": "assistant"})
+    assert claude.activity == "working"
+    claude.push({"type": "result", "subtype": "success", "result": "done"})
+    assert claude.activity == "idle"
+
+    failed = EventStream("claude")
+    failed.push({"type": "result", "subtype": "error", "is_error": True})
+    assert failed.activity == "error"
+
+    opencode = EventStream("opencode")
+    opencode.push({"type": "step_start"})
+    assert opencode.activity == "working"
+    opencode.push({"type": "permission.asked"})
+    assert opencode.activity == "waiting"
+    opencode.push({"type": "permission.replied"})
+    assert opencode.activity == "working"
+    opencode.push({"type": "step_finish", "part": {"reason": "tool-calls"}})
+    assert opencode.activity == "working"
+    opencode.push({"type": "step_start"})
+    opencode.push({"type": "step_finish", "part": {"reason": "stop"}})
+    assert opencode.activity == "idle"
+
+    pi = EventStream("pi")
+    pi.push({"type": "agent_start"})
+    assert pi.activity == "working"
+    pi.push({"type": "agent_end"})
+    assert pi.activity == "idle"
+
+    aborted = EventStream("pi")
+    aborted.push(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "stopReason": "aborted",
+                "content": [],
+            },
+        }
+    )
+    assert aborted.activity == "error"
+
+
 def test_error_is_not_completion():
     events = EventStream("codex")
     events.push({"type": "turn.failed", "error": "failure"})
