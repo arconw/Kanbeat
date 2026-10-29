@@ -93,10 +93,6 @@ class SessionGroups:
                 )
             if attached and status in ("starting", "running"):
                 return {"terminal": entry["id"]}
-            try:
-                host = await self.opencode_host()
-            except (OpenCodeHostError, OSError) as error:
-                raise ValueError(f"Could not start OpenCode host: {error}") from error
             if not attached and status in ("starting", "running", "stopping"):
                 pid = entry.get("pid")
                 current = process_identity(int(pid)) if pid is not None else None
@@ -110,6 +106,10 @@ class SessionGroups:
                 entry.pop("pid", None)
                 entry.pop("process_identity", None)
                 self.state.save()
+            try:
+                host = await self.opencode_host()
+            except (OpenCodeHostError, OSError) as error:
+                raise ValueError(f"Could not start OpenCode host: {error}") from error
             session_id = entry.get("native_session")
             if not session_id or not await self.opencode_session_exists(
                 host, session_id
