@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Awaitable, Callable
 import uuid
 
 from .native import available, process_identity
-from .opencode_host import OpenCodeHttpError
+from .opencode_host import OpenCodeHostError, OpenCodeHttpError
 from .state import LocalState
 from .terminals import Terminals
 
@@ -27,6 +28,7 @@ class SessionGroups:
         self.state = state
         self.terminals = terminals
         self.opencode_host = opencode_host
+        self.config_lock = asyncio.Lock()
         self.groups = state.data.setdefault("custom", {}).setdefault("groups", {})
 
     def group(self, group_id: str) -> str:
@@ -58,6 +60,10 @@ class SessionGroups:
             raise ValueError("Stop the session and resolve orphan recovery first")
 
     async def open_opencode_config(self) -> dict[str, Any]:
+        async with self.config_lock:
+            return await self._open_opencode_config()
+
+    async def _open_opencode_config(self) -> dict[str, Any]:
         assert self.opencode_host is not None
         matches = [
             entry
@@ -132,7 +138,13 @@ class SessionGroups:
         except OpenCodeHttpError as error:
             if error.status == 404:
                 return False
-            raise
+            raise ValueError(
+                f"Could not read OpenCode config session: {error}"
+            ) from error
+        except (OpenCodeHostError, OSError) as error:
+            raise ValueError(
+                f"Could not read OpenCode config session: {error}"
+            ) from error
         return True
 
     async def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:

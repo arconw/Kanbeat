@@ -96,30 +96,33 @@ class Supervisor:
             return host
 
     async def opencode_model(self, host: Any) -> Any:
-        for entry in reversed(list(self.terminals.entries.values())):
-            if (
-                entry.get("owner") == "custom"
-                and entry.get("role") == "config"
-                and entry.get("harness") == "opencode"
-                and entry.get("native_session")
-            ):
-                try:
-                    metadata = await host.read_session(entry["native_session"])
-                except OpenCodeHttpError as error:
-                    if error.status == 404:
-                        continue
-                    logging.getLogger(__name__).warning(
-                        "OpenCode config read failed: %s", error
-                    )
-                    return None
-                except (OpenCodeHostError, OSError, asyncio.TimeoutError) as error:
-                    logging.getLogger(__name__).warning(
-                        "OpenCode config read failed: %s", error
-                    )
-                    return None
-                if metadata.model is not None:
-                    return metadata.model
-        return None
+        entry = next(
+            (
+                row
+                for row in reversed(list(self.terminals.entries.values()))
+                if row.get("owner") == "custom"
+                and row.get("role") == "config"
+                and row.get("harness") == "opencode"
+                and row.get("native_session")
+            ),
+            None,
+        )
+        if entry is None:
+            return None
+        try:
+            metadata = await host.read_session(entry["native_session"])
+        except OpenCodeHttpError as error:
+            if error.status != 404:
+                logging.getLogger(__name__).warning(
+                    "OpenCode config read failed: %s", error
+                )
+            return None
+        except (OpenCodeHostError, OSError, asyncio.TimeoutError) as error:
+            logging.getLogger(__name__).warning(
+                "OpenCode config read failed: %s", error
+            )
+            return None
+        return metadata.model
 
     async def close_hosts(self) -> None:
         async with self._host_lock:
