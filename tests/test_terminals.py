@@ -5,7 +5,7 @@ import pytest
 
 from kanbeat.native import process_identity
 from kanbeat.supervisor import Supervisor
-from kanbeat.terminals import interactive_command
+from kanbeat.terminals import interactive_command, terminate_process
 from kanbeat.ui.app import Assignment, KanbeatApp, TicketView
 from textual.widgets import Button, TextArea
 from kanbeat.ui.terminal import TerminalDisplay, TerminalView
@@ -93,7 +93,7 @@ async def test_failed_stop_preserves_live_terminal_and_recovery_identity(
 ):
     terminal_id = await supervisor.terminals.create("codex", owner="board")
     session = supervisor.terminals.get(terminal_id)
-    original = __import__("kanbeat.terminals", fromlist=["terminate_process"]).terminate_process
+    original = terminate_process
 
     async def refuse_stop(_proc):
         raise RuntimeError("Owned child did not exit")

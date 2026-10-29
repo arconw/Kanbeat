@@ -482,8 +482,12 @@ class Supervisor:
             if worker is not None:
                 worker.update(status="recovery_blocked", error=str(result))
         if cleanup_errors:
-            self.notice("Native cleanup incomplete: " + "; ".join(cleanup_errors), "error")
-            raise RuntimeError("Native cleanup incomplete; inspect recovery-blocked processes")
+            self.notice(
+                "Native cleanup incomplete: " + "; ".join(cleanup_errors), "error"
+            )
+            raise RuntimeError(
+                "Native cleanup incomplete; inspect recovery-blocked processes"
+            )
         await asyncio.gather(
             *(job for job in list(self.jobs.values())), return_exceptions=True
         )
