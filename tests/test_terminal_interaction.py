@@ -333,7 +333,7 @@ async def test_automatic_terminal_replies_are_safe_after_close_and_backpressure(
     monkeypatch.setattr(session, "queue_bytes", lambda payload: False)
     session.board.parser.feed("\x1b[c\x1b[6n")
     assert session.entry["dropped_replies"] == 2
-    session.close()
+    await session.stop()
     session.board.parser.feed("\x1b[c\x1b[6n")
     assert session.entry["dropped_replies"] == 2
     assert session.fd is None

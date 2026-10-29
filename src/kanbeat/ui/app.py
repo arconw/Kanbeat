@@ -384,7 +384,8 @@ class KanbeatApp(App[None]):
             yield Static("Local supervisor · " + str(self.project), id="bottom")
 
     async def on_mount(self) -> None:
-        self.push_screen(StartupScreen())
+        splash = StartupScreen()
+        self.push_screen(splash)
         started = asyncio.get_running_loop().time()
         try:
             await self.refresh_snapshot()
@@ -393,7 +394,8 @@ class KanbeatApp(App[None]):
                 max(0, minimum - (asyncio.get_running_loop().time() - started))
             )
         finally:
-            self.pop_screen()
+            if self.screen is splash:
+                self.pop_screen()
             self.set_interval(1.5, self.refresh_snapshot)
 
     async def rpc(self, message: dict[str, Any]) -> dict[str, Any]:
