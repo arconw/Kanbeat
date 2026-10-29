@@ -6,7 +6,8 @@ import pytest
 from kanbeat.native import process_identity
 from kanbeat.supervisor import Supervisor
 from kanbeat.terminals import interactive_command
-from kanbeat.ui.app import KanbeatApp
+from kanbeat.ui.app import Assignment, KanbeatApp, TicketView
+from textual.widgets import Button, TextArea
 from kanbeat.ui.terminal import TerminalDisplay, TerminalView
 
 SCRIPT = """
@@ -182,6 +183,96 @@ def test_interactive_commands_preserve_native_security(name):
         }.intersection(argv)
         assert ("native-session" in argv) == bool(session)
 
+
+
+@pytest.mark.asyncio
+async def test_ticket_and_assignment_reopen_exact_live_task_ptys(supervisor, monkeypatch):
+    ticket = supervisor.board.create("Task")
+    state = supervisor.ticket_state(ticket.id)
+    state["reviewers"] = [{"id": "reviewer-1"}]
+    supervisor.save()
+    developer = (
+        await supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+    )["terminal"]
+    reviewer = (
+        await supervisor.dispatch(
+            {"op": "terminal_open", "ticket": ticket.id, "slot": "reviewer-1"}
+        )
+    )["terminal"]
+    original_pids = {
+        key: supervisor.terminals.get(key).process.pid for key in (developer, reviewer)
+    }
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    try:
+        async with app.run_test(size=(120, 40)) as pilot:
+            ticket_view = TicketView(app.find_ticket(ticket.id))
+            app.push_screen(ticket_view)
+            await pilot.pause()
+            await pilot.click("#dev-terminal")
+            await pilot.pause()
+            assert isinstance(app.screen, TerminalView)
+            assert app.screen.terminal_id == developer
+            await app.screen.action_detach()
+            await pilot.pause()
+            assert app.screen is ticket_view
+
+            await pilot.click("#terminal-reviewer-1")
+            await pilot.pause()
+            assert isinstance(app.screen, TerminalView)
+            assert app.screen.terminal_id == reviewer
+            await app.screen.action_detach()
+            await pilot.pause()
+
+            await pilot.click("#conf-reviewer-1")
+            await pilot.pause()
+            assert isinstance(app.screen, Assignment)
+            await pilot.click("#open-terminal")
+            await pilot.pause()
+            assert isinstance(app.screen, TerminalView)
+            assert app.screen.terminal_id == reviewer
+            await app.screen.action_detach()
+            await pilot.pause()
+
+            assert len(supervisor.terminals.sessions) == 2
+            assert all(
+                supervisor.terminals.get(key).process.pid == pid
+                for key, pid in original_pids.items()
+            )
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_slot_terminal_action_rejects_unsaved_config_and_running_board(
+    supervisor, monkeypatch
+):
+    ticket = supervisor.board.create("Task")
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    async with app.run_test(size=(100, 35)) as pilot:
+        form = Assignment(app.find_ticket(ticket.id), "developer")
+        app.push_screen(form)
+        await pilot.pause()
+        form.query_one("#cp", TextArea).load_text("unsaved edits")
+        await pilot.click("#open-terminal")
+        await pilot.pause()
+        assert app.screen is form
+        assert not supervisor.terminals.entries
+
+    supervisor.runtime.data["execution"] = "running"
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    async with app.run_test(size=(100, 35)) as pilot:
+        view = TicketView(app.find_ticket(ticket.id))
+        app.push_screen(view)
+        await pilot.pause()
+        assert view.query_one("#dev-terminal", Button).disabled
+        form = Assignment(app.find_ticket(ticket.id), "developer")
+        app.push_screen(form)
+        await pilot.pause()
+        assert form.query_one("#open-terminal", Button).disabled
+    assert not supervisor.terminals.entries
 
 @pytest.mark.asyncio
 async def test_concurrent_clients_share_one_task_terminal(supervisor):
