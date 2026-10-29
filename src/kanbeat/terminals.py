@@ -307,7 +307,12 @@ class Terminals:
 
     async def restart(self, terminal_id: str) -> None:
         entry = self.entries[terminal_id]
-        if entry.get("status") in ("starting", "running", "stopping", "recovery_blocked"):
+        if entry.get("status") in (
+            "starting",
+            "running",
+            "stopping",
+            "recovery_blocked",
+        ):
             raise ValueError("Stop the session before restarting it")
         await self.start_entry(entry)
 

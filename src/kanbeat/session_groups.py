@@ -42,7 +42,12 @@ class SessionGroups:
                 entry["status"] = "interrupted"
                 entry.pop("pid", None)
                 entry.pop("process_identity", None)
-        if entry.get("status") in ("starting", "running", "stopping", "recovery_blocked"):
+        if entry.get("status") in (
+            "starting",
+            "running",
+            "stopping",
+            "recovery_blocked",
+        ):
             raise ValueError("Stop the session and resolve orphan recovery first")
 
     async def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
