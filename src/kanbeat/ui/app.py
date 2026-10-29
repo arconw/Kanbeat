@@ -9,7 +9,7 @@ from typing import Any
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
+from .modal import BackdropModal
 from textual.widgets import Button, Input, Markdown, Select, Static, TextArea
 
 from ..supervisor import request
@@ -22,7 +22,9 @@ ALL_COLUMNS = COLUMNS + ("archive",)
 COLUMN_OPTIONS = [(c.upper() if c != "review" else "REVIEW/QA", c) for c in ALL_COLUMNS]
 
 
-class Confirm(ModalScreen[bool]):
+class Confirm(BackdropModal[bool]):
+    BACKDROP_RESULT = False
+
     def __init__(self, title: str):
         super().__init__()
         self.title = title
@@ -41,7 +43,7 @@ class Confirm(ModalScreen[bool]):
         self.dismiss(event.button.id == "yes")
 
 
-class LogView(ModalScreen[None]):
+class LogView(BackdropModal[None]):
     def __init__(self, ticket: str, slot: str):
         super().__init__()
         self.ticket = ticket
@@ -79,7 +81,7 @@ class LogView(ModalScreen[None]):
             await self.refresh_log()
 
 
-class TicketView(ModalScreen[None]):
+class TicketView(BackdropModal[None]):
     """Read-only ticket content; the user edits the Markdown file externally."""
 
     def __init__(self, ticket: dict[str, Any]):
@@ -196,7 +198,7 @@ class TicketView(ModalScreen[None]):
                 self.dismiss(None)
 
 
-class Assignment(ModalScreen[None]):
+class Assignment(BackdropModal[None]):
     def __init__(self, ticket: dict[str, Any], slot: str):
         super().__init__()
         self.ticket = ticket
@@ -246,7 +248,7 @@ class Assignment(ModalScreen[None]):
                 self.dismiss(None)
 
 
-class TicketActions(ModalScreen[None]):
+class TicketActions(BackdropModal[None]):
     def __init__(self, ticket: dict[str, Any]):
         super().__init__()
         self.ticket = ticket
@@ -290,7 +292,7 @@ class TicketActions(ModalScreen[None]):
             self.dismiss(None)
 
 
-class NewTicket(ModalScreen[None]):
+class NewTicket(BackdropModal[None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="sm"):
             with Horizontal(classes="modal-header"):
