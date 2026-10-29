@@ -206,7 +206,7 @@ class TerminalSession:
         if self.process is not None and self.process.returncode is None:
             try:
                 await terminate_process(self.process)
-            except RuntimeError as exc:
+            except Exception as exc:
                 # Keep the live child and its waiter owned by this supervisor.
                 # Do not clear PID metadata or claim that Stop succeeded.
                 self.entry.update(status="recovery_blocked", error=str(exc))
@@ -343,26 +343,34 @@ class Terminals:
             raise RuntimeError("One or more PTYs could not be stopped") from errors[0]
 
     async def stop_ticket(self, ticket_id: str) -> None:
-        await asyncio.gather(
+        results = await asyncio.gather(
             *(
                 s.stop()
                 for s in list(self.sessions.values())
                 if s.entry.get("owner") == "board"
                 and s.entry.get("ticket") == ticket_id
-            )
+            ),
+            return_exceptions=True,
         )
+        errors = [result for result in results if isinstance(result, BaseException)]
+        if errors:
+            raise RuntimeError("One or more task PTYs could not be stopped") from errors[0]
 
     async def reconcile(self, tickets) -> None:
         columns = {ticket.id: ticket.column for ticket in tickets}
-        await asyncio.gather(
+        results = await asyncio.gather(
             *(
                 s.stop()
                 for s in list(self.sessions.values())
                 if s.entry.get("owner") == "board"
                 and s.entry.get("ticket")
                 and columns.get(s.entry["ticket"]) != s.entry.get("column")
-            )
+            ),
+            return_exceptions=True,
         )
+        errors = [result for result in results if isinstance(result, BaseException)]
+        if errors:
+            raise RuntimeError("One or more moved task PTYs could not stop") from errors[0]
 
     def running(self, owner: str | None = None) -> bool:
         return any(

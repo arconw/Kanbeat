@@ -11,6 +11,50 @@ from kanbeat.state import LocalState
 from kanbeat.supervisor import Supervisor
 
 
+@pytest.mark.asyncio
+async def test_failed_native_stop_awaits_other_workers_and_preserves_blocked_job(
+    tmp_path,
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Blocked native stop")
+    key = supervisor.slot_key(ticket.id, "developer")
+    supervisor.ticket_state(ticket.id)["runtime"] = {
+        "developer": {"status": "running"}
+    }
+
+    class CannotStop:
+        async def stop(self):
+            raise RuntimeError("child cannot exit")
+
+    finished = asyncio.Event()
+
+    async def clean_job():
+        await asyncio.sleep(0.01)
+        finished.set()
+
+    async def blocked_job():
+        await asyncio.Event().wait()
+
+    pending = asyncio.create_task(blocked_job())
+    clean = asyncio.create_task(clean_job())
+    supervisor.runs[key] = CannotStop()
+    supervisor.jobs[key] = pending
+    supervisor.jobs["other:worker"] = clean
+    try:
+        with pytest.raises(RuntimeError, match="Native cleanup incomplete"):
+            await supervisor.stop()
+        assert finished.is_set()
+        assert clean.done()
+        assert key in supervisor.jobs
+        assert "other:worker" not in supervisor.jobs
+        assert supervisor.ticket_state(ticket.id)["runtime"]["developer"]["status"] == (
+            "recovery_blocked"
+        )
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
 def test_missing_state_is_stopped(tmp_path: Path):
     board = Board(tmp_path)
     board.ensure()

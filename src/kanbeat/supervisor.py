@@ -466,34 +466,37 @@ class Supervisor:
         cleanup_errors = []
         try:
             await self.terminals.stop("board")
-        except RuntimeError as exc:
+        except Exception as exc:
             cleanup_errors.append(str(exc))
         self.cancelled.update(key for key, job in self.jobs.items() if not job.done())
         active_runs = list(self.runs.items())
         results = await asyncio.gather(
             *(run.stop() for _, run in active_runs), return_exceptions=True
         )
+        failed_keys = set()
         for (key, _run), result in zip(active_runs, results):
             if not isinstance(result, BaseException):
                 continue
+            failed_keys.add(key)
             cleanup_errors.append(f"{key}: {result}")
             ticket_id, slot = key.split(":", 1)
             worker = self.ticket_state(ticket_id).get("runtime", {}).get(slot)
             if worker is not None:
                 worker.update(status="recovery_blocked", error=str(result))
-        if cleanup_errors:
-            self.notice(
-                "Native cleanup incomplete: " + "; ".join(cleanup_errors), "error"
-            )
-            raise RuntimeError(
-                "Native cleanup incomplete; inspect recovery-blocked processes"
-            )
+        # Completed workers must be awaited even when another child cannot exit.
+        # Keep only unresolved tasks supervised for recovery.
+        completed_keys = [key for key in self.jobs if key not in failed_keys]
         await asyncio.gather(
-            *(job for job in list(self.jobs.values())), return_exceptions=True
+            *(self.jobs[key] for key in completed_keys), return_exceptions=True
         )
-        self.job_scopes.clear()
-        self.cancelled.clear()
-        self.jobs.clear()
+        for key in completed_keys:
+            self.job_scopes.pop(key, None)
+            self.cancelled.discard(key)
+            self.jobs.pop(key, None)
+        if not cleanup_errors:
+            self.job_scopes.clear()
+            self.cancelled.clear()
+            self.jobs.clear()
         for state in [
             *self.runtime.data["tickets"].values(),
             {"runtime": self.hooks.entries},
@@ -512,6 +515,13 @@ class Supervisor:
                     item.pop("pid", None)
                     item.pop("process_identity", None)
         self.notice(reason)
+        if cleanup_errors:
+            self.notice(
+                "Native cleanup incomplete: " + "; ".join(cleanup_errors), "error"
+            )
+            raise RuntimeError(
+                "Native cleanup incomplete; inspect recovery-blocked processes"
+            )
 
     async def play(self) -> None:
         for state in [
