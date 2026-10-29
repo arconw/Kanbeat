@@ -129,7 +129,9 @@ class EventStream:
             if kind in ("step_start", "text"):
                 self.activity = "working"
             if kind == "step_finish":
-                self.activity = "idle"
+                reason = part.get("reason") if isinstance(part, dict) else None
+                if reason != "tool-calls":
+                    self.activity = "idle"
             if kind in (
                 "permission.asked",
                 "permission.v2.asked",

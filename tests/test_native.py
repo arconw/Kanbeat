@@ -104,7 +104,10 @@ def test_native_activity_uses_explicit_events_only():
     assert opencode.activity == "waiting"
     opencode.push({"type": "permission.replied"})
     assert opencode.activity == "working"
-    opencode.push({"type": "step_finish"})
+    opencode.push({"type": "step_finish", "part": {"reason": "tool-calls"}})
+    assert opencode.activity == "working"
+    opencode.push({"type": "step_start"})
+    opencode.push({"type": "step_finish", "part": {"reason": "stop"}})
     assert opencode.activity == "idle"
 
     pi = EventStream("pi")
