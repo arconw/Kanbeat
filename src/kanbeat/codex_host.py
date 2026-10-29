@@ -280,6 +280,7 @@ class CodexRpcClient:
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._subscriptions: set[CodexSubscription] = set()
         self._reader: asyncio.Task[None] | None = None
+        self._outbound: set[asyncio.Task[None]] = set()
         self._closed = False
         self._released = False
         self.user_agent: str | None = None
@@ -416,6 +417,9 @@ class CodexRpcClient:
         self._released = True
         self._closed = True
         reader, self._reader = self._reader, None
+        outbound, self._outbound = list(self._outbound), set()
+        for task in outbound:
+            task.cancel()
         if reader is not None and reader is not asyncio.current_task():
             reader.cancel()
         try:
@@ -424,6 +428,8 @@ class CodexRpcClient:
             pass
         if reader is not None and reader is not asyncio.current_task():
             await asyncio.gather(reader, return_exceptions=True)
+        if outbound:
+            await asyncio.gather(*outbound, return_exceptions=True)
         self._fail_all()
 
     async def _send(self, message: dict[str, Any]) -> None:
@@ -464,7 +470,9 @@ class CodexRpcClient:
         message_id = message.get("id")
         if isinstance(method, str):
             if message_id is not None:
-                await self._reject_server_request(message_id)
+                task = asyncio.create_task(self._reject_server_request(message_id))
+                self._outbound.add(task)
+                task.add_done_callback(self._outbound.discard)
                 return
             params = message.get("params")
             params = params if isinstance(params, dict) else {}
@@ -475,7 +483,7 @@ class CodexRpcClient:
                 if subscription.accepts(notification):
                     subscription.push(notification)
             return
-        future = self._pending.get(message_id) if isinstance(message_id, int) else None
+        future = self._pending.get(message_id) if type(message_id) is int else None
         if future is None or future.done():
             return
         error = message.get("error")

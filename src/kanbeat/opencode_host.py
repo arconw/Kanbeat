@@ -241,7 +241,9 @@ class OpenCodeServeHost:
             "Basic "
             + base64.b64encode(f"{USERNAME}:{self._password}".encode()).decode()
         )
-        self._opener = urllib.request.build_opener(_NoRedirect)
+        self._opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _NoRedirect
+        )
         self._process: asyncio.subprocess.Process | None = None
         self._drain: asyncio.Task[None] | None = None
         self._identity: RuntimeIdentity | None = None
@@ -257,6 +259,10 @@ class OpenCodeServeHost:
     @property
     def identity(self) -> RuntimeIdentity | None:
         return self._identity
+
+    @property
+    def running(self) -> bool:
+        return self._process is not None and self._process.returncode is None
 
     def child_env(self) -> dict[str, str]:
         return {
