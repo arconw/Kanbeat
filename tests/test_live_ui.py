@@ -274,3 +274,23 @@ async def test_reviewer_rows_reorder_without_recreating_existing_slots(
             "reviewer-2",
         ]
         assert task.query_one(f"#task-slot-{ticket.id}-reviewer-1") is original
+
+
+def test_concurrent_clients_preserve_other_group_choices(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    clients = [ViewPreferences(tmp_path), ViewPreferences(tmp_path)]
+
+    def save(client_index):
+        for index in range(25):
+            clients[client_index].remember(f"{client_index}-{index}", bool(index % 2))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(save, range(2)))
+    restored = ViewPreferences(tmp_path)
+    assert len(restored.collapsed) == 50
+    assert restored.collapsed == {
+        f"{client}-{index}": bool(index % 2)
+        for client in range(2)
+        for index in range(25)
+    }

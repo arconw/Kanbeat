@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 from pathlib import Path
 
 from ..filesystem import atomic_json
@@ -26,7 +28,15 @@ class ViewPreferences:
     def remember(self, section: str, collapsed: bool) -> None:
         if self.collapsed.get(section) == collapsed:
             return
-        values = self.read()
-        values[section] = collapsed
-        atomic_json(self.path, values)
-        self.collapsed = values
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor = os.open(
+            self.path.with_suffix(".lock"),
+            os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW,
+            0o600,
+        )
+        with os.fdopen(descriptor, "a") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            values = self.read()
+            values[section] = collapsed
+            atomic_json(self.path, values)
+            self.collapsed = values
