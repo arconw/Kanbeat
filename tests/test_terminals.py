@@ -305,3 +305,94 @@ def test_interactive_prompt_cannot_be_interpreted_as_cli_flag(harness):
     assert "--dangerously-skip-permissions" not in argv
     with pytest.raises(ValueError, match="session identifier"):
         interactive_command(harness, "--dangerously-skip-permissions")
+
+
+@pytest.mark.asyncio
+async def test_wait_returns_on_change_and_times_out_when_idle(supervisor):
+    ticket = supervisor.board.create("Task")
+    terminal_id = (
+        await supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+    )["terminal"]
+    session = supervisor.terminals.get(terminal_id)
+    try:
+        await wait_text(session, "READY")
+        revision = session.snapshot()["revision"]
+        idle = await supervisor.dispatch(
+            {
+                "op": "terminal_wait",
+                "terminal": terminal_id,
+                "revision": revision,
+                "timeout": 0.05,
+            }
+        )
+        assert idle["revision"] == revision
+        waiting = asyncio.create_task(
+            supervisor.dispatch(
+                {
+                    "op": "terminal_wait",
+                    "terminal": terminal_id,
+                    "revision": revision,
+                    "timeout": 5,
+                }
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not waiting.done()
+        session.write("hello\n")
+        changed = await asyncio.wait_for(waiting, 2)
+        assert changed["revision"] > revision
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_batched_input_keeps_order(supervisor):
+    ticket = supervisor.board.create("Task")
+    terminal_id = (
+        await supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+    )["terminal"]
+    session = supervisor.terminals.get(terminal_id)
+    try:
+        await wait_text(session, "READY")
+        events = [{"kind": "key", "key": c, "character": c} for c in "abc"]
+        events.append({"kind": "key", "key": "enter", "character": "\r"})
+        await supervisor.dispatch(
+            {"op": "terminal_input", "terminal": terminal_id, "events": events}
+        )
+        await wait_text(session, "ECHO:abc")
+        with pytest.raises(ValueError, match="Too many"):
+            await supervisor.dispatch(
+                {
+                    "op": "terminal_input",
+                    "terminal": terminal_id,
+                    "events": events * 100,
+                }
+            )
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_wait_wakes_on_stop(supervisor):
+    ticket = supervisor.board.create("Task")
+    terminal_id = (
+        await supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+    )["terminal"]
+    session = supervisor.terminals.get(terminal_id)
+    await wait_text(session, "READY")
+    revision = session.snapshot()["revision"]
+    waiting = asyncio.create_task(
+        supervisor.dispatch(
+            {
+                "op": "terminal_wait",
+                "terminal": terminal_id,
+                "revision": revision,
+                "timeout": 8,
+            }
+        )
+    )
+    await asyncio.sleep(0.05)
+    await supervisor.terminals.stop()
+    result = await asyncio.wait_for(waiting, 2)
+    assert result["revision"] > revision
+    assert session.entry["status"] == "stopped"
