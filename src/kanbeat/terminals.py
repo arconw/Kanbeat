@@ -257,6 +257,7 @@ class Terminals:
             await session.start(argv)
         except BaseException:
             entry["status"] = "failed"
+            self.sessions.pop(entry["id"], None)
             self.state.save()
             raise
 
