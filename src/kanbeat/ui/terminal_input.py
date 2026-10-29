@@ -45,6 +45,21 @@ class TerminalInput:
             try:
                 while True:
                     result = await self.send("terminal_input", events=batch)
+                    rejected = result.get("rejected") or []
+                    if rejected:
+                        indices = {row["index"] for row in rejected}
+                        for row in rejected:
+                            self.report("Terminal input rejected: " + row["error"])
+                        for _ in indices:
+                            self.queue.task_done()
+                        batch = [
+                            event
+                            for index, event in enumerate(batch)
+                            if index not in indices
+                        ]
+                        if not batch:
+                            break
+                        continue
                     if result.get("accepted", True):
                         break
                     await asyncio.sleep(0.01)

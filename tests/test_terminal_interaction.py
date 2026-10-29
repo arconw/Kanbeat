@@ -89,17 +89,19 @@ async def test_invalid_input_batch_is_rejected_before_any_write(terminal, monkey
     monkeypatch.setattr(
         session, "queue_bytes", lambda data: writes.append(data) or True
     )
-    with pytest.raises(ValueError, match="modifier"):
-        await supervisor.dispatch(
-            {
-                "op": "terminal_input",
-                "terminal": session.id,
-                "events": [
-                    {"kind": "key", "character": "x"},
-                    {"kind": "key", "key": "invalid+x"},
-                ],
-            }
-        )
+    result = await supervisor.dispatch(
+        {
+            "op": "terminal_input",
+            "terminal": session.id,
+            "events": [
+                {"kind": "key", "character": "x"},
+                {"kind": "key", "key": "invalid+x"},
+            ],
+        }
+    )
+    assert not result["accepted"]
+    assert result["rejected"][0]["index"] == 1
+    assert "modifier" in result["rejected"][0]["error"]
     assert writes == []
     assert session.board.host.connection is session
 
@@ -239,5 +241,75 @@ async def test_terminal_wait_rejects_nonfinite_timeout(terminal, timeout):
                 "terminal": session.id,
                 "revision": session.revision,
                 "timeout": timeout,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "key,expected", [("pageup", b"\x1b[5~"), ("pagedown", b"\x1b[6~")]
+)
+def test_page_navigation_uses_native_keyboard_sequences(key, expected):
+    board = HistoryBoard(width=80, height=24)
+    capture = InputCapture()
+    board.host.attach(capture)
+    apply_input(SimpleNamespace(board=board), {"kind": "key", "key": key})
+    assert capture.data == expected
+
+
+@pytest.mark.asyncio
+async def test_rejected_event_does_not_disable_input_or_drop_valid_keys(terminal):
+    supervisor, session = terminal
+    failures = []
+
+    async def send(op, **values):
+        return await supervisor.dispatch({"op": op, "terminal": session.id, **values})
+
+    queue = TerminalInput(send, failures.append)
+    for value in [
+        {"kind": "key", "character": "a"},
+        {"kind": "paste", "text": "x" * 16001},
+        {"kind": "key", "character": "b"},
+        {"kind": "key", "key": "ctrl+j", "character": "\n"},
+    ]:
+        await queue.put(value)
+    pump = asyncio.create_task(queue.run())
+    try:
+        await queue.drain()
+        await contains(session, "INPUTHEX:6162")
+        assert failures and not queue.error
+        await queue.put({"kind": "key", "character": "c"})
+        await queue.put({"kind": "key", "key": "ctrl+j", "character": "\n"})
+        await queue.drain()
+        await contains(session, "INPUTHEX:63")
+    finally:
+        pump.cancel()
+        await asyncio.gather(pump, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_automatic_terminal_replies_are_safe_after_close_and_backpressure(
+    terminal, monkeypatch
+):
+    _, session = terminal
+    monkeypatch.setattr(session, "queue_bytes", lambda payload: False)
+    session.board.parser.feed("\x1b[c\x1b[6n")
+    session.close()
+    session.board.parser.feed("\x1b[c\x1b[6n")
+    assert session.fd is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fields", [{"revision": None}, {"timeout": {}}, {"revision": {}}]
+)
+async def test_terminal_wait_rejects_bad_numeric_fields(terminal, fields):
+    supervisor, session = terminal
+    with pytest.raises(ValueError, match="numeric"):
+        await supervisor.dispatch(
+            {
+                "op": "terminal_wait",
+                "terminal": session.id,
+                "revision": session.revision,
+                **fields,
             }
         )

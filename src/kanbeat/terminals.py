@@ -126,8 +126,8 @@ class TerminalSession:
         self.write_bytes(data.encode("utf-8"))
 
     def write_bytes(self, payload: bytes) -> None:
-        if not self.queue_bytes(payload):
-            raise ValueError("Terminal input queue is full")
+        if self.fd is not None:
+            self.queue_bytes(payload)
 
     def queue_bytes(self, payload: bytes) -> bool:
         if self.fd is None:

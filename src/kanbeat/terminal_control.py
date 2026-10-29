@@ -62,11 +62,17 @@ async def terminal_request(
         if op == "terminal_snapshot":
             return terminal.snapshot(request.get("history_position"))
         if op == "terminal_wait":
-            timeout = float(request.get("timeout", 5))
+            try:
+                revision = int(request.get("revision"))
+                timeout = float(request.get("timeout", 5))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    "Terminal revision and timeout must be numeric"
+                ) from exc
             if not math.isfinite(timeout):
                 raise ValueError("Terminal wait timeout must be finite")
             timeout = min(max(timeout, 0), MAX_WAIT_SECONDS)
-            await terminal.wait_for_change(int(request["revision"]), timeout)
+            await terminal.wait_for_change(revision, timeout)
             return terminal.snapshot(request.get("history_position"))
         if op == "terminal_stop":
             if request.get("confirmed") is not True:
@@ -85,13 +91,27 @@ async def terminal_request(
             if not all(isinstance(event, dict) for event in events):
                 raise ValueError("Terminal input events must be objects")
             collector = InputCapture()
+            rejected = []
             connection = terminal.board.host.connection
-            terminal.board.host.attach(collector)
             try:
-                for event in events:
-                    apply_input(terminal, event)
+                for index, event in enumerate(events):
+                    encoded = InputCapture()
+                    terminal.board.host.attach(encoded)
+                    try:
+                        apply_input(terminal, event)
+                        collector.write_bytes(encoded.data)
+                    except (ValueError, TypeError, OverflowError) as exc:
+                        rejected.append({"index": index, "error": str(exc)})
             finally:
                 terminal.board.host.attach(connection)
+            if rejected:
+                if "events" in request:
+                    return {
+                        "accepted": False,
+                        "rejected": rejected,
+                        "revision": terminal.revision,
+                    }
+                raise ValueError(rejected[0]["error"])
             accepted = terminal.queue_bytes(collector.data)
             if "events" in request:
                 return {"accepted": accepted, "revision": terminal.revision}
@@ -116,7 +136,9 @@ class InputCapture:
 
 def apply_input(terminal: TerminalSession, request: dict[str, Any]) -> None:
     if request.get("kind") == "paste":
-        text = str(request.get("text") or "")
+        text = request.get("text") or ""
+        if not isinstance(text, str):
+            raise ValueError("Paste must be text")
         if len(text.encode()) > 16000:
             raise ValueError("Paste is too large")
         terminal.board.input_paste(text)
