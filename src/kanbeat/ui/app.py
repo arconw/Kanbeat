@@ -495,6 +495,8 @@ class KanbeatApp(App[None]):
         """Pulse only confirmed running workers, without rebuilding the board."""
         self._pulse_bright = not self._pulse_bright
         bright = self.animation_level != "none" and self._pulse_bright
+        if not self.screen_stack:
+            return
         for label in self.screen.query(".agent-working"):
             label.set_class(bright, "agent-pulse")
 
