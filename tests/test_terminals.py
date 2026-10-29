@@ -88,6 +88,31 @@ async def test_real_pty_input_resize_and_reconnect(supervisor):
 
 
 @pytest.mark.asyncio
+async def test_failed_stop_preserves_live_terminal_and_recovery_identity(
+    supervisor, monkeypatch
+):
+    terminal_id = await supervisor.terminals.create("codex", owner="board")
+    session = supervisor.terminals.get(terminal_id)
+    original = __import__("kanbeat.terminals", fromlist=["terminate_process"]).terminate_process
+
+    async def refuse_stop(_proc):
+        raise RuntimeError("Owned child did not exit")
+
+    monkeypatch.setattr("kanbeat.terminals.terminate_process", refuse_stop)
+    try:
+        with pytest.raises(RuntimeError, match="Native cleanup incomplete"):
+            await supervisor.stop()
+        assert supervisor.runtime.data["execution"] == "stopped"
+        assert session.entry["status"] == "recovery_blocked"
+        assert session.entry.get("pid") == session.process.pid
+        assert not session.waiter.done()
+    finally:
+        monkeypatch.setattr("kanbeat.terminals.terminate_process", original)
+        await session.stop()
+        assert session.process.returncode is not None
+
+
+@pytest.mark.asyncio
 async def test_board_stop_does_not_stop_independent_terminal(supervisor):
     board_id = await supervisor.terminals.create("codex", owner="board")
     custom_id = await supervisor.terminals.create("claude", owner="custom")

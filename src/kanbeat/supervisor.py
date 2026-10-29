@@ -428,9 +428,19 @@ class Supervisor:
                         f"{ticket.id}/{worker}: three unsuccessful attempts",
                     )
             finally:
-                self.runs.pop(key, None)
-                entry.pop("pid", None)
-                entry.pop("process_identity", None)
+                active = self.runs.get(key)
+                still_alive = (
+                    active is not None
+                    and active.process is not None
+                    and active.process.returncode is None
+                )
+                if still_alive:
+                    entry["status"] = "recovery_blocked"
+                    entry.setdefault("error", "Native child could not be reaped")
+                else:
+                    self.runs.pop(key, None)
+                    entry.pop("pid", None)
+                    entry.pop("process_identity", None)
                 self.save()
 
         self.cancelled.discard(key)
@@ -453,11 +463,27 @@ class Supervisor:
     async def stop(self, reason: str = "Board stopped") -> None:
         self.runtime.data["execution"] = "stopped"
         self.save()
-        await self.terminals.stop("board")
+        cleanup_errors = []
+        try:
+            await self.terminals.stop("board")
+        except RuntimeError as exc:
+            cleanup_errors.append(str(exc))
         self.cancelled.update(key for key, job in self.jobs.items() if not job.done())
-        await asyncio.gather(
-            *(run.stop() for run in list(self.runs.values())), return_exceptions=True
+        active_runs = list(self.runs.items())
+        results = await asyncio.gather(
+            *(run.stop() for _, run in active_runs), return_exceptions=True
         )
+        for (key, _run), result in zip(active_runs, results):
+            if not isinstance(result, BaseException):
+                continue
+            cleanup_errors.append(f"{key}: {result}")
+            ticket_id, slot = key.split(":", 1)
+            worker = self.ticket_state(ticket_id).get("runtime", {}).get(slot)
+            if worker is not None:
+                worker.update(status="recovery_blocked", error=str(result))
+        if cleanup_errors:
+            self.notice("Native cleanup incomplete: " + "; ".join(cleanup_errors), "error")
+            raise RuntimeError("Native cleanup incomplete; inspect recovery-blocked processes")
         await asyncio.gather(
             *(job for job in list(self.jobs.values())), return_exceptions=True
         )

@@ -204,7 +204,15 @@ class TerminalSession:
     async def stop(self) -> None:
         self.stop_requested = True
         if self.process is not None and self.process.returncode is None:
-            await terminate_process(self.process)
+            try:
+                await terminate_process(self.process)
+            except RuntimeError as exc:
+                # Keep the live child and its waiter owned by this supervisor.
+                # Do not clear PID metadata or claim that Stop succeeded.
+                self.entry.update(status="recovery_blocked", error=str(exc))
+                self.state.save()
+                self.touch()
+                raise
         if self.waiter is not None:
             await self.waiter
 
@@ -322,13 +330,17 @@ class Terminals:
         return self.sessions[terminal_id]
 
     async def stop(self, owner: str | None = None) -> None:
-        await asyncio.gather(
+        results = await asyncio.gather(
             *(
                 s.stop()
                 for s in list(self.sessions.values())
                 if owner is None or s.entry["owner"] == owner
-            )
+            ),
+            return_exceptions=True,
         )
+        errors = [result for result in results if isinstance(result, BaseException)]
+        if errors:
+            raise RuntimeError("One or more PTYs could not be stopped") from errors[0]
 
     async def stop_ticket(self, ticket_id: str) -> None:
         await asyncio.gather(

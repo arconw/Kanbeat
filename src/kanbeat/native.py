@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -21,6 +22,7 @@ from .launcher import external_environment
 
 HARNESS = {"codex": "codex", "claude": "claude", "opencode": "opencode", "pi": "pi"}
 VERDICT = re.compile(r"(?m)^KANBEAT_VERDICT:\s*(approve|changes_requested)\s*$")
+LOGGER = logging.getLogger(__name__)
 
 
 def available(name: str) -> bool:
@@ -216,6 +218,7 @@ def signal_owned_process(proc: asyncio.subprocess.Process, signum: int) -> None:
     try:
         owned_group = os.getpgid(proc.pid) == proc.pid
     except (ProcessLookupError, PermissionError):
+        LOGGER.debug("Cannot verify group of tracked process %s", proc.pid)
         owned_group = False
     if owned_group:
         try:
