@@ -28,6 +28,7 @@ from .terminal_control import terminal_request
 from .launcher import app_command, external_environment, internal_environment
 from .host_process import HostError, RuntimeIdentity, stop_recorded
 from .opencode_host import (
+    OpenCodeHostError,
     OpenCodeHttpError,
     OpenCodePromptTooLarge,
     OpenCodeServeHost,
@@ -107,8 +108,17 @@ class Supervisor:
                 except OpenCodeHttpError as error:
                     if error.status == 404:
                         continue
-                    raise
-                return metadata.model
+                    logging.getLogger(__name__).warning(
+                        "OpenCode config read failed: %s", error
+                    )
+                    return None
+                except (OpenCodeHostError, OSError, asyncio.TimeoutError) as error:
+                    logging.getLogger(__name__).warning(
+                        "OpenCode config read failed: %s", error
+                    )
+                    return None
+                if metadata.model is not None:
+                    return metadata.model
         return None
 
     async def close_hosts(self) -> None:

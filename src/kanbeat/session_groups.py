@@ -59,7 +59,6 @@ class SessionGroups:
 
     async def open_opencode_config(self) -> dict[str, Any]:
         assert self.opencode_host is not None
-        host = await self.opencode_host()
         matches = [
             entry
             for entry in self.terminals.entries.values()
@@ -84,6 +83,7 @@ class SessionGroups:
                 )
             if attached and status in ("starting", "running"):
                 return {"terminal": entry["id"]}
+            host = await self.opencode_host()
             if not attached and status in ("starting", "running", "stopping"):
                 pid = entry.get("pid")
                 current = process_identity(int(pid)) if pid is not None else None
@@ -112,6 +112,7 @@ class SessionGroups:
                 env=host.child_env(),
             )
             return {"terminal": entry["id"]}
+        host = await self.opencode_host()
         metadata = await host.create_session(directory=self.state.board.project)
         terminal_id = await self.terminals.create(
             "opencode",

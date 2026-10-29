@@ -7,6 +7,7 @@ import pytest
 from kanbeat.host_process import RuntimeIdentity
 from kanbeat.native import process_identity
 from kanbeat.opencode_host import (
+    OpenCodeHostError,
     OpenCodeHttpError,
     OpenCodeModel,
     OpenCodeSessionMetadata,
@@ -350,6 +351,62 @@ async def test_opencode_config_session_uses_the_shared_host(runtime):
     assert again == first
     assert len(host.sessions) == 1
     await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_config_open_does_not_start_host_for_running_terminal(
+    runtime, monkeypatch
+):
+    supervisor, _host = runtime
+    entry = {
+        "id": "cfg",
+        "owner": "custom",
+        "role": "config",
+        "harness": "opencode",
+        "status": "running",
+        "native_session": "ses_test",
+    }
+    supervisor.terminals.entries["cfg"] = entry
+    supervisor.terminals.sessions["cfg"] = object()
+
+    async def broken():
+        raise OSError("host must not start")
+
+    monkeypatch.setattr(supervisor, "opencode_host", broken)
+    result = await supervisor.dispatch(
+        {"op": "session_config_open", "harness": "opencode"}
+    )
+    assert result == {"terminal": "cfg"}
+
+
+@pytest.mark.asyncio
+async def test_config_model_failure_does_not_block_worker(runtime):
+    supervisor, host = runtime
+    ticket = supervisor.board.create("Task", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["phase"] = "progress"
+    state["iteration"] = 1
+    state["developer"]["harness"] = "opencode"
+    supervisor.terminals.entries["cfg"] = {
+        "id": "cfg",
+        "owner": "custom",
+        "role": "config",
+        "harness": "opencode",
+        "native_session": "ses_config",
+    }
+
+    async def failing_read(session_id):
+        raise OpenCodeHostError("config unavailable")
+
+    host.read_session = failing_read
+    supervisor.runtime.data["execution"] = "running"
+    try:
+        await supervisor.start_worker(ticket, "developer", state["developer"])
+        await supervisor.jobs["001:developer"]
+        assert host.models[0] is None
+        assert state["runtime"]["developer"]["status"] == "completed"
+    finally:
+        await supervisor.terminals.stop()
 
 
 @pytest.mark.asyncio
