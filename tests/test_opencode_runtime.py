@@ -6,7 +6,11 @@ import pytest
 
 from kanbeat.host_process import RuntimeIdentity
 from kanbeat.native import process_identity
-from kanbeat.opencode_host import OpenCodeHttpError, OpenCodeSessionMetadata
+from kanbeat.opencode_host import (
+    OpenCodeHttpError,
+    OpenCodePromptTooLarge,
+    OpenCodeSessionMetadata,
+)
 from kanbeat.supervisor import Supervisor
 
 
@@ -211,6 +215,56 @@ async def test_transient_host_failure_retries_the_worker(runtime, monkeypatch):
         assert calls >= 2
         assert host.created == 1
         assert state["runtime"]["developer"]["status"] == "completed"
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_oversized_prompt_fails_without_retries(runtime, monkeypatch):
+    supervisor, host = runtime
+    ticket = supervisor.board.create("Task", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["phase"] = "progress"
+    state["iteration"] = 1
+    state["developer"]["harness"] = "opencode"
+    supervisor.runtime.data["execution"] = "running"
+
+    def too_large(*args, **kwargs):
+        raise OpenCodePromptTooLarge("Prompt is too large for the OpenCode worker")
+
+    monkeypatch.setattr(host, "worker_argv", too_large)
+    try:
+        await supervisor.start_worker(ticket, "developer", state["developer"])
+        await supervisor.jobs["001:developer"]
+        runtime_entry = state["runtime"]["developer"]
+        assert runtime_entry["status"] == "failed"
+        assert runtime_entry["attempts"] == 1
+        assert "too large" in runtime_entry["error"]
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_terminal_attach_recovers_stale_recovery_blocked_entry(runtime):
+    supervisor, host = runtime
+    host.sessions["ses_test"] = OpenCodeSessionMetadata("ses_test", None, None)
+    ticket = supervisor.board.create("Task", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["developer"] = {"harness": "opencode", "session": "ses_test"}
+    state["runtime"]["developer"] = {"status": "running", "harness": "opencode"}
+    attached = await supervisor.dispatch({"op": "terminal_attach", "ticket": ticket.id})
+    entry = supervisor.terminals.entries[attached["terminal"]]
+    try:
+        await supervisor.terminals.stop()
+        supervisor.terminals.sessions.pop(attached["terminal"])
+        entry["status"] = "recovery_blocked"
+        entry.pop("pid", None)
+        entry.pop("process_identity", None)
+        again = await supervisor.dispatch(
+            {"op": "terminal_attach", "ticket": ticket.id}
+        )
+        assert again["terminal"] == attached["terminal"]
+        assert entry["status"] == "running"
     finally:
         await supervisor.terminals.stop()
 

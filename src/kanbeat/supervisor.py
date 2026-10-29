@@ -27,7 +27,11 @@ from .session_groups import SessionGroups
 from .terminal_control import terminal_request
 from .launcher import app_command, external_environment, internal_environment
 from .host_process import HostError, RuntimeIdentity, stop_recorded
-from .opencode_host import OpenCodeHttpError, OpenCodeServeHost
+from .opencode_host import (
+    OpenCodeHttpError,
+    OpenCodePromptTooLarge,
+    OpenCodeServeHost,
+)
 from .ipc import socket_path, prepare_socket_directory, remove_socket, bind_socket
 
 MAX_INPUT = 1024 * 1024
@@ -501,6 +505,15 @@ class Supervisor:
                         entry["error"] = str(exc)
                         entry.pop("activity", None)
                         self.notice(f"{ticket.id}/{worker}: {exc}", "warning")
+                        if isinstance(exc, OpenCodePromptTooLarge):
+                            entry["status"] = "failed"
+                            await self.fail_ticket(
+                                ticket.id,
+                                stage,
+                                iteration,
+                                f"{ticket.id}/{worker}: {exc}",
+                            )
+                            return
                         if entry["attempts"] >= 3:
                             entry["status"] = "failed"
                             await self.fail_ticket(
@@ -629,6 +642,27 @@ class Supervisor:
             except (HostError, OSError, RuntimeError):
                 continue
             if not stopped and process_identity(runtime.pid) == runtime.identity:
+                try:
+                    os.kill(runtime.pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                for _ in range(30):
+                    await asyncio.sleep(0.1)
+                    if process_identity(runtime.pid) != runtime.identity:
+                        stopped = True
+                        break
+                if not stopped:
+                    try:
+                        os.kill(runtime.pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                    await asyncio.sleep(0.2)
+                    stopped = process_identity(runtime.pid) != runtime.identity
+            if not stopped and process_identity(runtime.pid) == runtime.identity:
+                self.notice(
+                    f"{kind}: could not stop orphaned host process {runtime.pid}",
+                    "error",
+                )
                 continue
             self.runtime.data["hosts"].pop(kind, None)
         recovery = list(self.runtime.data["tickets"].items())

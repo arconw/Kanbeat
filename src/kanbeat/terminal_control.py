@@ -5,6 +5,7 @@ import math
 from typing import Any, TYPE_CHECKING
 
 from .host_process import HostError
+from .native import process_identity
 from .opencode_host import OpenCodeHttpError
 
 if TYPE_CHECKING:
@@ -116,8 +117,24 @@ async def terminal_request(
                     )
                 if attached and status in ("starting", "running"):
                     return {"terminal": terminal_id}
-                if not attached and status in ("starting", "running", "stopping"):
+                if not attached and status in (
+                    "starting",
+                    "running",
+                    "stopping",
+                    "recovery_blocked",
+                ):
+                    if status == "recovery_blocked":
+                        pid = entry.get("pid")
+                        current = process_identity(int(pid)) if pid else None
+                        saved = entry.get("process_identity")
+                        if current is not None and (not saved or current == saved):
+                            raise ValueError(
+                                "An orphaned attach process is still running; "
+                                "resolve it before reopening"
+                            )
                     entry["status"] = "interrupted"
+                    entry.pop("pid", None)
+                    entry.pop("process_identity", None)
                     supervisor.save()
                 await supervisor.terminals.restart(
                     terminal_id,

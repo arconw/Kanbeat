@@ -41,6 +41,10 @@ class OpenCodeTimeout(OpenCodeHostError, TimeoutError):
     pass
 
 
+class OpenCodePromptTooLarge(OpenCodeHostError):
+    pass
+
+
 class OpenCodeHttpError(OpenCodeHostError):
     def __init__(self, status: int):
         super().__init__(f"OpenCode server returned HTTP {status}")
@@ -210,7 +214,7 @@ def worker_argv(
         if not prompt or "\x00" in prompt:
             raise OpenCodeHostError("Invalid prompt for the OpenCode worker")
         if len(prompt.encode()) > MAX_PROMPT_BYTES:
-            raise OpenCodeHostError("Prompt is too large for the OpenCode worker")
+            raise OpenCodePromptTooLarge("Prompt is too large for the OpenCode worker")
         argv += ["--", prompt]
     return argv
 
