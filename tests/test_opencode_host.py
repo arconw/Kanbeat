@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -32,6 +33,7 @@ FAKE_OPENCODE = textwrap.dedent(
     #!{python}
     import json, os, sys, threading, time
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from socketserver import TCPServer
 
     LOG = os.environ["FAKE_LOG"]
     MODE = os.environ.get("FAKE_MODE", "ok")
@@ -42,6 +44,13 @@ FAKE_OPENCODE = textwrap.dedent(
     def log(entry):
         with open(LOG, "a") as handle:
             handle.write(json.dumps(entry) + "\\n")
+
+    class Server(ThreadingHTTPServer):
+        def server_bind(self):
+            TCPServer.server_bind(self)
+            host, port = self.server_address[:2]
+            self.server_name = host
+            self.server_port = port
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -107,7 +116,7 @@ FAKE_OPENCODE = textwrap.dedent(
         if MODE == "silent":
             print("nothing useful", flush=True)
             time.sleep(3600)
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server = Server(("127.0.0.1", 0), Handler)
         port = server.server_address[1]
         if MODE == "noisy":
             sys.stdout.write("x" * 200000 + "\\n")
@@ -164,10 +173,14 @@ def logged(short_dir):
 
 def alive(pid):
     try:
-        state = Path(f"/proc/{pid}/stat").read_text().split(") ")[1][0]
-    except OSError:
+        state = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "stat="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
         return False
-    return state != "Z"
+    return bool(state) and not state.startswith("Z")
 
 
 def test_models_validate_provider_variant_strings():

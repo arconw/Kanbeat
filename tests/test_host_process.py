@@ -1,6 +1,5 @@
 import asyncio
 import os
-from pathlib import Path
 import subprocess
 
 import pytest
@@ -11,9 +10,14 @@ from kanbeat.native import process_identity
 
 def alive(pid):
     try:
-        return Path(f"/proc/{pid}/stat").read_text().split(") ")[1][0] != "Z"
-    except OSError:
+        state = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "stat="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
         return False
+    return bool(state) and not state.startswith("Z")
 
 
 def spawn(new_session):

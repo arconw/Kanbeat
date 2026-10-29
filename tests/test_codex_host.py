@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -181,9 +182,23 @@ def logged(short_dir):
 
 
 def alive(pid):
-    return (
-        process_identity(pid) is not None
-        and Path(f"/proc/{pid}/stat").read_text().split(") ")[1][0] != "Z"
+    try:
+        state = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "stat="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return bool(state) and not state.startswith("Z")
+
+
+def command_line(pid):
+    proc = Path(f"/proc/{pid}/cmdline")
+    if proc.exists():
+        return proc.read_bytes()
+    return subprocess.check_output(
+        ["ps", "-p", str(pid), "-o", "command="], stderr=subprocess.DEVNULL
     )
 
 
@@ -550,7 +565,7 @@ async def test_private_mode_uses_ephemeral_loopback_port_and_token_only_in_env(
             json.dumps([entry, identity.to_dict()]) + (short_dir / "log").read_text()
         )
         assert token not in everything
-        cmdline = Path(f"/proc/{identity.pid}/cmdline").read_bytes()
+        cmdline = command_line(identity.pid)
         assert token.encode() not in cmdline
         assert (await host.request("thread/loaded/list"))["data"]
         observer = await host.connect_observer()
