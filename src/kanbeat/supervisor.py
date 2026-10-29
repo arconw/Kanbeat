@@ -1065,19 +1065,21 @@ class Supervisor:
         finally:
             try:
                 await self.stop("Supervisor exiting")
-                await self.terminals.stop()
-                await self.close_hosts()
             finally:
-                if self.server is not None:
-                    self.server.close()
-                    await self.server.wait_closed()
                 try:
-                    remove_socket(self.socket)
-                except (OSError, RuntimeError) as exc:
-                    logging.getLogger(__name__).warning("Socket cleanup: %s", exc)
-                if self.lock_stream is not None:
-                    self.lock_stream.close()
-                    self.lock_stream = None
+                    await self.terminals.stop()
+                finally:
+                    await self.close_hosts()
+            if self.server is not None:
+                self.server.close()
+                await self.server.wait_closed()
+            try:
+                remove_socket(self.socket)
+            except (OSError, RuntimeError) as exc:
+                logging.getLogger(__name__).warning("Socket cleanup: %s", exc)
+            if self.lock_stream is not None:
+                self.lock_stream.close()
+                self.lock_stream = None
 
 
 async def request(
