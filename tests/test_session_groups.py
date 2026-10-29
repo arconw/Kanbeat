@@ -231,3 +231,26 @@ async def test_recovery_blocked_session_can_restart_after_manual_resolution(
         assert entry["status"] == "running"
     finally:
         await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_group_removal_keeps_sessions_page_and_controls(supervisor, monkeypatch):
+    from kanbeat.ui.sessions import GroupForm, SessionsView
+
+    group_id = (
+        await supervisor.dispatch({"op": "group_create", "name": "Disposable"})
+    )["group"]
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.click("#nav-sessions")
+        await pilot.click("#remove-group-" + group_id)
+        await pilot.pause()
+        assert isinstance(app.screen, Confirm)
+        await pilot.click("#yes")
+        await pilot.pause()
+        assert group_id not in supervisor.session_groups.groups
+        assert app.query_one(SessionsView).is_mounted
+        await pilot.click("#new-group")
+        await pilot.pause()
+        assert isinstance(app.screen, GroupForm)

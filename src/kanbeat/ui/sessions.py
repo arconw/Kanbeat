@@ -278,11 +278,14 @@ class SessionsView(VerticalScroll):
             return
         event.stop()
 
-    @work
-    async def remove_group(self, group_id: str) -> None:
+    def remove_group(self, group_id: str) -> None:
+        self.app.run_worker(self.confirm_group_removal(group_id))
+
+    async def confirm_group_removal(self, group_id: str) -> None:
         from .app import Confirm
 
-        if await self.app.push_screen_wait(Confirm("Remove this empty session group?")):
-            await self.app.execute(
+        app = self.app
+        if await app.push_screen_wait(Confirm("Remove this empty session group?")):
+            await app.execute(
                 {"op": "group_delete", "group": group_id, "confirmed": True}
             )
