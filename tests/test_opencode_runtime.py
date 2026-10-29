@@ -187,6 +187,35 @@ async def test_recover_orphans_stops_recorded_host(runtime):
 
 
 @pytest.mark.asyncio
+async def test_transient_host_failure_retries_the_worker(runtime, monkeypatch):
+    supervisor, host = runtime
+    ticket = supervisor.board.create("Task", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["phase"] = "progress"
+    state["iteration"] = 1
+    state["developer"]["harness"] = "opencode"
+    supervisor.runtime.data["execution"] = "running"
+    calls = 0
+
+    async def flaky_host():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("host temporarily unavailable")
+        return host
+
+    monkeypatch.setattr(supervisor, "opencode_host", flaky_host)
+    try:
+        await supervisor.start_worker(ticket, "developer", state["developer"])
+        await supervisor.jobs["001:developer"]
+        assert calls >= 2
+        assert host.created == 1
+        assert state["runtime"]["developer"]["status"] == "completed"
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
 async def test_terminal_attach_reports_missing_and_stale_sessions(runtime):
     supervisor, _host = runtime
     ticket = supervisor.board.create("Task", column="progress")
