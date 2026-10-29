@@ -134,7 +134,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          release_id="$(gh api --paginate "repos/$GH_REPO/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
+          release_id="$(gh api --paginate "repos/$GH_REPO/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | sed -n '1p')"
           if [ -n "$release_id" ]; then
             is_draft="$(gh api "repos/$GH_REPO/releases/$release_id" --jq .draft)"
             if [ "$is_draft" != true ]; then
@@ -151,9 +151,30 @@ jobs:
             done
           else
             gh release create "$TAG" .tmp/assets/* --draft --verify-tag --title "Kanbeat ${TAG#v}" --notes-file .tmp/notes.md
-            release_id="$(gh api --paginate "repos/$GH_REPO/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
+            release_id="$(gh api --paginate "repos/$GH_REPO/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | sed -n '1p')"
+          fi
+          if [ -z "$release_id" ]; then
+            echo "Draft release ID was not found for $TAG after creation." >&2
+            exit 1
           fi
           saved_tag="$(gh api "repos/$GH_REPO/releases/$release_id" --jq .tag_name)"
           saved_draft="$(gh api "repos/$GH_REPO/releases/$release_id" --jq .draft)"
           test "$saved_tag" = "$TAG"
           test "$saved_draft" = true
+          gh api --paginate --slurp "repos/$GH_REPO/releases/$release_id/assets" > .tmp/uploaded-assets.json
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          expected = {
+              path.name: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in Path(".tmp/assets").iterdir()
+          }
+          pages = json.loads(Path(".tmp/uploaded-assets.json").read_text())
+          assets = [asset for page in pages for asset in page]
+          uploaded = {asset["name"]: asset.get("digest") for asset in assets}
+          if len(assets) != len(expected) or uploaded != expected:
+              raise SystemExit("Draft release assets or SHA-256 digests do not match")
+          print("Verified all draft release assets and SHA-256 digests")
+          PY
