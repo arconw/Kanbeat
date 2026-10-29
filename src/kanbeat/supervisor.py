@@ -23,6 +23,7 @@ from .native import NativeRun, Outcome, VERDICT, available, process_identity
 from .state import LocalState
 from .hooks import TransitionHooks
 from .terminals import Terminals
+from .session_groups import SessionGroups
 from .terminal_control import terminal_request
 from .ipc import socket_path, prepare_socket_directory, remove_socket, bind_socket
 
@@ -37,6 +38,7 @@ class Supervisor:
         self.runtime = LocalState(self.board)
         self.hooks = TransitionHooks(self.runtime)
         self.terminals = Terminals(self.runtime)
+        self.session_groups = SessionGroups(self.runtime, self.terminals)
         self.state_dir = self.board.root / ".state"
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.socket = socket_path(self.board.project)
@@ -748,7 +750,7 @@ class Supervisor:
             "config": self.runtime.config,
             "custom": self.runtime.data.get("custom", {}),
             "hooks": self.hooks.entries,
-            "terminals": self.terminals.entries,
+            "terminals": self.terminals.snapshot(),
         }
 
     async def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -767,6 +769,8 @@ class Supervisor:
         op = request.get("op")
         if op == "snapshot":
             return self.snapshot()
+        if str(op).startswith(("session_", "group_")):
+            return await self.session_groups.dispatch(request)
         if str(op).startswith("terminal_"):
             return await terminal_request(self, request)
         if op == "play":

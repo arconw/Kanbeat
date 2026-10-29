@@ -2,7 +2,7 @@
 
 A filesystem-native Kanban with one persistent local supervisor and multiple rich terminal clients. Native coding CLIs do the work. The filesystem determines the ticket status.
 
-> **Early rewrite, v0.4.0. Not yet a production release.** The filesystem-native board, supervisor, and headless CLI event transport have an initial implementation. Transition hooks run through isolated native CLI sessions. Interactive task terminals are available while the board is stopped. Custom session groups are not implemented yet. See [interactive terminals](docs/terminals.md).
+> **Early rewrite, v0.5.0. Not yet a production release.** The filesystem-native board, supervisor, and headless CLI event transport have an initial implementation. Transition hooks run through isolated native CLI sessions. Interactive task terminals are available while the board is stopped. Custom groups and independent native sessions are available in Sessions. See [interactive terminals](docs/terminals.md).
 
 [Standalone design specification](docs/design/design.html)
 

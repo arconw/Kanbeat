@@ -223,7 +223,7 @@ class Terminals:
         group: str = "",
         title: str = "",
     ) -> str:
-        argv = interactive_command(harness, native_session, prompt)
+        interactive_command(harness, native_session, prompt)
         terminal_id = uuid.uuid4().hex
         entry = {
             "id": terminal_id,
@@ -235,21 +235,43 @@ class Terminals:
             "native_session": native_session,
             "group": group,
             "title": title or harness,
+            "prompt": prompt,
             "status": "starting",
             "rows": 24,
             "cols": 80,
         }
         self.entries[terminal_id] = entry
+        await self.start_entry(entry)
+        return terminal_id
+
+    async def start_entry(self, entry: dict[str, Any]) -> None:
+        argv = interactive_command(
+            entry["harness"], entry.get("native_session"), entry.get("prompt", "")
+        )
+        entry["status"] = "starting"
+        entry.pop("exit_code", None)
         self.state.save()
         session = TerminalSession(self.state, entry)
-        self.sessions[terminal_id] = session
+        self.sessions[entry["id"]] = session
         try:
             await session.start(argv)
         except BaseException:
             entry["status"] = "failed"
+            self.sessions.pop(entry["id"], None)
             self.state.save()
             raise
-        return terminal_id
+
+    async def restart(self, terminal_id: str) -> None:
+        entry = self.entries[terminal_id]
+        if entry.get("status") in ("starting", "running", "recovery_blocked"):
+            raise ValueError("Stop the session before restarting it")
+        await self.start_entry(entry)
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            key: {**entry, "attached": key in self.sessions}
+            for key, entry in self.entries.items()
+        }
 
     def get(self, terminal_id: str) -> TerminalSession:
         if terminal_id not in self.sessions:

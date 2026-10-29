@@ -216,7 +216,17 @@ async def test_terminal_exit_is_reaped(supervisor):
 async def test_log_open_failure_closes_pty(supervisor, monkeypatch):
     from pathlib import Path
 
+    from kanbeat.terminals import TerminalSession
+
     original = Path.open
+    start = TerminalSession.start
+    instances = []
+
+    async def capture_start(session, argv):
+        instances.append(session)
+        await start(session, argv)
+
+    monkeypatch.setattr(TerminalSession, "start", capture_start)
 
     def fail_log(path, *args, **kwargs):
         if path.name.startswith("terminal-"):
@@ -226,7 +236,9 @@ async def test_log_open_failure_closes_pty(supervisor, monkeypatch):
     monkeypatch.setattr(Path, "open", fail_log)
     with pytest.raises(OSError, match="Log unavailable"):
         await supervisor.terminals.create("codex")
-    session = next(iter(supervisor.terminals.sessions.values()))
+    session = instances[0]
+    assert not supervisor.terminals.sessions
+    assert not supervisor.terminals.snapshot()[session.id]["attached"]
     assert session.fd is None
     assert session.process is None
     assert session.entry["status"] == "failed"
