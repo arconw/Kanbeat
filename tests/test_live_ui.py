@@ -367,6 +367,8 @@ async def test_task_session_process_status_updates_without_rebuilding(
         assert "failed (exit 17)" in str(developer.render())
         assert "native call failed" in str(developer.render())
         assert "PTY running" in str(reviewer.render())
+        assert "native call failed" in str(developer.tooltip)
+        assert "PTY running" in str(reviewer.tooltip)
         assert app.query_one("#section-tasks") is tasks
         assert not tasks.collapsed
 

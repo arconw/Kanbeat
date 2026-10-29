@@ -31,7 +31,9 @@ class SessionRow(Horizontal):
         return f"{entry['title']} / {entry['harness']} / {lifecycle_label(entry)}"
 
     def compose(self) -> ComposeResult:
-        yield Static(self.label(self.entry), classes="slot-name", markup=False)
+        label = Static(self.label(self.entry), classes="slot-name", markup=False)
+        label.tooltip = self.label(self.entry)
+        yield label
         yield Button(
             "Open",
             id="open-session-" + self.entry["id"],
@@ -41,7 +43,9 @@ class SessionRow(Horizontal):
 
     def update_entry(self, entry):
         if self.label(entry) != self.label(self.entry):
-            self.query_one(Static).update(self.label(entry))
+            label = self.query_one(Static)
+            label.update(self.label(entry))
+            label.tooltip = self.label(entry)
         self.query_one("#open-session-" + entry["id"], Button).disabled = not entry.get(
             "attached"
         )
@@ -98,14 +102,14 @@ class TaskSessions(Vertical):
             )
         )
         row.compose_add_child(Button("Logs", id=f"log-{self.ticket['id']}-{slot}"))
-        row.compose_add_child(
-            Static(
-                self.slot_status(self.ticket, slot, self.terminals),
-                classes="task-status",
-                id=f"task-status-{self.ticket['id']}-{slot}",
-                markup=False,
-            )
+        status = Static(
+            self.slot_status(self.ticket, slot, self.terminals),
+            classes="task-status",
+            id=f"task-status-{self.ticket['id']}-{slot}",
+            markup=False,
         )
+        status.tooltip = self.slot_status(self.ticket, slot, self.terminals)
+        row.compose_add_child(status)
         return row
 
     def compose(self) -> ComposeResult:
@@ -132,9 +136,9 @@ class TaskSessions(Vertical):
             if slot not in rows:
                 await self.mount(self.row(slot))
             self.query_one(f"#term-{ticket['id']}-{slot}", Button).disabled = running
-            self.query_one(f"#task-status-{ticket['id']}-{slot}", Static).update(
-                self.slot_status(ticket, slot, self.terminals)
-            )
+            status = self.query_one(f"#task-status-{ticket['id']}-{slot}", Static)
+            status.update(self.slot_status(ticket, slot, self.terminals))
+            status.tooltip = self.slot_status(ticket, slot, self.terminals)
         if [row.name for row in self.query(".slot-row")] != wanted:
             order = {slot: index for index, slot in enumerate(wanted)}
             self.sort_children(key=lambda row: order.get(row.name, -1))
