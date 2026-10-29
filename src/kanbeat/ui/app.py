@@ -214,7 +214,9 @@ class TicketView(BackdropModal[None]):
         elif name.startswith("conf-"):
             self.app.push_screen(Assignment(self.ticket, name[5:]))
         elif name.startswith("terminal-"):
-            await self.app.open_task_terminal(self.ticket["id"], name[len("terminal-") :])
+            await self.app.open_task_terminal(
+                self.ticket["id"], name[len("terminal-") :]
+            )
         elif name.startswith("log-"):
             self.app.push_screen(LogView(self.ticket["id"], name[4:]))
         elif name.startswith("remove-"):
@@ -289,15 +291,20 @@ class Assignment(BackdropModal[None]):
                 state.get("developer", {})
                 if self.slot == "developer"
                 else next(
-                    (row for row in state.get("reviewers", []) if row.get("id") == self.slot),
+                    (
+                        row
+                        for row in state.get("reviewers", [])
+                        if row.get("id") == self.slot
+                    ),
                     {},
                 )
             )
-            if (
-                self.query_one("#harness", Select).value != (saved.get("harness") or "")
-                or self.query_one("#cp", TextArea).text != str(saved.get("cp") or "")
-            ):
-                self.app.notify("Save slot changes before opening its terminal", severity="warning")
+            if self.query_one("#harness", Select).value != (
+                saved.get("harness") or ""
+            ) or self.query_one("#cp", TextArea).text != str(saved.get("cp") or ""):
+                self.app.notify(
+                    "Save slot changes before opening its terminal", severity="warning"
+                )
                 return
             await self.app.open_task_terminal(self.ticket["id"], self.slot)
         elif name == "save":

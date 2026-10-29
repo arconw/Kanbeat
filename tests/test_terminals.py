@@ -184,9 +184,10 @@ def test_interactive_commands_preserve_native_security(name):
         assert ("native-session" in argv) == bool(session)
 
 
-
 @pytest.mark.asyncio
-async def test_ticket_and_assignment_reopen_exact_live_task_ptys(supervisor, monkeypatch):
+async def test_ticket_and_assignment_reopen_exact_live_task_ptys(
+    supervisor, monkeypatch
+):
     ticket = supervisor.board.create("Task")
     state = supervisor.ticket_state(ticket.id)
     state["reviewers"] = [{"id": "reviewer-1"}]
