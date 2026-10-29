@@ -649,20 +649,24 @@ class Supervisor:
                 self.notice(f"{kind}: could not stop recorded host: {exc}", "error")
                 continue
             if not stopped and process_identity(runtime.pid) == runtime.identity:
-                try:
-                    os.kill(runtime.pid, signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    pass
+
+                def signal_host(signum: int) -> None:
+                    try:
+                        if os.getpgid(runtime.pid) == runtime.pid:
+                            os.killpg(runtime.pid, signum)
+                        else:
+                            os.kill(runtime.pid, signum)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+
+                signal_host(signal.SIGTERM)
                 for _ in range(30):
                     await asyncio.sleep(0.1)
                     if process_identity(runtime.pid) != runtime.identity:
                         stopped = True
                         break
                 if not stopped:
-                    try:
-                        os.kill(runtime.pid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        pass
+                    signal_host(signal.SIGKILL)
                     await asyncio.sleep(0.2)
                     stopped = process_identity(runtime.pid) != runtime.identity
             if not stopped and process_identity(runtime.pid) == runtime.identity:
