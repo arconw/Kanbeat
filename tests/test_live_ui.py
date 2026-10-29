@@ -1,3 +1,4 @@
+import asyncio
 import copy
 
 import pytest
@@ -10,6 +11,7 @@ from kanbeat.ui.board import BoardView, TicketCard
 from kanbeat.ui.preferences import ViewPreferences
 from kanbeat.ui.session_rows import SessionRow, SessionSection
 from kanbeat.ui.sessions import SessionsView
+from kanbeat.ui.startup import StartupScreen
 
 
 def client(supervisor, monkeypatch):
@@ -20,6 +22,65 @@ def client(supervisor, monkeypatch):
 
     monkeypatch.setattr(app, "rpc", rpc)
     return app
+
+
+@pytest.mark.asyncio
+async def test_startup_wordmark_precedes_first_board_snapshot(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path)
+    app = KanbeatApp(tmp_path)
+    screens = []
+
+    async def rpc(message):
+        screens.append(type(app.screen))
+        return await supervisor.dispatch(message)
+
+    monkeypatch.setattr(app, "rpc", rpc)
+    async with app.run_test(size=(100, 35)):
+        assert screens[0] is StartupScreen
+        assert isinstance(app.query_one(BoardView), BoardView)
+        assert not isinstance(app.screen, StartupScreen)
+
+
+@pytest.mark.asyncio
+async def test_startup_recovers_after_initial_snapshot_failure(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path)
+    app = KanbeatApp(tmp_path)
+    calls = 0
+
+    async def rpc(message):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("Snapshot temporarily unavailable")
+        return await supervisor.dispatch(message)
+
+    monkeypatch.setattr(app, "rpc", rpc)
+    async with app.run_test(size=(100, 35)) as pilot:
+        assert not isinstance(app.screen, StartupScreen)
+        await pilot.pause(1.7)
+        assert calls >= 2
+        assert isinstance(app.query_one(BoardView), BoardView)
+
+
+@pytest.mark.asyncio
+async def test_startup_renders_board_through_supervisor_socket(tmp_path, monkeypatch):
+    monkeypatch.setattr("kanbeat.ipc.socket_root", lambda: tmp_path.parent / "s")
+    supervisor = Supervisor(tmp_path)
+    supervisor.acquire()
+    server = await asyncio.start_unix_server(
+        supervisor.handle, path=str(supervisor.socket)
+    )
+    try:
+        app = KanbeatApp(tmp_path)
+        async with app.run_test(size=(100, 35)):
+            assert not isinstance(app.screen, StartupScreen)
+            assert isinstance(app.query_one(BoardView), BoardView)
+            assert app.snapshot["execution"] == "stopped"
+    finally:
+        server.close()
+        await server.wait_closed()
+        supervisor.socket.unlink(missing_ok=True)
+        supervisor.lock_stream.close()
 
 
 @pytest.mark.asyncio

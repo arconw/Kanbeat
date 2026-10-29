@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from .options import HARNESS
 from .board import BoardView
 from .preferences import ViewPreferences
 from .settings import Settings
+from .startup import StartupScreen
 
 COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed")
 ALL_COLUMNS = COLUMNS + ("archive",)
@@ -382,8 +384,19 @@ class KanbeatApp(App[None]):
             yield Static("Local supervisor · " + str(self.project), id="bottom")
 
     async def on_mount(self) -> None:
-        await self.refresh_snapshot()
-        self.set_interval(1.5, self.refresh_snapshot)
+        splash = StartupScreen()
+        self.push_screen(splash)
+        started = asyncio.get_running_loop().time()
+        try:
+            await self.refresh_snapshot()
+            minimum = 0 if self.animation_level == "none" else 0.45
+            await asyncio.sleep(
+                max(0, minimum - (asyncio.get_running_loop().time() - started))
+            )
+        finally:
+            if self.screen is splash:
+                self.pop_screen()
+            self.set_interval(1.5, self.refresh_snapshot)
 
     async def rpc(self, message: dict[str, Any]) -> dict[str, Any]:
         return await request(self.project, message)
