@@ -5,9 +5,12 @@ and forward keys/paste/resize through the private Unix socket. Detaching the mod
 or exiting a TUI never stops the process. Multiple clients can reopen the same
 terminal; the latest resize determines its shared dimensions.
 
-In Sessions, expand Tasks and select a Developer or Reviewer terminal. Stop the
-board first: structured worker turns and an interactive process must not use the
-same slot concurrently. Saved native session IDs resume only that ticket/role/slot.
+In Sessions, expand Tasks and select a Developer or Reviewer terminal, or use
+Terminal from the ticket details or its saved slot configuration. Unsaved slot
+edits must be saved before opening. Stop the board first: structured worker turns
+and an interactive process must not use the same slot concurrently. This is not
+yet a live attach to a running structured worker. The button is disabled while
+the board is running. Saved native session IDs resume only that ticket/role/slot.
 A fresh slot starts a fresh native CLI with its role instructions and ticket path.
 No permissions, authentication, model or sandbox overrides are passed.
 

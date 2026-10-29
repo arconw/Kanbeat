@@ -123,6 +123,11 @@ class TicketView(BackdropModal[None]):
                 with Horizontal(classes="slot-row"):
                     yield Static("Developer", classes="slot-name")
                     yield Button("Configure", id="dev-config")
+                    yield Button(
+                        "Terminal",
+                        id="dev-terminal",
+                        disabled=self.app.snapshot.get("execution") == "running",
+                    )
                     yield Button("Logs", id="dev-log")
                     yield Static(
                         self.runtime_label(state, "developer"),
@@ -134,6 +139,11 @@ class TicketView(BackdropModal[None]):
                     with Horizontal(classes="slot-row"):
                         yield Static(sid, classes="slot-name")
                         yield Button("Configure", id="conf-" + sid)
+                        yield Button(
+                            "Terminal",
+                            id="terminal-" + sid,
+                            disabled=self.app.snapshot.get("execution") == "running",
+                        )
                         yield Button("Logs", id="log-" + sid)
                         yield Button("Remove", id="remove-" + sid)
                         yield Static(
@@ -142,6 +152,10 @@ class TicketView(BackdropModal[None]):
                             id="runtime-" + sid,
                         )
                 yield Button("+ Reviewer", id="add-reviewer")
+                yield Static(
+                    "Task terminals require Board Stop. Live structured worker attach is not yet supported.",
+                    classes="hint",
+                )
             yield Static(
                 "Ticket Markdown is read-only here. Edit its .md file in your editor.",
                 classes="hint",
@@ -175,10 +189,15 @@ class TicketView(BackdropModal[None]):
         self.query_one("#developer-runtime", Static).update(
             self.runtime_label(state, "developer")
         )
+        stopped = self.app.snapshot.get("execution") != "running"
+        self.query_one("#dev-terminal", Button).disabled = not stopped
         for slot in state.get("reviewers") or []:
             label = self.query("#runtime-" + slot["id"])
             if label:
                 label.first(Static).update(self.runtime_label(state, slot["id"]))
+            button = self.query("#terminal-" + slot["id"])
+            if button:
+                button.first(Button).disabled = not stopped
         self.ticket = latest
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -188,10 +207,16 @@ class TicketView(BackdropModal[None]):
             return
         if name == "dev-config":
             self.app.push_screen(Assignment(self.ticket, "developer"))
+        elif name == "dev-terminal":
+            await self.app.open_task_terminal(self.ticket["id"], "developer")
         elif name == "dev-log":
             self.app.push_screen(LogView(self.ticket["id"], "developer"))
         elif name.startswith("conf-"):
             self.app.push_screen(Assignment(self.ticket, name[5:]))
+        elif name.startswith("terminal-"):
+            await self.app.open_task_terminal(
+                self.ticket["id"], name[len("terminal-") :]
+            )
         elif name.startswith("log-"):
             self.app.push_screen(LogView(self.ticket["id"], name[4:]))
         elif name.startswith("remove-"):
@@ -243,14 +268,45 @@ class Assignment(BackdropModal[None]):
             )
             yield Static("Custom Prompt", classes="field")
             yield TextArea(str(value.get("cp") or ""), id="cp")
+            yield Static(
+                "Terminal uses saved slot settings. Save edits first; Board Stop is required.",
+                classes="hint",
+            )
             with Horizontal(classes="modal-actions"):
                 yield Button("Cancel", id="cancel")
+                yield Button(
+                    "Terminal",
+                    id="open-terminal",
+                    disabled=self.app.snapshot.get("execution") == "running",
+                )
                 yield Button("Save", id="save", variant="primary")
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         name = event.button.id
         if name in ("close", "cancel"):
             self.dismiss(None)
+        elif name == "open-terminal":
+            state = self.ticket.get("state") or {}
+            saved = (
+                state.get("developer", {})
+                if self.slot == "developer"
+                else next(
+                    (
+                        row
+                        for row in state.get("reviewers", [])
+                        if row.get("id") == self.slot
+                    ),
+                    {},
+                )
+            )
+            if self.query_one("#harness", Select).value != (
+                saved.get("harness") or ""
+            ) or self.query_one("#cp", TextArea).text != str(saved.get("cp") or ""):
+                self.app.notify(
+                    "Save slot changes before opening its terminal", severity="warning"
+                )
+                return
+            await self.app.open_task_terminal(self.ticket["id"], self.slot)
         elif name == "save":
             harness = self.query_one("#harness", Select).value
             cp = self.query_one("#cp", TextArea).text
@@ -414,6 +470,15 @@ class KanbeatApp(App[None]):
     async def rpc(self, message: dict[str, Any]) -> dict[str, Any]:
         return await request(self.project, message)
 
+    async def open_task_terminal(self, ticket_id: str, slot: str) -> None:
+        try:
+            result = await self.rpc(
+                {"op": "terminal_open", "ticket": ticket_id, "slot": slot}
+            )
+            self.push_screen(TerminalView(result["terminal"]))
+        except (RuntimeError, ValueError, OSError) as exc:
+            self.notify(str(exc), severity="error", timeout=7)
+
     async def execute(self, message: dict[str, Any]) -> bool:
         try:
             await self.rpc(message)
@@ -561,13 +626,7 @@ class KanbeatApp(App[None]):
             self.confirm_delete(name[7:])
         elif name.startswith("term-"):
             _, tid, slot = name.split("-", 2)
-            try:
-                result = await self.rpc(
-                    {"op": "terminal_open", "ticket": tid, "slot": slot}
-                )
-                self.push_screen(TerminalView(result["terminal"]))
-            except (RuntimeError, ValueError, OSError) as exc:
-                self.notify(str(exc), severity="error")
+            await self.open_task_terminal(tid, slot)
         elif name.startswith("log-"):
             _, tid, slot = name.split("-", 2)
             await self.push_screen(LogView(tid, slot))
