@@ -377,16 +377,21 @@ class Supervisor:
                         command_env = None
                         if harness == "opencode":
                             shared = await self.opencode_host()
+                        resumed = bool(session)
+                        if shared is not None and session:
+                            try:
+                                await shared.read_session(session)
+                            except OpenCodeHttpError as error:
+                                if error.status != 404:
+                                    raise
+                                session = None
+                                resumed = False
+                                assignment.pop("session", None)
+                                self.save()
+                        prompt_text = self.prompt(
+                            current, worker, resumed, updated=updated
+                        )
                         if shared is not None:
-                            if session:
-                                try:
-                                    await shared.read_session(session)
-                                except OpenCodeHttpError as error:
-                                    if error.status != 404:
-                                        raise
-                                    session = None
-                                    assignment.pop("session", None)
-                                    self.save()
                             if not session:
                                 metadata = await shared.create_session(
                                     directory=self.board.project
@@ -400,10 +405,9 @@ class Supervisor:
                                     session, prompt=prompt_text
                                 ), None
 
-                        resumed = bool(session)
                         native = NativeRun(
                             harness,
-                            self.prompt(current, worker, resumed, updated=updated),
+                            prompt_text,
                             session,
                             self.board.project,
                             self.state_dir / "logs" / f"{ticket_id}-{worker}.log",

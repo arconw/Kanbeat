@@ -36,11 +36,13 @@ class FakeHost:
         self.running = True
         self.sessions = {}
         self.created = 0
+        self.prompts = []
 
     def child_env(self):
         return {"PATH": os.environ["PATH"]}
 
     def worker_argv(self, session_id, *, prompt=None, model=None):
+        self.prompts.append(prompt)
         return [sys.executable, "-u", "-c", WORKER]
 
     def viewer_argv(self, session_id):
@@ -87,12 +89,17 @@ async def test_opencode_worker_uses_shared_session_and_attaches(runtime):
     state["phase"] = "progress"
     state["iteration"] = 1
     state["developer"]["harness"] = "opencode"
+    state["developer"]["pending_handoff"] = "HANDOFF"
+    supervisor.runtime.config["developer_prompt"] = "CUSTOM DEV"
     supervisor.runtime.data["execution"] = "running"
     try:
         await supervisor.start_worker(ticket, "developer", state["developer"])
         await supervisor.jobs["001:developer"]
         assert host.created == 1
         assert state["developer"]["session"] == "ses_test"
+        assert "CUSTOM DEV" in host.prompts[0]
+        assert "HANDOFF" in host.prompts[0]
+        assert "pending_handoff" not in state["developer"]
         assert state["runtime"]["developer"]["status"] == "completed"
         assert state["runtime"]["developer"]["harness"] == "opencode"
 
