@@ -13,6 +13,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Markdown, Select, Static, TextArea
 
 from ..supervisor import request
+from .terminal import TerminalView
 
 COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed")
 ALL_COLUMNS = COLUMNS + ("archive",)
@@ -451,22 +452,31 @@ class SessionsView(VerticalScroll):
     def compose(self) -> ComposeResult:
         from textual.widgets import Collapsible
 
-        yield Static("SESSIONS / NATIVE CLI OUTPUT", classes="page-heading")
+        yield Static("SESSIONS / NATIVE TERMINALS", classes="page-heading")
         with Collapsible(title="Tasks", collapsed=True):
             for ticket in self.snapshot.get("tickets", []):
                 state = ticket.get("state") or {}
                 yield Static(
                     ticket["title"] + " · " + ticket["id"], classes="session-heading"
                 )
+                yield Button(
+                    "Developer terminal",
+                    id="term-" + ticket["id"] + "-developer",
+                    disabled=self.snapshot.get("execution") == "running",
+                )
                 yield Button("Developer logs", id="log-" + ticket["id"] + "-developer")
                 for row in state.get("reviewers") or []:
+                    yield Button(
+                        row["id"] + " terminal",
+                        id="term-" + ticket["id"] + "-" + row["id"],
+                        disabled=self.snapshot.get("execution") == "running",
+                    )
                     yield Button(
                         row["id"] + " logs", id="log-" + ticket["id"] + "-" + row["id"]
                     )
         yield Static(
-            "The current task runner uses native CLI structured execution. "
-            "Logs are read-only; live interactive PTY attachment and standalone "
-            "custom sessions are planned, not yet implemented.",
+            "Task terminals open while the board is stopped and resume the exact slot when its native session ID is known. "
+            "Detach keeps them running; stop them before Play. Structured worker logs remain available separately.",
             classes="hint",
         )
 
@@ -645,6 +655,15 @@ class KanbeatApp(App[None]):
             )
         elif name.startswith("delete-"):
             self.confirm_delete(name[7:])
+        elif name.startswith("term-"):
+            _, tid, slot = name.split("-", 2)
+            try:
+                result = await self.rpc(
+                    {"op": "terminal_open", "ticket": tid, "slot": slot}
+                )
+                self.push_screen(TerminalView(result["terminal"]))
+            except (RuntimeError, ValueError, OSError) as exc:
+                self.notify(str(exc), severity="error")
         elif name.startswith("log-"):
             _, tid, slot = name.split("-", 2)
             await self.push_screen(LogView(tid, slot))

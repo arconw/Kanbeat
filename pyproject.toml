@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kanbeat"
-version = "0.3.1"
+version = "0.4.0"
 description = "Filesystem-native Kanban with a persistent local AI harness supervisor"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["textual>=3.0"]
+dependencies = ["textual>=8.2", "textual-tty>=0.4,<0.5", "bittty>=0.1.4,<0.2"]
 
 [project.optional-dependencies]
 terminal = ["textual-tty>=0.4"]

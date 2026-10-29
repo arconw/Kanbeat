@@ -2,7 +2,7 @@
 
 A filesystem-native Kanban with one persistent local supervisor and multiple rich terminal clients. Native coding CLIs do the work. The filesystem determines the ticket status.
 
-> **Early rewrite, v0.3.1. Not yet a production release.** The filesystem-native board, supervisor, and headless CLI event transport have an initial implementation. Transition hooks run through isolated native CLI sessions. Interactive embedded harness terminals and custom session groups are not implemented yet.
+> **Early rewrite, v0.4.0. Not yet a production release.** The filesystem-native board, supervisor, and headless CLI event transport have an initial implementation. Transition hooks run through isolated native CLI sessions. Interactive task terminals are available while the board is stopped. Custom session groups are not implemented yet. See [interactive terminals](docs/terminals.md).
 
 [Standalone design specification](docs/design/design.html)
 
@@ -146,7 +146,7 @@ No custom agent implementation is embedded. Kanbeat uses documented native comma
 
 If a session no longer exists, the worker attempts a fresh run in the same slot. This is not equivalent to rolling back tools or Git modifications. Stop interrupts process groups, then terminates unresponsive workers. Custom non-board sessions must not be interrupted by board Stop. On an ordinary supervisor restart, the board starts stopped; previously launched board-owned processes are matched by PID and OS process-start identity before any orphan shutdown is attempted. If the process cannot be identified safely, Play remains blocked pending manual resolution. External moves of active tickets interrupt their old workers; failed parallel reviews interrupt remaining Reviewer processes.
 
-**Limitations:** JSON event shapes and session recovery vary by installed CLI version. Reliable interactive PTY embedding is not implemented in this initial rewrite; the Sessions tab is currently a read-only output viewer. Runtime session IDs are only available for CLIs/events that disclose them. You should verify your chosen CLI version before relying on the workflow unattended.
+**Limitations:** JSON event shapes and session recovery vary by installed CLI version. The Sessions tab offers supervisor-owned interactive PTYs alongside structured worker logs; task terminals require a stopped board. See [terminal lifecycle and limits](docs/terminals.md). Runtime session IDs are only available for CLIs/events that disclose them. You should verify your chosen CLI version before relying on the workflow unattended.
 
 ## Configuration
 

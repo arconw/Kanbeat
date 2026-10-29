@@ -22,6 +22,8 @@ from .filesystem import Board, Ticket, ACTIVE
 from .native import NativeRun, Outcome, VERDICT, available, process_identity
 from .state import LocalState
 from .hooks import TransitionHooks
+from .terminals import Terminals
+from .terminal_control import terminal_request
 from .ipc import socket_path, prepare_socket_directory, remove_socket, bind_socket
 
 MAX_INPUT = 1024 * 1024
@@ -34,6 +36,7 @@ class Supervisor:
         self.board.ensure()
         self.runtime = LocalState(self.board)
         self.hooks = TransitionHooks(self.runtime)
+        self.terminals = Terminals(self.runtime)
         self.state_dir = self.board.root / ".state"
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.socket = socket_path(self.board.project)
@@ -446,6 +449,7 @@ class Supervisor:
     async def stop(self, reason: str = "Board stopped") -> None:
         self.runtime.data["execution"] = "stopped"
         self.save()
+        await self.terminals.stop("board")
         self.cancelled.update(key for key, job in self.jobs.items() if not job.done())
         await asyncio.gather(
             *(run.stop() for run in list(self.runs.values())), return_exceptions=True
@@ -459,6 +463,13 @@ class Supervisor:
         for state in [
             *self.runtime.data["tickets"].values(),
             {"runtime": self.hooks.entries},
+            {
+                "runtime": {
+                    key: entry
+                    for key, entry in self.terminals.entries.items()
+                    if entry.get("owner") == "board"
+                }
+            },
         ]:
             for item in state.get("runtime", {}).values():
                 if item.get("status") in ("running", "starting", "recovering"):
@@ -472,6 +483,7 @@ class Supervisor:
         for state in [
             *self.runtime.data["tickets"].values(),
             {"runtime": self.hooks.entries},
+            {"runtime": self.terminals.entries},
         ]:
             for item in state.get("runtime", {}).values():
                 if item.get("status") != "recovery_blocked":
@@ -489,6 +501,8 @@ class Supervisor:
                         "An orphaned worker is still running. Stop it manually "
                         "before pressing Play."
                     )
+        if self.terminals.running("board"):
+            raise ValueError("Stop interactive task terminals before pressing Play")
         default = str(self.runtime.config["default_harness"])
         if not available(default):
             await self.stop(
@@ -500,7 +514,7 @@ class Supervisor:
         self.notice("Board running")
 
     async def recover_orphans(self) -> None:
-        """On supervisor restart stop known board-owned workers, not custom sessions.
+        """On restart reconcile owned CLI processes whose transports cannot be recovered.
 
         PID alone is unsafe: a reused PID can belong to something else. Require
         its birth fingerprint to match before any process-group signal.
@@ -510,6 +524,7 @@ class Supervisor:
             self.runtime.data["execution"] = "stopped"
         recovery = list(self.runtime.data["tickets"].items())
         recovery.append(("transition-hooks", {"runtime": self.hooks.entries}))
+        recovery.append(("interactive-terminals", {"runtime": self.terminals.entries}))
         for ticket_id, state in recovery:
             for slot, entry in state.get("runtime", {}).items():
                 pid = entry.get("pid")
@@ -576,6 +591,7 @@ class Supervisor:
         async with self.guard:
             tickets, errors = self.board.scan()
             # Detect moves/deletions of active tickets before assigning fresh work.
+            await self.terminals.reconcile(tickets)
             await self.stop_stale_jobs(tickets)
             if errors:
                 for error in errors:
@@ -732,12 +748,27 @@ class Supervisor:
             "config": self.runtime.config,
             "custom": self.runtime.data.get("custom", {}),
             "hooks": self.hooks.entries,
+            "terminals": self.terminals.entries,
         }
 
     async def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
+        if request.get("op") in (
+            "snapshot",
+            "log",
+            "terminal_snapshot",
+            "terminal_input",
+            "terminal_resize",
+        ):
+            return await self._dispatch(request)
+        async with self.guard:
+            return await self._dispatch(request)
+
+    async def _dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         op = request.get("op")
         if op == "snapshot":
             return self.snapshot()
+        if str(op).startswith("terminal_"):
+            return await terminal_request(self, request)
         if op == "play":
             await self.play()
         elif op == "stop":
@@ -760,6 +791,8 @@ class Supervisor:
                 raise ValueError(
                     "Stop the board before manually moving an active ticket"
                 )
+            if op != "reorder":
+                await self.terminals.stop_ticket(ticket_id)
             if op == "move":
                 self.move_ticket(ticket_id, str(request["column"]))
             elif op == "archive":
@@ -798,6 +831,15 @@ class Supervisor:
                 if target is None:
                     target = {"id": slot}
                     state["reviewers"].append(target)
+            if any(
+                e.get("ticket") == ticket_id
+                and e.get("slot") == slot
+                and e.get("status") == "running"
+                for e in self.terminals.entries.values()
+            ):
+                raise ValueError(
+                    "Stop the interactive slot terminal before changing its assignment"
+                )
             old_harness = target.get("harness")
             for field in ("harness", "cp"):
                 if field in config:
@@ -890,6 +932,7 @@ class Supervisor:
         finally:
             try:
                 await self.stop("Supervisor exiting")
+                await self.terminals.stop()
             finally:
                 if self.server is not None:
                     self.server.close()
