@@ -222,3 +222,55 @@ async def test_tasks_follow_snapshot_order_after_inserting_and_moving_tickets(
             first.id,
         ]
         assert app.query_one("#task-sessions-" + first.id) is original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", [None, "", "missing-harness", {}])
+async def test_settings_refresh_handles_invalid_native_selector_values(
+    tmp_path, monkeypatch, invalid
+):
+    from textual.widgets import Select
+    from kanbeat.ui.app import Settings
+
+    supervisor = Supervisor(tmp_path)
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(140, 60)) as pilot:
+        await pilot.click("#nav-settings")
+        page = app.query_one(Settings)
+        supervisor.runtime.config["default_harness"] = invalid
+        supervisor.runtime.config["transition_hook"] = {
+            "harness": invalid,
+            "prompt": "",
+        }
+        await app.refresh_snapshot()
+        assert page.query_one("#cfg-harness", Select).value == "codex"
+        assert page.query_one("#cfg-hook-harness", Select).value == ""
+        supervisor.runtime.config["default_harness"] = "claude"
+        await app.refresh_snapshot()
+        assert page.query_one("#cfg-harness", Select).value == "claude"
+
+
+@pytest.mark.asyncio
+async def test_reviewer_rows_reorder_without_recreating_existing_slots(
+    tmp_path, monkeypatch
+):
+    from kanbeat.ui.session_rows import TaskSessions
+
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Task")
+    state = supervisor.ticket_state(ticket.id)
+    state["reviewers"] = [{"id": "reviewer-2"}, {"id": "reviewer-1"}]
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(140, 60)) as pilot:
+        await pilot.click("#nav-sessions")
+        task = app.query_one(TaskSessions)
+        original = task.query_one(f"#task-slot-{ticket.id}-reviewer-1")
+        assert original.name == "reviewer-1"
+        state["reviewers"].reverse()
+        await app.refresh_snapshot()
+        assert [row.name for row in task.query(".slot-row")] == [
+            "developer",
+            "reviewer-1",
+            "reviewer-2",
+        ]
+        assert task.query_one(f"#task-slot-{ticket.id}-reviewer-1") is original

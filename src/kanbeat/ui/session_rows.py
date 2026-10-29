@@ -47,7 +47,9 @@ class TaskSessions(Vertical):
         ]
 
     def row(self, slot):
-        row = Horizontal(classes="slot-row", id=f"task-slot-{self.ticket['id']}-{slot}")
+        row = Horizontal(
+            classes="slot-row", id=f"task-slot-{self.ticket['id']}-{slot}", name=slot
+        )
         row.compose_add_child(Static(slot, classes="slot-name"))
         row.compose_add_child(
             Button(
@@ -73,10 +75,7 @@ class TaskSessions(Vertical):
             )
         self.ticket, self.running = ticket, running
         wanted = self.slots(ticket)
-        rows = {
-            row.id.rsplit(f"{ticket['id']}-", 1)[-1]: row
-            for row in self.query(".slot-row")
-        }
+        rows = {row.name: row for row in self.query(".slot-row")}
         for slot, row in rows.items():
             if slot not in wanted:
                 await row.remove()
@@ -84,6 +83,9 @@ class TaskSessions(Vertical):
             if slot not in rows:
                 await self.mount(self.row(slot))
             self.query_one(f"#term-{ticket['id']}-{slot}", Button).disabled = running
+        if [row.name for row in self.query(".slot-row")] != wanted:
+            order = {slot: index for index, slot in enumerate(wanted)}
+            self.sort_children(key=lambda row: order.get(row.name, -1))
 
 
 class SessionSection(Collapsible):
