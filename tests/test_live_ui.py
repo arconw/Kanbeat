@@ -179,3 +179,46 @@ def test_malformed_view_preferences_do_not_break_startup(tmp_path):
     assert preferences.is_collapsed("tasks", True)
     preferences.remember("tasks", False)
     assert not ViewPreferences(tmp_path).is_collapsed("tasks", True)
+
+
+@pytest.mark.asyncio
+async def test_background_settings_updates_preserve_unsaved_fields(
+    tmp_path, monkeypatch
+):
+    from textual.widgets import TextArea
+    from kanbeat.ui.app import Settings
+
+    supervisor = Supervisor(tmp_path)
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(140, 60)) as pilot:
+        await pilot.click("#nav-settings")
+        page = app.query_one(Settings)
+        field = page.query_one("#cfg-developer_prompt", TextArea)
+        field.load_text("Unsaved developer instructions")
+        supervisor.runtime.save_config({"global_cp": "Changed elsewhere"})
+        await app.refresh_snapshot()
+        await app.refresh_snapshot(force=True)
+        assert app.query_one(Settings) is page
+        assert field.text == "Unsaved developer instructions"
+        assert page.query_one("#cfg-global_cp", TextArea).text == "Changed elsewhere"
+
+
+@pytest.mark.asyncio
+async def test_tasks_follow_snapshot_order_after_inserting_and_moving_tickets(
+    tmp_path, monkeypatch
+):
+    from kanbeat.ui.session_rows import TaskSessions
+
+    supervisor = Supervisor(tmp_path)
+    first = supervisor.board.create("First", column="todo")
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(140, 60)) as pilot:
+        await pilot.click("#nav-sessions")
+        original = app.query_one("#task-sessions-" + first.id)
+        second = supervisor.board.create("New backlog")
+        await app.refresh_snapshot()
+        assert [row.ticket["id"] for row in app.query(TaskSessions)] == [
+            second.id,
+            first.id,
+        ]
+        assert app.query_one("#task-sessions-" + first.id) is original

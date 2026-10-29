@@ -286,6 +286,11 @@ class SessionsView(VerticalScroll):
                 await tasks.mount(
                     TaskSessions(ticket, snapshot.get("execution") == "running")
                 )
+        order = {
+            "task-sessions-" + key: index for index, key in enumerate(wanted_tasks)
+        }
+        if [row.id for row in tasks.query(TaskSessions)] != list(order):
+            tasks.sort_children(key=lambda row: order.get(row.id, -1))
         groups = self.groups(snapshot)
         wanted_sections = {"section-group-" + (key or "ungrouped") for key in groups}
         for section in list(self.query(SessionSection)):

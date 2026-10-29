@@ -18,6 +18,7 @@ from .sessions import SessionsView
 from .options import HARNESS
 from .board import BoardView
 from .preferences import ViewPreferences
+from .settings import Settings
 
 COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed")
 ALL_COLUMNS = COLUMNS + ("archive",)
@@ -328,51 +329,6 @@ class NewTicket(BackdropModal[None]):
                 self.dismiss(None)
 
 
-class Settings(VerticalScroll):
-    def __init__(self, snapshot: dict[str, Any]):
-        super().__init__(id="settings")
-        self.config = snapshot.get("config") or {}
-
-    def compose(self) -> ComposeResult:
-        yield Static("SETTINGS / PROJECT DEFAULTS", classes="page-heading")
-        yield Static("Default harness", classes="field")
-        yield Select(
-            HARNESS,
-            value=self.config.get("default_harness") or "codex",
-            id="cfg-harness",
-        )
-        for field, title in (
-            ("global_cp", "Global CP"),
-            ("developer_prompt", "Developer Prompt"),
-            ("reviewer_prompt", "Reviewer / QA Prompt"),
-        ):
-            yield Static(title, classes="field")
-            yield TextArea(
-                str(self.config.get(field) or ""),
-                id="cfg-" + field,
-                classes="settings-editor",
-            )
-        yield Static("TRANSITION HOOK", classes="section-title")
-        hook = self.config.get("transition_hook") or {}
-        yield Select(
-            [("Project default", "")] + HARNESS,
-            value=hook.get("harness") or "",
-            allow_blank=False,
-            id="cfg-hook-harness",
-        )
-        yield TextArea(
-            str(hook.get("prompt") or ""),
-            id="cfg-hook-prompt",
-            classes="settings-editor",
-        )
-        yield Static(
-            "Empty prompt disables hooks. Hooks run after moves on Play. "
-            "Failures never revert tickets; interrupted hooks are not replayed.",
-            classes="hint",
-        )
-        yield Button("Save settings", id="settings-save", variant="primary")
-
-
 class ArchiveView(VerticalScroll):
     def __init__(self, snapshot: dict[str, Any]):
         super().__init__(id="archive-page")
@@ -473,9 +429,7 @@ class KanbeatApp(App[None]):
                     self._seen_notice_id = max(self._seen_notice_id, sequence)
             if signature != self._signature or force:
                 self._signature = signature
-                # Avoid wiping unsaved settings text while the board is active.
-                if force or self.tab != "settings":
-                    await self.render_page()
+                await self.render_page()
         except (RuntimeError, OSError) as exc:
             self.notify(str(exc), severity="error", timeout=4)
         finally:
@@ -493,6 +447,8 @@ class KanbeatApp(App[None]):
                 )
             elif self.tab == "sessions" and isinstance(current, SessionsView):
                 await current.update_snapshot(self.snapshot)
+            elif self.tab == "settings" and isinstance(current, Settings):
+                current.update_snapshot(self.snapshot)
             elif self.tab == "archive" and isinstance(current, ArchiveView):
                 old = [
                     t
