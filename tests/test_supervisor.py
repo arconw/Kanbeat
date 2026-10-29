@@ -82,6 +82,8 @@ async def test_modified_ticket_is_redispatched_to_same_session(
             on_session=None,
             on_process=None,
             on_activity=None,
+            command_builder=None,
+            env=None,
         ):
             captured.append((prompt, session))
             self.on_session = on_session
@@ -134,6 +136,8 @@ async def test_worker_activity_is_persisted_and_cleared(tmp_path: Path, monkeypa
             on_session=None,
             on_process=None,
             on_activity=None,
+            command_builder=None,
+            env=None,
         ):
             self.on_activity = on_activity
 
@@ -223,6 +227,8 @@ async def test_external_move_interrupts_old_worker(tmp_path: Path, monkeypatch):
             on_session=None,
             on_process=None,
             on_activity=None,
+            command_builder=None,
+            env=None,
         ):
             pass
 
@@ -273,6 +279,8 @@ async def test_reviewer_failure_stops_parallel_workers(tmp_path: Path, monkeypat
             on_session=None,
             on_process=None,
             on_activity=None,
+            command_builder=None,
+            env=None,
         ):
             pass
 

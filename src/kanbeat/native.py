@@ -297,6 +297,11 @@ class NativeRun:
         on_session: Callable[[str], None] | None = None,
         on_process: Callable[[int, str | None], None] | None = None,
         on_activity: Callable[[str | None], None] | None = None,
+        command_builder: Callable[
+            [str, str, str | None], tuple[list[str], bytes | None]
+        ]
+        | None = None,
+        env: dict[str, str] | None = None,
     ):
         self.harness = harness
         self.prompt = prompt
@@ -306,6 +311,8 @@ class NativeRun:
         self.on_session = on_session or (lambda _value: None)
         self.on_process = on_process or (lambda _pid, _identity: None)
         self.on_activity = on_activity or (lambda _value: None)
+        self.command_builder = command_builder
+        self.env = env
         self.process: asyncio.subprocess.Process | None = None
         self.stopping = False
 
@@ -319,7 +326,8 @@ class NativeRun:
     async def execute(self) -> Outcome:
         if self.stopping:
             return Outcome(False, "interrupted before start", self.session_id, "")
-        args, stdin_payload = command(self.harness, self.prompt, self.session_id)
+        builder = self.command_builder or command
+        args, stdin_payload = builder(self.harness, self.prompt, self.session_id)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         stream = EventStream(self.harness)
         error_bytes = bytearray()
@@ -336,7 +344,7 @@ class NativeRun:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     start_new_session=True,
-                    env=external_environment(),
+                    env=self.env if self.env is not None else external_environment(),
                     limit=2 * 1024 * 1024,
                 )
             except OSError as exc:

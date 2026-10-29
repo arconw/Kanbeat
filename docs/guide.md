@@ -172,6 +172,8 @@ The Sessions tab lists task terminals (a Developer or Reviewer slot of a ticket,
 
 Harness selectors in Settings, slot configuration and New session include an Open button. It starts or reattaches one persistent native TUI session per harness in the project. Kanbeat does not yet capture or copy model/effort settings from that session; use it to configure the native CLI, then start new sessions.
 
+OpenCode workers run against a project-local `opencode serve` on loopback. Their native session can be opened live from ticket and slot dialogs and Sessions Tasks while the board is running; the action reattaches that same shared session. The server uses a random per-supervisor password passed only in child environments. Codex, Claude and Pi workers remain one-shot and require Board Stop before opening a task terminal. The shared server is stopped on supervisor shutdown, and a recorded process identity is used for crash cleanup.
+
 The full lifecycle, stop rules, groups and persistence are documented in [terminals.md](terminals.md).
 
 ## Configuration

@@ -526,9 +526,9 @@ async def test_log_open_failure_closes_pty(supervisor, monkeypatch):
     start = TerminalSession.start
     instances = []
 
-    async def capture_start(session, argv):
+    async def capture_start(session, argv, env=None):
         instances.append(session)
-        await start(session, argv)
+        await start(session, argv, env)
 
     monkeypatch.setattr(TerminalSession, "start", capture_start)
 
@@ -574,10 +574,10 @@ async def test_slow_spawn_serializes_other_client_open(supervisor, monkeypatch):
     release = asyncio.Event()
     original = TerminalSession.start
 
-    async def delayed_start(session, argv):
+    async def delayed_start(session, argv, env=None):
         entered.set()
         await release.wait()
-        await original(session, argv)
+        await original(session, argv, env)
 
     monkeypatch.setattr(TerminalSession, "start", delayed_start)
     ticket = supervisor.board.create("Task")

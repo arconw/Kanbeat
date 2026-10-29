@@ -29,6 +29,23 @@ def worker_is_active(entry):
     )
 
 
+def live_session(ticket, slot):
+    state = ticket.get("state") or {}
+    runtime = (state.get("runtime") or {}).get(slot) or {}
+    if runtime.get("harness") != "opencode":
+        return None
+    assignment = (
+        state.get("developer")
+        if slot == "developer"
+        else next(
+            (row for row in state.get("reviewers") or [] if row.get("id") == slot),
+            None,
+        )
+    )
+    session = (assignment or {}).get("session")
+    return session if isinstance(session, str) and session else None
+
+
 def worker_status_label(entry):
     status = lifecycle_label(entry)
     activity = entry.get("activity")
@@ -125,7 +142,9 @@ class TaskSessions(Vertical):
         row.compose_add_child(Static(slot, classes="slot-name"))
         row.compose_add_child(
             Button(
-                "Terminal", id=f"term-{self.ticket['id']}-{slot}", disabled=self.running
+                "Terminal",
+                id=f"term-{self.ticket['id']}-{slot}",
+                disabled=self.running and live_session(self.ticket, slot) is None,
             )
         )
         row.compose_add_child(Button("Logs", id=f"log-{self.ticket['id']}-{slot}"))
@@ -163,7 +182,9 @@ class TaskSessions(Vertical):
         for slot in wanted:
             if slot not in rows:
                 await self.mount(self.row(slot))
-            self.query_one(f"#term-{ticket['id']}-{slot}", Button).disabled = running
+            self.query_one(f"#term-{ticket['id']}-{slot}", Button).disabled = (
+                running and live_session(ticket, slot) is None
+            )
             status = self.query_one(f"#task-status-{ticket['id']}-{slot}", Static)
             status.update(self.slot_status(ticket, slot, self.terminals))
             status.tooltip = self.slot_status(ticket, slot, self.terminals)
