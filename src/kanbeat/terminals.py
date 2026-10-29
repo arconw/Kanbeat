@@ -88,7 +88,7 @@ class TerminalSession:
         except asyncio.TimeoutError:
             pass
 
-    async def start(self, argv: list[str]) -> None:
+    async def start(self, argv: list[str], env: dict[str, str] | None = None) -> None:
         master, slave = pty.openpty()
         self.fd = master
         try:
@@ -106,7 +106,7 @@ class TerminalSession:
                 stdout=slave,
                 stderr=slave,
                 start_new_session=True,
-                env={**internal_environment(), "TERM": "xterm-256color"},
+                env={**internal_environment(env), "TERM": "xterm-256color"},
             )
             self.entry.update(
                 status="running",
@@ -281,8 +281,10 @@ class Terminals:
         group: str = "",
         title: str = "",
         role: str = "",
+        argv: list[str] | None = None,
+        env: dict[str, str] | None = None,
     ) -> str:
-        interactive_command(harness, native_session, prompt)
+        default_argv = interactive_command(harness, native_session, prompt)
         terminal_id = uuid.uuid4().hex
         entry = {
             "id": terminal_id,
@@ -302,11 +304,17 @@ class Terminals:
         if role:
             entry["role"] = role
         self.entries[terminal_id] = entry
-        await self.start_entry(entry)
+        await self.start_entry(entry, argv=argv or default_argv, env=env)
         return terminal_id
 
-    async def start_entry(self, entry: dict[str, Any]) -> None:
-        argv = interactive_command(
+    async def start_entry(
+        self,
+        entry: dict[str, Any],
+        *,
+        argv: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        argv = argv or interactive_command(
             entry["harness"], entry.get("native_session"), entry.get("prompt", "")
         )
         entry["status"] = "starting"
@@ -316,15 +324,23 @@ class Terminals:
         session = TerminalSession(self.state, entry)
         self.sessions[entry["id"]] = session
         try:
-            await session.start(argv)
+            await session.start(argv, env)
         except BaseException:
             entry["status"] = "failed"
             self.sessions.pop(entry["id"], None)
             self.state.save()
             raise
 
-    async def restart(self, terminal_id: str) -> None:
+    async def restart(
+        self,
+        terminal_id: str,
+        *,
+        argv: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
         entry = self.entries[terminal_id]
+        if entry.get("owner") == "attach" and argv is None:
+            raise ValueError("Reattach the live session from its ticket or slot")
         if entry.get("status") in (
             "starting",
             "running",
@@ -332,7 +348,7 @@ class Terminals:
             "recovery_blocked",
         ):
             raise ValueError("Stop the session before restarting it")
-        await self.start_entry(entry)
+        await self.start_entry(entry, argv=argv, env=env)
 
     def snapshot(self) -> dict[str, Any]:
         return {

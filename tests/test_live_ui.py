@@ -385,6 +385,49 @@ async def test_task_session_process_status_updates_without_rebuilding(
 
 
 @pytest.mark.asyncio
+async def test_opencode_running_session_enables_live_attach(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Live", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["developer"] = {"harness": "opencode", "session": "ses_test"}
+    state["runtime"] = {"developer": {"status": "running", "harness": "opencode"}}
+    supervisor.runtime.data["execution"] = "running"
+    app = client(supervisor, monkeypatch)
+    sent = []
+
+    async def rpc(message):
+        if message["op"] == "terminal_attach":
+            sent.append(message)
+            return {"terminal": "fake"}
+        return await supervisor.dispatch(message)
+
+    monkeypatch.setattr(app, "rpc", rpc)
+    async with app.run_test(size=(120, 45)) as pilot:
+        view = TicketView(app.find_ticket(ticket.id))
+        app.push_screen(view)
+        await pilot.pause()
+        assert not view.query_one("#dev-terminal", Button).disabled
+        form = Assignment(app.find_ticket(ticket.id), "developer")
+        app.push_screen(form)
+        await pilot.pause()
+        assert not form.query_one("#open-terminal", Button).disabled
+        app.pop_screen()
+        await pilot.pause()
+        app.pop_screen()
+        await pilot.pause()
+
+        await pilot.click("#nav-sessions")
+        tasks = app.query_one("#section-tasks", SessionSection)
+        tasks.collapsed = False
+        await pilot.pause()
+        assert not app.query_one(f"#term-{ticket.id}-developer", Button).disabled
+
+        monkeypatch.setattr(app, "push_screen", lambda screen: None)
+        await app.open_task_terminal(ticket.id, "developer")
+        assert sent and sent[-1]["op"] == "terminal_attach"
+
+
+@pytest.mark.asyncio
 async def test_harness_open_buttons_forward_selected_harness(tmp_path, monkeypatch):
     supervisor = Supervisor(tmp_path)
     ticket = supervisor.board.create("Configure")

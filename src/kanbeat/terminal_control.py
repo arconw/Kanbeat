@@ -4,6 +4,10 @@ import asyncio
 import math
 from typing import Any, TYPE_CHECKING
 
+from .host_process import HostError
+from .native import process_identity
+from .opencode_host import OpenCodeHttpError
+
 if TYPE_CHECKING:
     from .supervisor import Supervisor
     from .terminals import TerminalSession
@@ -59,6 +63,95 @@ async def terminal_request(
         state.setdefault("runtime", {}).pop(slot, None)
         state.setdefault("review_results", {}).pop(slot, None)
         supervisor.save()
+        return {"terminal": terminal_id}
+    if op == "terminal_attach":
+        ticket = supervisor.board.find(str(request["ticket"]))
+        slot = str(request.get("slot") or "developer")
+        state = supervisor.ticket_state(ticket.id)
+        assignment = (
+            state["developer"]
+            if slot == "developer"
+            else next((row for row in state["reviewers"] if row["id"] == slot), None)
+        )
+        if assignment is None:
+            raise ValueError("Unknown worker slot")
+        runtime = (state.get("runtime") or {}).get(slot) or {}
+        harness = str(
+            runtime.get("harness")
+            or assignment.get("harness")
+            or supervisor.runtime.config["default_harness"]
+        )
+        session = assignment.get("session")
+        if harness != "opencode":
+            raise ValueError(
+                "Live attach is only available for OpenCode sessions; "
+                "stop the board to open this slot's task terminal"
+            )
+        if not isinstance(session, str) or not session:
+            raise ValueError("The OpenCode session has not been reported yet")
+        try:
+            host = await supervisor.opencode_host()
+            await host.read_session(session)
+        except OpenCodeHttpError as error:
+            if error.status == 404:
+                assignment.pop("session", None)
+                supervisor.save()
+                raise ValueError(
+                    "The OpenCode session is no longer available; start the worker again"
+                ) from None
+            raise ValueError(str(error)) from error
+        except (HostError, OSError) as error:
+            raise ValueError(str(error)) from error
+        for terminal_id, entry in supervisor.terminals.entries.items():
+            if (
+                entry.get("owner") == "attach"
+                and entry.get("ticket") == ticket.id
+                and entry.get("slot") == slot
+                and entry.get("native_session") == session
+            ):
+                attached = terminal_id in supervisor.terminals.sessions
+                status = entry.get("status")
+                if attached and status == "stopping":
+                    raise ValueError(
+                        "Terminal is still stopping; wait for it to exit before reopening"
+                    )
+                if attached and status in ("starting", "running"):
+                    return {"terminal": terminal_id}
+                if not attached and status in (
+                    "starting",
+                    "running",
+                    "stopping",
+                    "recovery_blocked",
+                ):
+                    if status == "recovery_blocked":
+                        pid = entry.get("pid")
+                        current = process_identity(int(pid)) if pid else None
+                        saved = entry.get("process_identity")
+                        if current is not None and (not saved or current == saved):
+                            raise ValueError(
+                                "An orphaned attach process is still running; "
+                                "resolve it before reopening"
+                            )
+                    entry["status"] = "interrupted"
+                    entry.pop("pid", None)
+                    entry.pop("process_identity", None)
+                    supervisor.save()
+                await supervisor.terminals.restart(
+                    terminal_id,
+                    argv=host.viewer_argv(session),
+                    env=host.child_env(),
+                )
+                return {"terminal": terminal_id}
+        terminal_id = await supervisor.terminals.create(
+            harness,
+            ticket=ticket.id,
+            slot=slot,
+            owner="attach",
+            native_session=session,
+            title=f"#{ticket.id} / {slot} · live",
+            argv=host.viewer_argv(session),
+            env=host.child_env(),
+        )
         return {"terminal": terminal_id}
     if op in (
         "terminal_snapshot",

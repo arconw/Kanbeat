@@ -25,7 +25,14 @@ from .hooks import TransitionHooks
 from .terminals import Terminals
 from .session_groups import SessionGroups
 from .terminal_control import terminal_request
-from .launcher import app_command, internal_environment
+from .launcher import app_command, external_environment, internal_environment
+from .host_process import HostError, RuntimeIdentity, stop_recorded
+from .opencode_host import (
+    OpenCodeHttpError,
+    OpenCodePromptTooLarge,
+    OpenCodeServeHost,
+    validate_prompt,
+)
 from .ipc import socket_path, prepare_socket_directory, remove_socket, bind_socket
 
 MAX_INPUT = 1024 * 1024
@@ -54,6 +61,43 @@ class Supervisor:
         self.shutdown_requested = asyncio.Event()
         self._seen_queue = False
         self._reported: set[str] = set()
+        self._host_lock = asyncio.Lock()
+        self.opencode: OpenCodeServeHost | None = None
+        self.runtime.data.setdefault("hosts", {})
+
+    def record_host(self, kind: str, identity: RuntimeIdentity) -> None:
+        self.runtime.data.setdefault("hosts", {})[kind] = identity.to_dict()
+        self.save()
+
+    def forget_host(self, kind: str) -> None:
+        if self.runtime.data.setdefault("hosts", {}).pop(kind, None) is not None:
+            self.save()
+
+    async def opencode_host(self) -> OpenCodeServeHost:
+        async with self._host_lock:
+            host = self.opencode
+            if host is not None and host.running:
+                return host
+            if host is not None:
+                await host.close()
+                self.opencode = None
+                self.forget_host("opencode")
+            host = OpenCodeServeHost(self.board.project, env=external_environment())
+            try:
+                identity = await host.start()
+            except BaseException:
+                await host.close()
+                raise
+            self.opencode = host
+            self.record_host("opencode", identity)
+            return host
+
+    async def close_hosts(self) -> None:
+        async with self._host_lock:
+            host, self.opencode = self.opencode, None
+            if host is not None:
+                await host.close()
+            self.forget_host("opencode")
 
     def acquire(self) -> None:
         self.lock_stream = self.lock_path.open("a+b")
@@ -320,125 +364,173 @@ class Supervisor:
                     entry.pop("activity", None)
                 self.save()
 
+            shared = None
             try:
                 while key not in self.cancelled:
-                    current = self.current_ticket(ticket_id, stage, iteration)
-                    if current is None:
-                        entry["status"] = "interrupted"
-                        return
-                    content_hash = self.content_hash(current)
-                    entry["task_hash"] = content_hash
-                    resumed = bool(session)
-                    native = NativeRun(
-                        harness,
-                        self.prompt(current, worker, resumed, updated=updated),
-                        session,
-                        self.board.project,
-                        self.state_dir / "logs" / f"{ticket_id}-{worker}.log",
-                        on_session=lambda sid: self.record_session(
-                            ticket_id, worker, sid
-                        ),
-                        on_process=lambda pid, token: self.record_process(
-                            ticket_id, worker, pid, token
-                        ),
-                        on_activity=activity_changed,
-                    )
-                    self.runs[key] = native
-                    entry["status"] = "running"
-                    self.save()
-                    result = await native.execute()
-                    self.runs.pop(key, None)
-                    entry.pop("pid", None)
-                    entry.pop("process_identity", None)
-                    entry.pop("activity", None)
-                    if native.stopping or key in self.cancelled:
-                        entry["status"] = "interrupted"
-                        return
-                    current = self.current_ticket(ticket_id, stage, iteration)
-                    if current is None:
-                        entry["status"] = "interrupted"
-                        return
-                    if result.resume_missing and resumed:
-                        # Confirmed absent native session => fresh in the SAME slot.
-                        assignment.pop("session", None)
-                        session = None
-                        updated = True
-                        entry["status"] = "recovering"
+                    try:
+                        current = self.current_ticket(ticket_id, stage, iteration)
+                        if current is None:
+                            entry["status"] = "interrupted"
+                            return
+                        content_hash = self.content_hash(current)
+                        entry["task_hash"] = content_hash
+                        command_builder = None
+                        command_env = None
+                        if harness == "opencode":
+                            shared = await self.opencode_host()
+                        resumed = bool(session)
+                        if shared is not None and session:
+                            try:
+                                await shared.read_session(session)
+                            except OpenCodeHttpError as error:
+                                if error.status != 404:
+                                    raise
+                                session = None
+                                resumed = False
+                                assignment.pop("session", None)
+                                self.save()
+                        prompt_text = self.prompt(
+                            current, worker, resumed, updated=updated
+                        )
+                        if shared is not None:
+                            if not session:
+                                validate_prompt(prompt_text)
+                                metadata = await shared.create_session(
+                                    directory=self.board.project
+                                )
+                                session = metadata.session_id
+                                self.record_session(ticket_id, worker, session)
+                            command_env = shared.child_env()
+
+                            def command_builder(_harness, prompt_text, _session):
+                                return shared.worker_argv(
+                                    session, prompt=prompt_text
+                                ), None
+
+                        native = NativeRun(
+                            harness,
+                            prompt_text,
+                            session,
+                            self.board.project,
+                            self.state_dir / "logs" / f"{ticket_id}-{worker}.log",
+                            on_session=lambda sid: self.record_session(
+                                ticket_id, worker, sid
+                            ),
+                            on_process=lambda pid, token: self.record_process(
+                                ticket_id, worker, pid, token
+                            ),
+                            on_activity=activity_changed,
+                            command_builder=command_builder,
+                            env=command_env,
+                        )
+                        self.runs[key] = native
+                        entry["status"] = "running"
                         self.save()
-                        continue
-                    if result.ok:
-                        if self.content_hash(current) != content_hash:
-                            # Do not accept an obsolete Developer completion or verdict.
-                            entry["status"] = "stale"
-                            session = str(assignment.get("session") or "") or None
+                        result = await native.execute()
+                        self.runs.pop(key, None)
+                        entry.pop("pid", None)
+                        entry.pop("process_identity", None)
+                        entry.pop("activity", None)
+                        if native.stopping or key in self.cancelled:
+                            entry["status"] = "interrupted"
+                            return
+                        current = self.current_ticket(ticket_id, stage, iteration)
+                        if current is None:
+                            entry["status"] = "interrupted"
+                            return
+                        if result.resume_missing and resumed:
+                            # Confirmed absent native session => fresh in the SAME slot.
+                            assignment.pop("session", None)
+                            session = None
                             updated = True
+                            entry["status"] = "recovering"
                             self.save()
                             continue
-                        if worker != "developer":
-                            verdict = VERDICT.search(result.answer)
-                            if verdict is None:
-                                result = Outcome(
-                                    False,
-                                    "Reviewer omitted KANBEAT_VERDICT",
-                                    result.session_id,
-                                    result.answer,
-                                )
-                            else:
-                                state.setdefault("review_results", {})[worker] = {
-                                    "verdict": verdict.group(1),
-                                    "feedback": result.answer[-4000:],
-                                    "iteration": iteration,
-                                    "task_hash": content_hash,
-                                }
                         if result.ok:
-                            entry["status"] = "completed"
-                            entry["task_hash"] = content_hash
-                            entry["attempts"] = 0
-                            self.save()
-                            return
-                    entry["attempts"] = int(entry.get("attempts", 0)) + 1
-                    entry["status"] = "recovering"
-                    self.notice(
-                        f"{ticket_id}/{worker}: {result.reason} "
-                        f"(attempt {entry['attempts']}/3)",
-                        "warning",
-                    )
-                    if entry["attempts"] >= 3:
-                        entry["status"] = "failed"
-                        await self.fail_ticket(
-                            ticket_id,
-                            stage,
-                            iteration,
-                            f"{ticket_id}/{worker}: three unsuccessful attempts",
+                            if self.content_hash(current) != content_hash:
+                                # Do not accept an obsolete Developer completion or verdict.
+                                entry["status"] = "stale"
+                                session = str(assignment.get("session") or "") or None
+                                updated = True
+                                self.save()
+                                continue
+                            if worker != "developer":
+                                verdict = VERDICT.search(result.answer)
+                                if verdict is None:
+                                    result = Outcome(
+                                        False,
+                                        "Reviewer omitted KANBEAT_VERDICT",
+                                        result.session_id,
+                                        result.answer,
+                                    )
+                                else:
+                                    state.setdefault("review_results", {})[worker] = {
+                                        "verdict": verdict.group(1),
+                                        "feedback": result.answer[-4000:],
+                                        "iteration": iteration,
+                                        "task_hash": content_hash,
+                                    }
+                            if result.ok:
+                                entry["status"] = "completed"
+                                entry["task_hash"] = content_hash
+                                entry["attempts"] = 0
+                                self.save()
+                                return
+                        entry["attempts"] = int(entry.get("attempts", 0)) + 1
+                        entry["status"] = "recovering"
+                        self.notice(
+                            f"{ticket_id}/{worker}: {result.reason} "
+                            f"(attempt {entry['attempts']}/3)",
+                            "warning",
                         )
-                        return
-                    session = str(assignment.get("session") or "") or None
-                    await asyncio.sleep(2)
-            except Exception as exc:
-                # On a stream/read/serialization failure, do not orphan a
-                # still-running CLI subprocess while clearing its PID metadata.
-                active = self.runs.get(key)
-                if active is not None:
-                    await active.stop()
-                if (
-                    key in self.cancelled
-                    or self.current_ticket(ticket.id, stage, iteration) is None
-                ):
-                    entry["status"] = "interrupted"
-                    return
-                entry["attempts"] = int(entry.get("attempts", 0)) + 1
-                entry["status"] = "recovering"
-                entry["error"] = str(exc)
-                entry.pop("activity", None)
-                self.notice(f"{ticket.id}/{worker}: {exc}", "warning")
-                if entry["attempts"] >= 3:
-                    entry["status"] = "failed"
-                    await self.fail_ticket(
-                        ticket.id,
-                        stage,
-                        iteration,
-                        f"{ticket.id}/{worker}: three unsuccessful attempts",
-                    )
+                        if entry["attempts"] >= 3:
+                            entry["status"] = "failed"
+                            await self.fail_ticket(
+                                ticket_id,
+                                stage,
+                                iteration,
+                                f"{ticket_id}/{worker}: three unsuccessful attempts",
+                            )
+                            return
+                        session = str(assignment.get("session") or "") or None
+                        await asyncio.sleep(2)
+                    except Exception as exc:
+                        # On a stream/read/serialization failure, do not orphan a
+                        # still-running CLI subprocess while clearing its PID metadata.
+                        active = self.runs.get(key)
+                        if active is not None:
+                            await active.stop()
+                        if (
+                            key in self.cancelled
+                            or self.current_ticket(ticket.id, stage, iteration) is None
+                        ):
+                            entry["status"] = "interrupted"
+                            return
+                        entry["attempts"] = int(entry.get("attempts", 0)) + 1
+                        entry["status"] = "recovering"
+                        entry["error"] = str(exc)
+                        entry.pop("activity", None)
+                        self.notice(f"{ticket.id}/{worker}: {exc}", "warning")
+                        if isinstance(exc, OpenCodePromptTooLarge):
+                            entry["status"] = "failed"
+                            await self.fail_ticket(
+                                ticket.id,
+                                stage,
+                                iteration,
+                                f"{ticket.id}/{worker}: {exc}",
+                            )
+                            return
+                        if entry["attempts"] >= 3:
+                            entry["status"] = "failed"
+                            await self.fail_ticket(
+                                ticket.id,
+                                stage,
+                                iteration,
+                                f"{ticket.id}/{worker}: three unsuccessful attempts",
+                            )
+                            return
+                        await asyncio.sleep(2)
+                        continue
             finally:
                 self.runs.pop(key, None)
                 entry.pop("pid", None)
@@ -545,6 +637,45 @@ class Supervisor:
         previous = self.runtime.data.get("execution") == "running"
         if previous:
             self.runtime.data["execution"] = "stopped"
+        for kind, record in list(self.runtime.data.get("hosts", {}).items()):
+            try:
+                runtime = RuntimeIdentity.from_dict(record)
+            except HostError:
+                self.runtime.data["hosts"].pop(kind, None)
+                continue
+            try:
+                stopped = await stop_recorded(runtime)
+            except (HostError, OSError, RuntimeError) as exc:
+                self.notice(f"{kind}: could not stop recorded host: {exc}", "error")
+                continue
+            if not stopped and process_identity(runtime.pid) == runtime.identity:
+
+                def signal_host(signum: int) -> None:
+                    try:
+                        if os.getpgid(runtime.pid) == runtime.pid:
+                            os.killpg(runtime.pid, signum)
+                        else:
+                            os.kill(runtime.pid, signum)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+
+                signal_host(signal.SIGTERM)
+                for _ in range(30):
+                    await asyncio.sleep(0.1)
+                    if process_identity(runtime.pid) != runtime.identity:
+                        stopped = True
+                        break
+                if not stopped:
+                    signal_host(signal.SIGKILL)
+                    await asyncio.sleep(0.2)
+                    stopped = process_identity(runtime.pid) != runtime.identity
+            if not stopped and process_identity(runtime.pid) == runtime.identity:
+                self.notice(
+                    f"{kind}: could not stop orphaned host process {runtime.pid}",
+                    "error",
+                )
+                continue
+            self.runtime.data["hosts"].pop(kind, None)
         recovery = list(self.runtime.data["tickets"].items())
         recovery.append(("transition-hooks", {"runtime": self.hooks.entries}))
         recovery.append(("interactive-terminals", {"runtime": self.terminals.entries}))
@@ -985,8 +1116,13 @@ class Supervisor:
                     pass
         finally:
             try:
-                await self.stop("Supervisor exiting")
-                await self.terminals.stop()
+                try:
+                    await self.stop("Supervisor exiting")
+                finally:
+                    try:
+                        await self.terminals.stop()
+                    finally:
+                        await self.close_hosts()
             finally:
                 if self.server is not None:
                     self.server.close()

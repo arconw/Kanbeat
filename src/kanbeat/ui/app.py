@@ -12,11 +12,12 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from .modal import BackdropModal
 from textual.widgets import Button, Input, Markdown, Select, Static, TextArea
+from textual.css.query import NoMatches
 
 from ..supervisor import request
 from .terminal import TerminalView
 from .sessions import SessionsView
-from .session_rows import worker_is_active, worker_status_label
+from .session_rows import live_session, worker_is_active, worker_status_label
 from .options import HARNESS
 from .board import BoardView
 from .preferences import ViewPreferences
@@ -137,7 +138,10 @@ class TicketView(BackdropModal[None]):
                     yield Button(
                         "Terminal",
                         id="dev-terminal",
-                        disabled=self.app.snapshot.get("execution") == "running",
+                        disabled=(
+                            self.app.snapshot.get("execution") == "running"
+                            and live_session(self.ticket, "developer") is None
+                        ),
                     )
                     yield Button("Logs", id="dev-log")
                     yield Static(
@@ -153,7 +157,10 @@ class TicketView(BackdropModal[None]):
                         yield Button(
                             "Terminal",
                             id="terminal-" + sid,
-                            disabled=self.app.snapshot.get("execution") == "running",
+                            disabled=(
+                                self.app.snapshot.get("execution") == "running"
+                                and live_session(self.ticket, sid) is None
+                            ),
                         )
                         yield Button("Logs", id="log-" + sid)
                         yield Button("Remove", id="remove-" + sid)
@@ -164,7 +171,7 @@ class TicketView(BackdropModal[None]):
                         )
                 yield Button("+ Reviewer", id="add-reviewer")
                 yield Static(
-                    "Task terminals require Board Stop. Live structured worker attach is not yet supported.",
+                    "OpenCode sessions reattach live. Other harnesses require Board Stop.",
                     classes="hint",
                 )
             yield Static(
@@ -205,8 +212,10 @@ class TicketView(BackdropModal[None]):
         developer.set_class(active, "agent-working")
         if not active:
             developer.remove_class("agent-pulse")
-        stopped = self.app.snapshot.get("execution") != "running"
-        self.query_one("#dev-terminal", Button).disabled = not stopped
+        running = self.app.snapshot.get("execution") == "running"
+        self.query_one("#dev-terminal", Button).disabled = running and (
+            live_session(latest, "developer") is None
+        )
         for slot in state.get("reviewers") or []:
             label = self.query("#runtime-" + slot["id"])
             if label:
@@ -220,7 +229,9 @@ class TicketView(BackdropModal[None]):
                     widget.remove_class("agent-pulse")
             button = self.query("#terminal-" + slot["id"])
             if button:
-                button.first(Button).disabled = not stopped
+                button.first(Button).disabled = running and (
+                    live_session(latest, slot["id"]) is None
+                )
         self.ticket = latest
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -294,8 +305,9 @@ class Assignment(BackdropModal[None]):
             yield Static("Custom Prompt", classes="field")
             yield TextArea(str(value.get("cp") or ""), id="cp")
             yield Static(
-                "Terminal uses saved slot settings. Save edits first; Board Stop is required. "
-                "Open starts a separate harness configuration session and does not save these edits.",
+                "Terminal uses saved slot settings and reattaches live OpenCode sessions; "
+                "other harnesses require Board Stop. Open starts a separate harness "
+                "configuration session and does not save these edits.",
                 classes="hint",
             )
             with Horizontal(classes="modal-actions"):
@@ -303,7 +315,10 @@ class Assignment(BackdropModal[None]):
                 yield Button(
                     "Terminal",
                     id="open-terminal",
-                    disabled=self.app.snapshot.get("execution") == "running",
+                    disabled=(
+                        self.app.snapshot.get("execution") == "running"
+                        and live_session(self.ticket, self.slot) is None
+                    ),
                 )
                 yield Button("Save", id="save", variant="primary")
 
@@ -510,10 +525,17 @@ class KanbeatApp(App[None]):
         return await request(self.project, message)
 
     async def open_task_terminal(self, ticket_id: str, slot: str) -> None:
+        ticket = next(
+            (row for row in self.snapshot.get("tickets", []) if row["id"] == ticket_id),
+            None,
+        )
+        op = (
+            "terminal_attach"
+            if ticket is not None and live_session(ticket, slot)
+            else "terminal_open"
+        )
         try:
-            result = await self.rpc(
-                {"op": "terminal_open", "ticket": ticket_id, "slot": slot}
-            )
+            result = await self.rpc({"op": op, "ticket": ticket_id, "slot": slot})
             self.push_screen(TerminalView(result["terminal"]))
         except (RuntimeError, ValueError, OSError) as exc:
             self.notify(str(exc), severity="error", timeout=7)
@@ -538,14 +560,17 @@ class KanbeatApp(App[None]):
             return False
 
     async def refresh_snapshot(self, force: bool = False) -> None:
-        if self._updating:
+        if self._updating or not self.is_mounted:
             return
         self._updating = True
         try:
             snap = await self.rpc({"op": "snapshot"})
             signature = json.dumps(snap, sort_keys=True, ensure_ascii=False)
             self.snapshot = snap
-            execution_button = self.query_one("#execution", Button)
+            try:
+                execution_button = self.query_one("#execution", Button)
+            except NoMatches:
+                return
             execution_button.label = (
                 "■ STOP" if snap.get("execution") == "running" else "▶ PLAY"
             )

@@ -239,6 +239,7 @@ def test_argv_builders_validate_ids_and_url():
         "p/m",
         "--variant",
         "high",
+        "--",
         "do it",
     ]
     for bad_url in [
@@ -253,8 +254,24 @@ def test_argv_builders_validate_ids_and_url():
     for bad in ["--evil", "ses_", "ses_a b", "abc", ""]:
         with pytest.raises(OpenCodeHostError):
             validate_session_id(bad)
-    with pytest.raises(OpenCodeHostError):
-        worker_argv(url, SESSION, prompt="--auto")
+    assert worker_argv(url, SESSION, prompt="--auto")[-2:] == ["--", "--auto"]
+    with pytest.raises(OpenCodeHostError, match="too large"):
+        worker_argv(url, SESSION, prompt="x" * (64 * 1024 + 1))
+
+
+@pytest.mark.skipif(shutil.which("opencode") is None, reason="opencode not installed")
+def test_real_opencode_honors_prompt_separator():
+    argv = worker_argv("http://127.0.0.1:9", SESSION, prompt="--auto")
+    result = subprocess.run(
+        argv,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    output = result.stdout + result.stderr
+    assert "Unknown argument" not in output
+    assert result.returncode != 0
 
 
 def test_parsers_drop_unlisted_fields():
