@@ -384,12 +384,13 @@ def test_independent_session_label_includes_exit_and_error():
         "harness": "pi",
         "status": "exited",
         "exit_code": 5,
-        "error": "native\nfailure\r\nfrom\tprovider",
+        "error": "native\nfailure\r\nfrom\tprovider\x1b",
     }
     assert "exited (exit 5)" in SessionRow.label(entry)
     assert "native failure from provider" in SessionRow.label(entry)
     assert "\n" not in SessionRow.label(entry)
     assert "\r" not in SessionRow.label(entry)
+    assert "\x1b" not in SessionRow.label(entry)
 
 
 def test_malformed_view_preferences_do_not_break_startup(tmp_path):
