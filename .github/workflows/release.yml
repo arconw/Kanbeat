@@ -141,7 +141,7 @@ jobs:
               echo "A published release already exists for $TAG; refusing to modify it." >&2
               exit 1
             fi
-            gh api --method PATCH "repos/$GH_REPO/releases/$release_id" --field body=@.tmp/notes.md --silent
+            gh api --method PATCH "repos/$GH_REPO/releases/$release_id" --field tag_name="$TAG" --field body=@.tmp/notes.md --silent
             for asset in .tmp/assets/*; do
               existing="$(gh api "repos/$GH_REPO/releases/$release_id/assets" --paginate --jq ".[] | select(.name == \"$(basename "$asset")\") | .id")"
               for id in $existing; do
@@ -151,4 +151,9 @@ jobs:
             done
           else
             gh release create "$TAG" .tmp/assets/* --draft --verify-tag --title "Kanbeat ${TAG#v}" --notes-file .tmp/notes.md
+            release_id="$(gh api --paginate "repos/$GH_REPO/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
           fi
+          saved_tag="$(gh api "repos/$GH_REPO/releases/$release_id" --jq .tag_name)"
+          saved_draft="$(gh api "repos/$GH_REPO/releases/$release_id" --jq .draft)"
+          test "$saved_tag" = "$TAG"
+          test "$saved_draft" = true
