@@ -476,7 +476,12 @@ class Supervisor:
             },
         ]:
             for item in state.get("runtime", {}).values():
-                if item.get("status") in ("running", "starting", "recovering"):
+                if item.get("status") in (
+                    "running",
+                    "starting",
+                    "stopping",
+                    "recovering",
+                ):
                     item["status"] = "interrupted"
                 if item.get("status") != "recovery_blocked":
                     item.pop("pid", None)
@@ -534,7 +539,12 @@ class Supervisor:
                 pid = entry.get("pid")
                 token = entry.get("process_identity")
                 if pid is None:
-                    if entry.get("status") in ("running", "starting", "recovering"):
+                    if entry.get("status") in (
+                        "running",
+                        "starting",
+                        "stopping",
+                        "recovering",
+                    ):
                         entry["status"] = "interrupted"
                     continue
                 try:

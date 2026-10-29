@@ -88,6 +88,198 @@ async def test_real_pty_input_resize_and_reconnect(supervisor):
 
 
 @pytest.mark.asyncio
+async def test_stopping_status_is_visible_and_prevents_restart(supervisor, monkeypatch):
+    from kanbeat.ui.session_rows import SessionRow
+    from kanbeat import terminals
+
+    terminal_id = await supervisor.terminals.create("codex", owner="custom")
+    session = supervisor.terminals.get(terminal_id)
+    real_terminate = terminals.terminate_process
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_termination(proc):
+        entered.set()
+        await release.wait()
+        await real_terminate(proc)
+
+    monkeypatch.setattr(terminals, "terminate_process", delayed_termination)
+    job = asyncio.create_task(session.stop())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        entry = supervisor.snapshot()["terminals"][terminal_id]
+        assert entry["status"] == "stopping"
+        assert "stopping" in SessionRow.label(entry)
+        assert supervisor.terminals.running("custom")
+        with pytest.raises(ValueError, match="Stop the session"):
+            await supervisor.dispatch(
+                {"op": "session_restart", "terminal": terminal_id}
+            )
+        with pytest.raises(ValueError, match="Stop the session"):
+            await supervisor.dispatch(
+                {"op": "session_delete", "terminal": terminal_id, "confirmed": True}
+            )
+        with pytest.raises(ValueError, match="Stop the session"):
+            await supervisor.terminals.restart(terminal_id)
+        release.set()
+        await asyncio.wait_for(job, timeout=8)
+        assert session.entry["status"] == "stopped"
+        assert not supervisor.terminals.running("custom")
+    finally:
+        release.set()
+        await asyncio.gather(job, return_exceptions=True)
+        monkeypatch.setattr(terminals, "terminate_process", real_terminate)
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_stop_failure_restores_running_status(supervisor, monkeypatch):
+    from kanbeat import terminals
+
+    terminal_id = await supervisor.terminals.create("codex", owner="custom")
+    session = supervisor.terminals.get(terminal_id)
+    real_terminate = terminals.terminate_process
+
+    async def failed_termination(proc):
+        raise OSError("termination failed")
+
+    monkeypatch.setattr(terminals, "terminate_process", failed_termination)
+    try:
+        with pytest.raises(OSError, match="termination failed"):
+            await session.stop()
+        assert session.entry["status"] == "running"
+        assert supervisor.terminals.running("custom")
+        session.write("quit\n")
+        await asyncio.wait_for(session.waiter, timeout=5)
+        assert session.entry["status"] == "exited"
+    finally:
+        monkeypatch.setattr(terminals, "terminate_process", real_terminate)
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stop_restores_running_status(supervisor, monkeypatch):
+    from kanbeat import terminals
+
+    terminal_id = await supervisor.terminals.create("codex", owner="custom")
+    session = supervisor.terminals.get(terminal_id)
+    real_terminate = terminals.terminate_process
+    entered = asyncio.Event()
+
+    async def hanging_termination(proc):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(terminals, "terminate_process", hanging_termination)
+    job = asyncio.create_task(session.stop())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        assert session.entry["status"] == "stopping"
+        job.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await job
+        assert session.entry["status"] == "running"
+        assert supervisor.terminals.running("custom")
+        session.write("quit\n")
+        await asyncio.wait_for(session.waiter, timeout=5)
+        assert session.entry["status"] == "exited"
+    finally:
+        job.cancel()
+        await asyncio.gather(job, return_exceptions=True)
+        monkeypatch.setattr(terminals, "terminate_process", real_terminate)
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stop_keeps_stopping_while_another_stop_is_pending(
+    supervisor, monkeypatch
+):
+    from kanbeat import terminals
+
+    terminal_id = await supervisor.terminals.create("codex", owner="custom")
+    session = supervisor.terminals.get(terminal_id)
+    real_terminate = terminals.terminate_process
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_termination(proc):
+        entered.set()
+        await release.wait()
+        await real_terminate(proc)
+
+    monkeypatch.setattr(terminals, "terminate_process", delayed_termination)
+    first = asyncio.create_task(session.stop())
+    second = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        second = asyncio.create_task(session.stop())
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert session.entry["status"] == "stopping"
+        release.set()
+        await asyncio.wait_for(second, timeout=8)
+        assert session.entry["status"] == "stopped"
+    finally:
+        first.cancel()
+        if second is not None:
+            second.cancel()
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+        monkeypatch.setattr(terminals, "terminate_process", real_terminate)
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_open_rejects_task_terminal_that_is_still_stopping(
+    supervisor, monkeypatch
+):
+    from kanbeat import terminals
+    from kanbeat.ui.session_rows import TaskSessions
+
+    ticket = supervisor.board.create("Task")
+    terminal_id = (
+        await supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+    )["terminal"]
+    session = supervisor.terminals.get(terminal_id)
+    real_terminate = terminals.terminate_process
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_termination(proc):
+        entered.set()
+        await release.wait()
+        await real_terminate(proc)
+
+    monkeypatch.setattr(terminals, "terminate_process", delayed_termination)
+    job = asyncio.create_task(session.stop())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        snapshot = supervisor.snapshot()
+        ticket_view = next(row for row in snapshot["tickets"] if row["id"] == ticket.id)
+        assert "PTY stopping" in TaskSessions.slot_status(
+            ticket_view, "developer", snapshot["terminals"]
+        )
+        with pytest.raises(ValueError, match="still stopping"):
+            await supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+        release.set()
+        await asyncio.wait_for(job, timeout=8)
+        reopened = await supervisor.dispatch(
+            {"op": "terminal_open", "ticket": ticket.id}
+        )
+        assert reopened["terminal"] != terminal_id
+        assert (
+            supervisor.terminals.get(reopened["terminal"]).entry["status"] == "running"
+        )
+    finally:
+        release.set()
+        await asyncio.gather(job, return_exceptions=True)
+        monkeypatch.setattr(terminals, "terminate_process", real_terminate)
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
 async def test_board_stop_does_not_stop_independent_terminal(supervisor):
     board_id = await supervisor.terminals.create("codex", owner="board")
     custom_id = await supervisor.terminals.create("claude", owner="custom")
@@ -157,6 +349,25 @@ async def test_terminal_identity_survives_restart(supervisor):
     assert entry["native_session"] == "native-123"
     assert entry["status"] == "stopped"
     assert restored.runtime.data["execution"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_stale_stopping_status_is_cleared(supervisor):
+    stale = {
+        "id": "stale",
+        "harness": "codex",
+        "owner": "board",
+        "title": "Stale",
+        "status": "stopping",
+    }
+    supervisor.terminals.entries["stale"] = dict(stale)
+    await supervisor.stop()
+    assert supervisor.terminals.entries["stale"]["status"] == "interrupted"
+    supervisor.terminals.entries["stale"] = dict(stale)
+    supervisor.save()
+    restored = Supervisor(supervisor.board.project)
+    await restored.recover_orphans()
+    assert restored.terminals.entries["stale"]["status"] == "interrupted"
 
 
 @pytest.mark.asyncio

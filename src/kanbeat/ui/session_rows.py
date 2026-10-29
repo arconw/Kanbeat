@@ -37,7 +37,8 @@ class SessionRow(Horizontal):
         yield Button(
             "Open",
             id="open-session-" + self.entry["id"],
-            disabled=not self.entry.get("attached"),
+            disabled=not self.entry.get("attached")
+            or self.entry.get("status") == "stopping",
         )
         yield Button("Actions", id="session-actions-" + self.entry["id"])
 
@@ -46,8 +47,8 @@ class SessionRow(Horizontal):
             label = self.query_one(Static)
             label.update(self.label(entry))
             label.tooltip = self.label(entry)
-        self.query_one("#open-session-" + entry["id"], Button).disabled = not entry.get(
-            "attached"
+        self.query_one("#open-session-" + entry["id"], Button).disabled = (
+            not entry.get("attached") or entry.get("status") == "stopping"
         )
         self.entry = deepcopy(entry)
 
@@ -82,7 +83,8 @@ class TaskSessions(Vertical):
             (
                 entry
                 for entry in reversed(matches)
-                if entry.get("status") in ("starting", "running", "recovery_blocked")
+                if entry.get("status")
+                in ("starting", "running", "stopping", "recovery_blocked")
             ),
             None,
         )

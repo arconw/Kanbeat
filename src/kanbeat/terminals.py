@@ -71,6 +71,7 @@ class TerminalSession:
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self.log = None
         self.stop_requested = False
+        self.pending_stops = 0
         self.revision = 0
         self.changed = asyncio.Event()
 
@@ -203,8 +204,25 @@ class TerminalSession:
 
     async def stop(self) -> None:
         self.stop_requested = True
-        if self.process is not None and self.process.returncode is None:
-            await terminate_process(self.process)
+        stopping = self.process is not None and self.process.returncode is None
+        if stopping:
+            self.pending_stops += 1
+            self.entry["status"] = "stopping"
+            self.state.save()
+            self.touch()
+        try:
+            if stopping:
+                await terminate_process(self.process)
+        except BaseException:
+            if self.process.returncode is None and self.pending_stops == 1:
+                self.entry["status"] = "running"
+                self.stop_requested = False
+                self.state.save()
+                self.touch()
+            raise
+        finally:
+            if stopping:
+                self.pending_stops -= 1
         if self.waiter is not None:
             await self.waiter
 
@@ -304,7 +322,12 @@ class Terminals:
 
     async def restart(self, terminal_id: str) -> None:
         entry = self.entries[terminal_id]
-        if entry.get("status") in ("starting", "running", "recovery_blocked"):
+        if entry.get("status") in (
+            "starting",
+            "running",
+            "stopping",
+            "recovery_blocked",
+        ):
             raise ValueError("Stop the session before restarting it")
         await self.start_entry(entry)
 
@@ -354,7 +377,7 @@ class Terminals:
 
     def running(self, owner: str | None = None) -> bool:
         return any(
-            e.get("status") in ("starting", "running", "recovery_blocked")
+            e.get("status") in ("starting", "running", "stopping", "recovery_blocked")
             and (owner is None or e.get("owner") == owner)
             for e in self.entries.values()
         )

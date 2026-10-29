@@ -38,6 +38,14 @@ async def terminal_request(
                 and entry.get("status") in ("starting", "running")
             ):
                 return {"terminal": terminal_id}
+            if (
+                entry.get("ticket") == ticket.id
+                and entry.get("slot") == slot
+                and entry.get("status") == "stopping"
+            ):
+                raise ValueError(
+                    "Terminal is still stopping; wait for it to exit before reopening"
+                )
         harness, session = supervisor.selected_harness(assignment)
         terminal_id = await supervisor.terminals.create(
             harness,
