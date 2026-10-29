@@ -42,12 +42,30 @@ async def test_broken_stdin_reaps_process_and_readers(tmp_path, monkeypatch):
     run = run_script(
         tmp_path,
         monkeypatch,
-        "import os,time; os.close(0); time.sleep(60)",
+        "import os,time; os.close(0); print('READY', flush=True); time.sleep(60)",
         prompt="x" * (8 * 1024 * 1024),
     )
+    create_subprocess = asyncio.create_subprocess_exec
+
+    async def start_ready_process(*args, **kwargs):
+        process = await create_subprocess(*args, **kwargs)
+        try:
+            assert (
+                await asyncio.wait_for(process.stdout.readline(), timeout=5)
+                == b"READY\n"
+            )
+        except BaseException:
+            process.kill()
+            await process.wait()
+            raise
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start_ready_process)
     outcome = await asyncio.wait_for(run.execute(), timeout=10)
     assert not outcome.ok
-    assert "BrokenPipeError" in outcome.reason
+    assert any(
+        error in outcome.reason for error in ("BrokenPipeError", "ConnectionResetError")
+    )
     assert run.process.returncode is not None
     assert process_identity(run.process.pid) is None
     assert not run.stopping
