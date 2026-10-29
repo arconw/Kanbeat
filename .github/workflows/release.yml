@@ -161,20 +161,32 @@ jobs:
           saved_draft="$(gh api "repos/$GH_REPO/releases/$release_id" --jq .draft)"
           test "$saved_tag" = "$TAG"
           test "$saved_draft" = true
-          gh api --paginate --slurp "repos/$GH_REPO/releases/$release_id/assets" > .tmp/uploaded-assets.json
-          python - <<'PY'
+          gh api --paginate "repos/$GH_REPO/releases/$release_id/assets" --jq '.[] | {name, digest} | @json' > .tmp/uploaded-assets.jsonl
+          python3 - <<'PY'
           import hashlib
           import json
+          import sys
           from pathlib import Path
 
           expected = {
               path.name: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
               for path in Path(".tmp/assets").iterdir()
           }
-          pages = json.loads(Path(".tmp/uploaded-assets.json").read_text())
-          assets = [asset for page in pages for asset in page]
+          assets = [
+              json.loads(line)
+              for line in Path(".tmp/uploaded-assets.jsonl").read_text().splitlines()
+              if line.strip()
+          ]
           uploaded = {asset["name"]: asset.get("digest") for asset in assets}
           if len(assets) != len(expected) or uploaded != expected:
+              print(f"Expected {len(expected)} assets, received {len(assets)}", file=sys.stderr)
+              for name in sorted(expected.keys() | uploaded.keys()):
+                  if expected.get(name) != uploaded.get(name):
+                      print(
+                          f"{name}: expected {expected.get(name, 'absent')}, "
+                          f"uploaded {uploaded.get(name, 'missing asset or digest')}",
+                          file=sys.stderr,
+                      )
               raise SystemExit("Draft release assets or SHA-256 digests do not match")
           print("Verified all draft release assets and SHA-256 digests")
           PY
