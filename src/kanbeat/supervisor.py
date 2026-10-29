@@ -428,19 +428,9 @@ class Supervisor:
                         f"{ticket.id}/{worker}: three unsuccessful attempts",
                     )
             finally:
-                active = self.runs.get(key)
-                still_alive = (
-                    active is not None
-                    and active.process is not None
-                    and active.process.returncode is None
-                )
-                if still_alive:
-                    entry["status"] = "recovery_blocked"
-                    entry.setdefault("error", "Native child could not be reaped")
-                else:
-                    self.runs.pop(key, None)
-                    entry.pop("pid", None)
-                    entry.pop("process_identity", None)
+                self.runs.pop(key, None)
+                entry.pop("pid", None)
+                entry.pop("process_identity", None)
                 self.save()
 
         self.cancelled.discard(key)
@@ -463,40 +453,17 @@ class Supervisor:
     async def stop(self, reason: str = "Board stopped") -> None:
         self.runtime.data["execution"] = "stopped"
         self.save()
-        cleanup_errors = []
-        try:
-            await self.terminals.stop("board")
-        except Exception as exc:
-            cleanup_errors.append(str(exc))
+        await self.terminals.stop("board")
         self.cancelled.update(key for key, job in self.jobs.items() if not job.done())
-        active_runs = list(self.runs.items())
-        results = await asyncio.gather(
-            *(run.stop() for _, run in active_runs), return_exceptions=True
-        )
-        failed_keys = set()
-        for (key, _run), result in zip(active_runs, results):
-            if not isinstance(result, BaseException):
-                continue
-            failed_keys.add(key)
-            cleanup_errors.append(f"{key}: {result}")
-            ticket_id, slot = key.split(":", 1)
-            worker = self.ticket_state(ticket_id).get("runtime", {}).get(slot)
-            if worker is not None:
-                worker.update(status="recovery_blocked", error=str(result))
-        # Completed workers must be awaited even when another child cannot exit.
-        # Keep only unresolved tasks supervised for recovery.
-        completed_keys = [key for key in self.jobs if key not in failed_keys]
         await asyncio.gather(
-            *(self.jobs[key] for key in completed_keys), return_exceptions=True
+            *(run.stop() for run in list(self.runs.values())), return_exceptions=True
         )
-        for key in completed_keys:
-            self.job_scopes.pop(key, None)
-            self.cancelled.discard(key)
-            self.jobs.pop(key, None)
-        if not cleanup_errors:
-            self.job_scopes.clear()
-            self.cancelled.clear()
-            self.jobs.clear()
+        await asyncio.gather(
+            *(job for job in list(self.jobs.values())), return_exceptions=True
+        )
+        self.job_scopes.clear()
+        self.cancelled.clear()
+        self.jobs.clear()
         for state in [
             *self.runtime.data["tickets"].values(),
             {"runtime": self.hooks.entries},
@@ -515,13 +482,6 @@ class Supervisor:
                     item.pop("pid", None)
                     item.pop("process_identity", None)
         self.notice(reason)
-        if cleanup_errors:
-            self.notice(
-                "Native cleanup incomplete: " + "; ".join(cleanup_errors), "error"
-            )
-            raise RuntimeError(
-                "Native cleanup incomplete; inspect recovery-blocked processes"
-            )
 
     async def play(self) -> None:
         for state in [
@@ -635,13 +595,7 @@ class Supervisor:
         async with self.guard:
             tickets, errors = self.board.scan()
             # Detect moves/deletions of active tickets before assigning fresh work.
-            try:
-                await self.terminals.reconcile(tickets)
-            except RuntimeError as exc:
-                message = "Task PTY cleanup blocked: " + str(exc)
-                if message not in self._reported:
-                    self.notice(message, "error")
-                    self._reported.add(message)
+            await self.terminals.reconcile(tickets)
             await self.stop_stale_jobs(tickets)
             if errors:
                 for error in errors:
@@ -651,14 +605,6 @@ class Supervisor:
                 return
             self.runtime.clean_deleted_tickets({ticket.id for ticket in tickets})
             if self.runtime.data["execution"] != "running":
-                return
-            # Block new writers only for an unresolved task PTY, not a
-            # healthy terminal already managed by the supervisor.
-            if any(
-                entry.get("owner") == "board"
-                and entry.get("status") == "recovery_blocked"
-                for entry in self.terminals.entries.values()
-            ):
                 return
             if any(
                 entry.get("status") == "recovery_blocked"
@@ -872,12 +818,7 @@ class Supervisor:
                     "Stop the board before manually moving an active ticket"
                 )
             if op != "reorder":
-                try:
-                    await self.terminals.stop_ticket(ticket_id)
-                except RuntimeError as exc:
-                    raise ValueError(
-                        "Task PTY could not stop; ticket change cancelled"
-                    ) from exc
+                await self.terminals.stop_ticket(ticket_id)
             if op == "move":
                 self.move_ticket(ticket_id, str(request["column"]))
             elif op == "archive":
@@ -993,13 +934,6 @@ class Supervisor:
         with suppress(ConnectionError):
             await writer.wait_closed()
 
-    async def stop_all(self) -> None:
-        """Always attempt independent PTY cleanup, even if Board Stop fails."""
-        try:
-            await self.stop("Supervisor exiting")
-        finally:
-            await self.terminals.stop()
-
     async def serve(self) -> None:
         self.acquire()
         try:
@@ -1026,7 +960,8 @@ class Supervisor:
                     pass
         finally:
             try:
-                await self.stop_all()
+                await self.stop("Supervisor exiting")
+                await self.terminals.stop()
             finally:
                 if self.server is not None:
                     self.server.close()

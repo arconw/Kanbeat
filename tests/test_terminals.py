@@ -5,7 +5,7 @@ import pytest
 
 from kanbeat.native import process_identity
 from kanbeat.supervisor import Supervisor
-from kanbeat.terminals import interactive_command, terminate_process
+from kanbeat.terminals import interactive_command
 from kanbeat.ui.app import Assignment, KanbeatApp, TicketView
 from textual.widgets import Button, TextArea
 from kanbeat.ui.terminal import TerminalDisplay, TerminalView
@@ -85,31 +85,6 @@ async def test_real_pty_input_resize_and_reconnect(supervisor):
         assert session.entry["status"] == "stopped"
     finally:
         await supervisor.terminals.stop()
-
-
-@pytest.mark.asyncio
-async def test_failed_stop_preserves_live_terminal_and_recovery_identity(
-    supervisor, monkeypatch
-):
-    terminal_id = await supervisor.terminals.create("codex", owner="board")
-    session = supervisor.terminals.get(terminal_id)
-    original = terminate_process
-
-    async def refuse_stop(_proc):
-        raise RuntimeError("Owned child did not exit")
-
-    monkeypatch.setattr("kanbeat.terminals.terminate_process", refuse_stop)
-    try:
-        with pytest.raises(RuntimeError, match="Native cleanup incomplete"):
-            await supervisor.stop()
-        assert supervisor.runtime.data["execution"] == "stopped"
-        assert session.entry["status"] == "recovery_blocked"
-        assert session.entry.get("pid") == session.process.pid
-        assert not session.waiter.done()
-    finally:
-        monkeypatch.setattr("kanbeat.terminals.terminate_process", original)
-        await session.stop()
-        assert session.process.returncode is not None
 
 
 @pytest.mark.asyncio

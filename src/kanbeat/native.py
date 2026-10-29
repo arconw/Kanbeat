@@ -247,12 +247,7 @@ async def terminate_process(proc: asyncio.subprocess.Process | None) -> None:
             continue
     if proc.returncode is None:
         signal_owned_process(proc, signal.SIGKILL)
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=3)
-        except asyncio.TimeoutError as exc:
-            raise RuntimeError(
-                "Native child did not exit after signal escalation"
-            ) from exc
+        await proc.wait()
 
 
 class NativeRun:
