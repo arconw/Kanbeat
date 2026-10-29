@@ -209,23 +209,51 @@ def process_identity(pid: int) -> str | None:
         return None
 
 
-async def terminate_process(proc: asyncio.subprocess.Process | None) -> None:
+def signal_owned_process(
+    proc: asyncio.subprocess.Process, signum: int, identity: str | None
+) -> None:
+    """Never signal a group without confirming its current leader and identity."""
+    if proc.returncode is not None:
+        return
+    current = process_identity(proc.pid) if identity else None
+    if identity and current and current != identity:
+        raise RuntimeError("Refusing to signal a process with a changed PID identity")
+    # A missing identity or a changed process group only permits signaling the
+    # subprocess directly. Do not target an unverified/reused process group.
+    if identity is None or current == identity:
+        try:
+            own_group = os.getpgid(proc.pid) == proc.pid
+        except (ProcessLookupError, PermissionError):
+            own_group = False
+        if own_group:
+            try:
+                os.killpg(proc.pid, signum)
+                return
+            except (ProcessLookupError, PermissionError):
+                # macOS can reject a group signal after a PTY hangup. Fall back
+                # to the still-owned child rather than retrying the group ID.
+                pass
+    try:
+        proc.send_signal(signum)
+    except ProcessLookupError:
+        pass
+
+
+async def terminate_process(
+    proc: asyncio.subprocess.Process | None, identity: str | None = None
+) -> None:
     if not proc or proc.returncode is not None:
         return
-    try:
-        os.killpg(proc.pid, signal.SIGINT)
-    except ProcessLookupError:
-        return
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=3)
-    except asyncio.TimeoutError:
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal_owned_process(proc, signum, identity)
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
             await asyncio.wait_for(proc.wait(), timeout=3)
-        except (ProcessLookupError, asyncio.TimeoutError):
-            if proc.returncode is None:
-                os.killpg(proc.pid, signal.SIGKILL)
-                await proc.wait()
+            return
+        except asyncio.TimeoutError:
+            continue
+    if proc.returncode is None:
+        signal_owned_process(proc, signal.SIGKILL, identity)
+        await proc.wait()
 
 
 class NativeRun:
@@ -247,6 +275,7 @@ class NativeRun:
         self.on_session = on_session or (lambda _value: None)
         self.on_process = on_process or (lambda _pid, _identity: None)
         self.process: asyncio.subprocess.Process | None = None
+        self.process_identity: str | None = None
         self.stopping = False
 
     async def stop(self) -> None:
@@ -254,7 +283,7 @@ class NativeRun:
         await self._terminate()
 
     async def _terminate(self) -> None:
-        await terminate_process(self.process)
+        await terminate_process(self.process, self.process_identity)
 
     async def execute(self) -> Outcome:
         if self.stopping:
@@ -299,7 +328,8 @@ class NativeRun:
                     pass
 
             try:
-                self.on_process(proc.pid, process_identity(proc.pid))
+                self.process_identity = process_identity(proc.pid)
+                self.on_process(proc.pid, self.process_identity)
                 if self.stopping:
                     await self.stop()
                     return Outcome(

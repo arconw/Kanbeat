@@ -204,7 +204,7 @@ class TerminalSession:
     async def stop(self) -> None:
         self.stop_requested = True
         if self.process is not None and self.process.returncode is None:
-            await terminate_process(self.process)
+            await terminate_process(self.process, self.entry.get("process_identity"))
         if self.waiter is not None:
             await self.waiter
 
