@@ -101,15 +101,27 @@ class SessionGroups:
                 matches[-1] if matches else None,
             )
             if entry is not None:
-                if entry.get("status") == "stopping":
+                attached = entry["id"] in self.terminals.sessions
+                status = entry.get("status")
+                if attached and status == "stopping":
                     raise ValueError(
                         "Terminal is still stopping; wait for it to exit before reopening"
                     )
-                if entry["id"] in self.terminals.sessions and entry.get("status") in (
-                    "starting",
-                    "running",
-                ):
+                if attached and status in ("starting", "running"):
                     return {"terminal": entry["id"]}
+                if not attached and status in ("starting", "running", "stopping"):
+                    pid = entry.get("pid")
+                    current = process_identity(int(pid)) if pid is not None else None
+                    saved = entry.get("process_identity")
+                    if current is not None and (not saved or current == saved):
+                        raise ValueError(
+                            "An orphaned session process is still running; "
+                            "resolve it before reopening"
+                        )
+                    entry["status"] = "interrupted"
+                    entry.pop("pid", None)
+                    entry.pop("process_identity", None)
+                    self.state.save()
                 self.inactive(entry)
                 await self.terminals.restart(entry["id"])
                 return {"terminal": entry["id"]}
