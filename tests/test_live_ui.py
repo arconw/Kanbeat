@@ -10,6 +10,7 @@ from kanbeat.ui.board import BoardView, TicketCard
 from kanbeat.ui.preferences import ViewPreferences
 from kanbeat.ui.session_rows import SessionRow, SessionSection
 from kanbeat.ui.sessions import SessionsView
+from kanbeat.ui.startup import StartupScreen
 
 
 def client(supervisor, monkeypatch):
@@ -20,6 +21,23 @@ def client(supervisor, monkeypatch):
 
     monkeypatch.setattr(app, "rpc", rpc)
     return app
+
+
+@pytest.mark.asyncio
+async def test_startup_wordmark_precedes_first_board_snapshot(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path)
+    app = KanbeatApp(tmp_path)
+    screens = []
+
+    async def rpc(message):
+        screens.append(type(app.screen))
+        return await supervisor.dispatch(message)
+
+    monkeypatch.setattr(app, "rpc", rpc)
+    async with app.run_test(size=(100, 35)):
+        assert screens[0] is StartupScreen
+        assert isinstance(app.query_one(BoardView), BoardView)
+        assert not isinstance(app.screen, StartupScreen)
 
 
 @pytest.mark.asyncio
