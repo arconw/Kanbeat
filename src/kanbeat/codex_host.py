@@ -281,6 +281,7 @@ class CodexRpcClient:
         self._subscriptions: set[CodexSubscription] = set()
         self._reader: asyncio.Task[None] | None = None
         self._closed = False
+        self._released = False
         self.user_agent: str | None = None
 
     @classmethod
@@ -410,8 +411,9 @@ class CodexRpcClient:
         await self._send(message)
 
     async def close(self) -> None:
-        if self._closed:
+        if self._released:
             return
+        self._released = True
         self._closed = True
         reader, self._reader = self._reader, None
         if reader is not None and reader is not asyncio.current_task():
@@ -620,9 +622,9 @@ class CodexAppServerHost:
         try:
             self._identity = identity_of("codex", process, listen)
             self._client = await self._connect_when_ready(process, socket_path)
-            self._owned_link = recorded_link(socket_path)
+            self._owned_link = safe_recorded_link(socket_path)
         except BaseException:
-            self._owned_link = recorded_link(socket_path)
+            self._owned_link = safe_recorded_link(socket_path)
             await self._teardown()
             raise
 
@@ -722,7 +724,7 @@ class CodexAppServerHost:
             drain.cancel()
             await asyncio.gather(drain, return_exceptions=True)
         if owned is None and self.socket_path is not None:
-            owned = recorded_link(self.socket_path)
+            owned = safe_recorded_link(self.socket_path)
         if owned is not None:
             try:
                 remove_recorded_link(*owned)
@@ -908,6 +910,13 @@ def remove_stale_socket(path: Path) -> None:
         path.unlink(missing_ok=True)
         return
     raise RuntimeError("Another server is already listening on this socket path")
+
+
+def safe_recorded_link(path: Path) -> tuple[Path, Path] | None:
+    try:
+        return recorded_link(path)
+    except OSError:
+        return None
 
 
 def recorded_link(path: Path) -> tuple[Path, Path] | None:
