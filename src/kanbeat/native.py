@@ -209,50 +209,40 @@ def process_identity(pid: int) -> str | None:
         return None
 
 
-def signal_owned_process(
-    proc: asyncio.subprocess.Process, signum: int, identity: str | None
-) -> None:
-    """Never signal a group without confirming its current leader and identity."""
+def signal_owned_process(proc: asyncio.subprocess.Process, signum: int) -> None:
+    """Signal only the current child-led group, otherwise the child itself."""
     if proc.returncode is not None:
         return
-    current = process_identity(proc.pid) if identity else None
-    if identity and current and current != identity:
-        raise RuntimeError("Refusing to signal a process with a changed PID identity")
-    # A missing identity or a changed process group only permits signaling the
-    # subprocess directly. Do not target an unverified/reused process group.
-    if identity is not None and current == identity:
+    try:
+        owned_group = os.getpgid(proc.pid) == proc.pid
+    except (ProcessLookupError, PermissionError):
+        owned_group = False
+    if owned_group:
         try:
-            own_group = os.getpgid(proc.pid) == proc.pid
+            os.killpg(proc.pid, signum)
+            return
         except (ProcessLookupError, PermissionError):
-            own_group = False
-        if own_group:
-            try:
-                os.killpg(proc.pid, signum)
-                return
-            except (ProcessLookupError, PermissionError):
-                # macOS can reject a group signal after a PTY hangup. Fall back
-                # to the still-owned child rather than retrying the group ID.
-                pass
+            # macOS may deny group signals after PTY hangup. Never retry the
+            # group identifier; the still-owned child can be signaled directly.
+            pass
     try:
         proc.send_signal(signum)
     except ProcessLookupError:
         pass
 
 
-async def terminate_process(
-    proc: asyncio.subprocess.Process | None, identity: str | None = None
-) -> None:
+async def terminate_process(proc: asyncio.subprocess.Process | None) -> None:
     if not proc or proc.returncode is not None:
         return
     for signum in (signal.SIGINT, signal.SIGTERM):
-        signal_owned_process(proc, signum, identity)
+        signal_owned_process(proc, signum)
         try:
             await asyncio.wait_for(proc.wait(), timeout=3)
             return
         except asyncio.TimeoutError:
             continue
     if proc.returncode is None:
-        signal_owned_process(proc, signal.SIGKILL, identity)
+        signal_owned_process(proc, signal.SIGKILL)
         await proc.wait()
 
 
@@ -275,7 +265,6 @@ class NativeRun:
         self.on_session = on_session or (lambda _value: None)
         self.on_process = on_process or (lambda _pid, _identity: None)
         self.process: asyncio.subprocess.Process | None = None
-        self.process_identity: str | None = None
         self.stopping = False
 
     async def stop(self) -> None:
@@ -283,7 +272,7 @@ class NativeRun:
         await self._terminate()
 
     async def _terminate(self) -> None:
-        await terminate_process(self.process, self.process_identity)
+        await terminate_process(self.process)
 
     async def execute(self) -> Outcome:
         if self.stopping:
@@ -328,8 +317,7 @@ class NativeRun:
                     pass
 
             try:
-                self.process_identity = process_identity(proc.pid)
-                self.on_process(proc.pid, self.process_identity)
+                self.on_process(proc.pid, process_identity(proc.pid))
                 if self.stopping:
                     await self.stop()
                     return Outcome(

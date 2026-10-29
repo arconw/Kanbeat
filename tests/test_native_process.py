@@ -111,24 +111,22 @@ async def test_cancelled_execution_reaps_process_and_readers(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_group_permission_denial_falls_back_to_owned_child(monkeypatch):
+async def test_denied_group_signal_falls_back_to_owned_child(monkeypatch):
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
     )
-    identity = process_identity(proc.pid)
-    assert identity is not None
     calls = []
     real_killpg = os.killpg
 
     def deny_own_group(group, signum):
         if group == proc.pid:
             calls.append(signum)
-            raise PermissionError("macOS-like group denial")
+            raise PermissionError("simulated group denial after hangup")
         return real_killpg(group, signum)
 
     monkeypatch.setattr("kanbeat.native.os.killpg", deny_own_group)
     try:
-        await asyncio.wait_for(terminate_process(proc, identity), timeout=8)
+        await asyncio.wait_for(terminate_process(proc), timeout=8)
         assert proc.returncode is not None
         assert signal.SIGINT in calls
     finally:
@@ -137,30 +135,26 @@ async def test_group_permission_denial_falls_back_to_owned_child(monkeypatch):
             await proc.wait()
 
 
-
 @pytest.mark.asyncio
-async def test_refuses_group_signal_when_process_identity_changes(monkeypatch):
+async def test_changed_process_group_does_not_signal_unverified_group(monkeypatch):
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
     )
-    observed = process_identity(proc.pid)
-    assert observed is not None
-    calls = []
-    monkeypatch.setattr("kanbeat.native.os.killpg", lambda *args: calls.append(args))
+    groups = []
+    monkeypatch.setattr("kanbeat.native.os.getpgid", lambda _pid: -1)
+    monkeypatch.setattr("kanbeat.native.os.killpg", lambda *args: groups.append(args))
     try:
-        with pytest.raises(RuntimeError, match="changed PID identity"):
-            await terminate_process(proc, "not-" + observed)
-        assert not calls
-        assert proc.returncode is None
+        await asyncio.wait_for(terminate_process(proc), timeout=8)
+        assert proc.returncode is not None
+        assert not groups
     finally:
         if proc.returncode is None:
             proc.kill()
             await proc.wait()
 
 
-
 @pytest.mark.asyncio
-async def test_real_pty_hangup_reaps_owned_child_without_group_reuse():
+async def test_real_pty_hangup_reaps_owned_child():
     master, slave = pty.openpty()
     proc = None
     try:
@@ -180,7 +174,6 @@ async def test_real_pty_hangup_reaps_owned_child_without_group_reuse():
         )
         os.close(slave)
         slave = -1
-        identity = process_identity(proc.pid)
         loop = asyncio.get_running_loop()
         readable = asyncio.Event()
         loop.add_reader(master, readable.set)
@@ -191,7 +184,7 @@ async def test_real_pty_hangup_reaps_owned_child_without_group_reuse():
             loop.remove_reader(master)
         os.close(master)
         master = -1
-        await asyncio.wait_for(terminate_process(proc, identity), timeout=8)
+        await asyncio.wait_for(terminate_process(proc), timeout=8)
         assert proc.returncode is not None
         assert process_identity(proc.pid) is None
     finally:
