@@ -283,11 +283,13 @@ class Assignment(BackdropModal[None]):
                 yield Static("SLOT CONFIGURATION · " + self.slot, classes="modal-name")
                 yield Button("×", id="close")
             yield Static("Harness", classes="field")
-            yield Select(
-                [("Project default", "")] + HARNESS,
-                value=value.get("harness") or "",
-                id="harness",
-            )
+            with Horizontal(classes="field-row"):
+                yield Select(
+                    [("Project default", "")] + HARNESS,
+                    value=value.get("harness") or "",
+                    id="harness",
+                )
+                yield Button("Open", id="open-harness")
             yield Static("Custom Prompt", classes="field")
             yield TextArea(str(value.get("cp") or ""), id="cp")
             yield Static(
@@ -329,6 +331,8 @@ class Assignment(BackdropModal[None]):
                 )
                 return
             await self.app.open_task_terminal(self.ticket["id"], self.slot)
+        elif name == "open-harness":
+            await self.app.open_harness_config(self.query_one("#harness", Select).value)
         elif name == "save":
             harness = self.query_one("#harness", Select).value
             cp = self.query_one("#cp", TextArea).text
@@ -512,6 +516,14 @@ class KanbeatApp(App[None]):
         except (RuntimeError, ValueError, OSError) as exc:
             self.notify(str(exc), severity="error", timeout=7)
 
+    async def open_harness_config(self, harness: str) -> None:
+        try:
+            result = await self.rpc({"op": "session_config_open", "harness": harness})
+            await self.refresh_snapshot(force=True)
+            self.push_screen(TerminalView(result["terminal"]))
+        except (RuntimeError, ValueError, OSError) as exc:
+            self.notify(str(exc), severity="error", timeout=7)
+
     async def execute(self, message: dict[str, Any]) -> bool:
         try:
             await self.rpc(message)
@@ -663,6 +675,12 @@ class KanbeatApp(App[None]):
         elif name.startswith("log-"):
             _, tid, slot = name.split("-", 2)
             await self.push_screen(LogView(tid, slot))
+        elif name == "cfg-open-harness":
+            await self.open_harness_config(self.query_one("#cfg-harness", Select).value)
+        elif name == "cfg-open-hook-harness":
+            await self.open_harness_config(
+                self.query_one("#cfg-hook-harness", Select).value
+            )
         elif name == "settings-save":
             config = {"default_harness": self.query_one("#cfg-harness", Select).value}
             for field in ("global_cp", "developer_prompt", "reviewer_prompt"):

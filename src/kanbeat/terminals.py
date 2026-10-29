@@ -280,6 +280,7 @@ class Terminals:
         column: str = "",
         group: str = "",
         title: str = "",
+        role: str = "",
     ) -> str:
         interactive_command(harness, native_session, prompt)
         terminal_id = uuid.uuid4().hex
@@ -298,6 +299,8 @@ class Terminals:
             "rows": 24,
             "cols": 80,
         }
+        if role:
+            entry["role"] = role
         self.entries[terminal_id] = entry
         await self.start_entry(entry)
         return terminal_id

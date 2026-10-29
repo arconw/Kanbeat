@@ -79,6 +79,47 @@ class SessionGroups:
                 raise ValueError("Move or remove sessions before removing this group")
             del self.groups[group_id]
             result = {}
+        elif op == "session_config_open":
+            harness = str(
+                request.get("harness") or self.state.config["default_harness"]
+            )
+            if not available(harness):
+                raise ValueError("Independent session harness unavailable: " + harness)
+            matches = [
+                entry
+                for entry in self.terminals.entries.values()
+                if entry.get("owner") == "custom"
+                and entry.get("role") == "config"
+                and entry.get("harness") == harness
+            ]
+            entry = next(
+                (
+                    row
+                    for row in reversed(matches)
+                    if row.get("status") in ("starting", "running", "stopping")
+                ),
+                matches[-1] if matches else None,
+            )
+            if entry is not None:
+                if entry.get("status") == "stopping":
+                    raise ValueError(
+                        "Terminal is still stopping; wait for it to exit before reopening"
+                    )
+                if entry["id"] in self.terminals.sessions and entry.get("status") in (
+                    "starting",
+                    "running",
+                ):
+                    return {"terminal": entry["id"]}
+                self.inactive(entry)
+                await self.terminals.restart(entry["id"])
+                return {"terminal": entry["id"]}
+            terminal_id = await self.terminals.create(
+                harness,
+                owner="custom",
+                title="Configure " + harness,
+                role="config",
+            )
+            return {"terminal": terminal_id}
         elif op == "session_create":
             group_id = self.group(str(request.get("group") or ""))
             title = display_name(request.get("title") or "New session")

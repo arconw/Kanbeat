@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from textual.app import ComposeResult
-from textual.containers import VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Select, Static, TextArea
 
 from .options import HARNESS
@@ -34,11 +34,13 @@ class Settings(VerticalScroll):
     def compose(self) -> ComposeResult:
         yield Static("SETTINGS / PROJECT DEFAULTS", classes="page-heading")
         yield Static("Default harness", classes="field")
-        yield Select(
-            HARNESS,
-            value=harness_value(self.config.get("default_harness")),
-            id="cfg-harness",
-        )
+        with Horizontal(classes="field-row"):
+            yield Select(
+                HARNESS,
+                value=harness_value(self.config.get("default_harness")),
+                id="cfg-harness",
+            )
+            yield Button("Open", id="cfg-open-harness")
         warning = harness_warning(self.config.get("default_harness"))
         notice = Static(warning, id="cfg-harness-warning", classes="hint", markup=False)
         notice.display = bool(warning)
@@ -56,12 +58,14 @@ class Settings(VerticalScroll):
             )
         yield Static("TRANSITION HOOK", classes="section-title")
         hook = self.config.get("transition_hook") or {}
-        yield Select(
-            [("Project default", "")] + HARNESS,
-            value=harness_value(hook.get("harness"), ""),
-            allow_blank=False,
-            id="cfg-hook-harness",
-        )
+        with Horizontal(classes="field-row"):
+            yield Select(
+                [("Project default", "")] + HARNESS,
+                value=harness_value(hook.get("harness"), ""),
+                allow_blank=False,
+                id="cfg-hook-harness",
+            )
+            yield Button("Open", id="cfg-open-hook-harness")
         warning = harness_warning(hook.get("harness"), "")
         notice = Static(
             warning, id="cfg-hook-harness-warning", classes="hint", markup=False

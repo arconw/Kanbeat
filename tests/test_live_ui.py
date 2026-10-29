@@ -1,17 +1,19 @@
 import asyncio
 import copy
+import sys
 
 import pytest
 from textual.containers import VerticalScroll
-from textual.widgets import Button, Input, Static
+from textual.widgets import Button, Input, Select, Static
 
 from kanbeat.supervisor import Supervisor
 from kanbeat.ui.app import Assignment, KanbeatApp, NewTicket, TicketView
 from kanbeat.ui.board import BoardView, TicketCard
 from kanbeat.ui.preferences import ViewPreferences
 from kanbeat.ui.session_rows import SessionRow, SessionSection
-from kanbeat.ui.sessions import SessionsView
+from kanbeat.ui.sessions import NewSession, SessionsView
 from kanbeat.ui.startup import StartupScreen
+from kanbeat.ui.terminal import TerminalView
 
 
 def client(supervisor, monkeypatch):
@@ -380,6 +382,87 @@ async def test_task_session_process_status_updates_without_rebuilding(
         supervisor.terminals.entries["task-pty"].update(status="exited", exit_code=9)
         await app.refresh_snapshot()
         assert "PTY exited (exit 9)" in str(reviewer.render())
+
+
+@pytest.mark.asyncio
+async def test_harness_open_buttons_forward_selected_harness(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Configure")
+    app = client(supervisor, monkeypatch)
+    calls = []
+
+    async def fake_open(harness):
+        calls.append(harness)
+
+    monkeypatch.setattr(app, "open_harness_config", fake_open)
+    async with app.run_test(size=(120, 45)) as pilot:
+        form = Assignment(app.find_ticket(ticket.id), "developer")
+        app.push_screen(form)
+        await pilot.pause()
+        form.query_one("#harness", Select).value = "claude"
+        await pilot.click("#open-harness")
+        await pilot.pause()
+        assert calls == ["claude"]
+
+        app.pop_screen()
+        await pilot.pause()
+        session = NewSession()
+        app.push_screen(session)
+        await pilot.pause()
+        session.query_one("#session-harness", Select).value = "pi"
+        await pilot.click("#open-harness")
+        await pilot.pause()
+        assert calls[-1] == "pi"
+
+        app.pop_screen()
+        await pilot.pause()
+        await pilot.click("#nav-settings")
+        await pilot.pause()
+        app.query_one("#cfg-harness", Select).value = "opencode"
+        await pilot.click("#cfg-open-harness")
+        await pilot.pause()
+        assert calls[-1] == "opencode"
+        app.query_one("#cfg-hook-harness", Select).value = "pi"
+        await pilot.click("#cfg-open-hook-harness")
+        await pilot.pause()
+        assert calls[-1] == "pi"
+
+
+@pytest.mark.asyncio
+async def test_open_harness_config_reattaches_the_same_terminal(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "kanbeat.terminals.interactive_command",
+        lambda *args: [
+            sys.executable,
+            "-u",
+            "-c",
+            "print('CONFIG READY', flush=True); import time; time.sleep(30)",
+        ],
+    )
+    monkeypatch.setattr("kanbeat.session_groups.available", lambda name: True)
+    supervisor = Supervisor(tmp_path)
+    app = client(supervisor, monkeypatch)
+    try:
+        async with app.run_test(size=(100, 35)) as pilot:
+            await pilot.click("#nav-settings")
+            await pilot.pause()
+            await pilot.click("#cfg-open-harness")
+            await pilot.pause()
+            assert isinstance(app.screen, TerminalView)
+            terminal_id = app.screen.terminal_id
+            entry = supervisor.terminals.entries[terminal_id]
+            assert entry["role"] == "config"
+            assert entry["harness"] == "codex"
+            await app.screen.action_detach()
+            await pilot.pause(0.1)
+            assert not isinstance(app.screen, TerminalView)
+            await pilot.click("#cfg-open-harness")
+            await pilot.pause()
+            assert isinstance(app.screen, TerminalView)
+            assert app.screen.terminal_id == terminal_id
+            assert len(supervisor.terminals.entries) == 1
+    finally:
+        await supervisor.terminals.stop()
 
 
 @pytest.mark.asyncio

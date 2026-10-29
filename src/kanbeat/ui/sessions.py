@@ -71,12 +71,14 @@ class NewSession(BackdropModal[None]):
                 id="session-group",
             )
             yield Static("Native harness", classes="field")
-            yield Select(
-                HARNESS,
-                value=self.app.snapshot["config"]["default_harness"],
-                allow_blank=False,
-                id="session-harness",
-            )
+            with Horizontal(classes="field-row"):
+                yield Select(
+                    HARNESS,
+                    value=self.app.snapshot["config"]["default_harness"],
+                    allow_blank=False,
+                    id="session-harness",
+                )
+                yield Button("Open", id="open-harness")
             yield Static(
                 "Native session ID (optional; empty starts fresh)", classes="field"
             )
@@ -95,6 +97,10 @@ class NewSession(BackdropModal[None]):
         event.stop()
         if event.button.id == "cancel":
             self.dismiss(None)
+        elif event.button.id == "open-harness":
+            await self.app.open_harness_config(
+                self.query_one("#session-harness", Select).value
+            )
         elif event.button.id == "session-start":
             try:
                 result = await self.app.rpc(
