@@ -12,6 +12,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from .modal import BackdropModal
 from textual.widgets import Button, Input, Markdown, Select, Static, TextArea
+from textual.css.query import NoMatches
 
 from ..supervisor import request
 from .terminal import TerminalView
@@ -566,7 +567,10 @@ class KanbeatApp(App[None]):
             snap = await self.rpc({"op": "snapshot"})
             signature = json.dumps(snap, sort_keys=True, ensure_ascii=False)
             self.snapshot = snap
-            execution_button = self.query_one("#execution", Button)
+            try:
+                execution_button = self.query_one("#execution", Button)
+            except NoMatches:
+                return
             execution_button.label = (
                 "■ STOP" if snap.get("execution") == "running" else "▶ PLAY"
             )

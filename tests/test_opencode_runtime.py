@@ -8,7 +8,6 @@ from kanbeat.host_process import RuntimeIdentity
 from kanbeat.native import process_identity
 from kanbeat.opencode_host import (
     OpenCodeHttpError,
-    OpenCodePromptTooLarge,
     OpenCodeSessionMetadata,
 )
 from kanbeat.supervisor import Supervisor
@@ -236,14 +235,12 @@ async def test_oversized_prompt_fails_without_retries(runtime, monkeypatch):
     state["developer"]["harness"] = "opencode"
     supervisor.runtime.data["execution"] = "running"
 
-    def too_large(*args, **kwargs):
-        raise OpenCodePromptTooLarge("Prompt is too large for the OpenCode worker")
-
-    monkeypatch.setattr(host, "worker_argv", too_large)
+    supervisor.runtime.config["developer_prompt"] = "x" * (64 * 1024 + 1)
     try:
         await supervisor.start_worker(ticket, "developer", state["developer"])
         await supervisor.jobs["001:developer"]
         runtime_entry = state["runtime"]["developer"]
+        assert host.created == 0
         assert runtime_entry["status"] == "failed"
         assert runtime_entry["attempts"] == 1
         assert "too large" in runtime_entry["error"]

@@ -31,6 +31,7 @@ from .opencode_host import (
     OpenCodeHttpError,
     OpenCodePromptTooLarge,
     OpenCodeServeHost,
+    validate_prompt,
 )
 from .ipc import socket_path, prepare_socket_directory, remove_socket, bind_socket
 
@@ -393,6 +394,7 @@ class Supervisor:
                         )
                         if shared is not None:
                             if not session:
+                                validate_prompt(prompt_text)
                                 metadata = await shared.create_session(
                                     directory=self.board.project
                                 )

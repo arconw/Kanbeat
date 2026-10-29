@@ -51,6 +51,13 @@ class OpenCodeHttpError(OpenCodeHostError):
         self.status = status
 
 
+def validate_prompt(prompt: str) -> None:
+    if not prompt or "\x00" in prompt:
+        raise OpenCodeHostError("Invalid prompt for the OpenCode worker")
+    if len(prompt.encode()) > MAX_PROMPT_BYTES:
+        raise OpenCodePromptTooLarge("Prompt is too large for the OpenCode worker")
+
+
 def validate_session_id(value: Any) -> str:
     if not isinstance(value, str) or not SESSION_ID.match(value):
         raise OpenCodeHostError("Invalid OpenCode session id")
