@@ -26,7 +26,8 @@ before Play resumes structured dispatch. Board Stop interrupts board-owned PTYs;
 independent sessions are outside its scope. Teardown signals the child-led process
 group only while it is still verifiably the owned child's group. If the OS
 denies group signaling after a PTY hangup, Kanbeat falls back to terminating
-its tracked child; this cannot guarantee that every descendant also exits. Moving/deleting the associated ticket
+its tracked child; this cannot guarantee that every descendant also exits.
+Moving/deleting the associated ticket
 also stops its old interactive process. Interactive edits do not themselves emit
 structured completion/verdicts or change ticket status; Play rechecks the work.
 

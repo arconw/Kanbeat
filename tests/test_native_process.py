@@ -136,6 +136,30 @@ async def test_denied_group_signal_falls_back_to_owned_child(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_live_child_group_signal_does_not_require_fingerprint(monkeypatch):
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
+    )
+    calls = []
+    actual_killpg = os.killpg
+    monkeypatch.setattr("kanbeat.native.process_identity", lambda _pid: None)
+
+    def record_group(group, signum):
+        calls.append((group, signum))
+        return actual_killpg(group, signum)
+
+    monkeypatch.setattr("kanbeat.native.os.killpg", record_group)
+    try:
+        await asyncio.wait_for(terminate_process(proc), timeout=8)
+        assert proc.returncode is not None
+        assert (proc.pid, signal.SIGINT) in calls
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
+@pytest.mark.asyncio
 async def test_changed_process_group_does_not_signal_unverified_group(monkeypatch):
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
