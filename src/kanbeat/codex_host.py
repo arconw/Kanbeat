@@ -398,6 +398,10 @@ class CodexRpcClient:
             raise CodexTimeout(f"Codex request {method} timed out") from error
         finally:
             self._pending.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                future.exception()
 
     async def notify(self, method: str, params: Any = None) -> None:
         message: dict[str, Any] = {"method": method}
@@ -807,10 +811,14 @@ class CodexAppServerHost:
                 for thread_id in await self.loaded_thread_ids():
                     if thread_id in known:
                         continue
-                    metadata = await self.read_thread(thread_id)
-                    if wanted is None or metadata.cwd == wanted:
+                    try:
+                        metadata = await self.read_thread(thread_id)
+                    except CodexRpcError:
+                        continue
+                    if wanted is None or _same_cwd(metadata.cwd, wanted):
                         return metadata
-                    known.add(thread_id)
+                    if metadata.cwd is not None:
+                        known.add(thread_id)
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     raise CodexTimeout("No new Codex thread appeared")
@@ -818,6 +826,12 @@ class CodexAppServerHost:
                     await started.get(min(poll_interval, remaining))
                 except CodexTimeout:
                     pass
+
+
+def _same_cwd(left: str | None, right: str | None) -> bool:
+    if left is None or right is None:
+        return left == right
+    return os.path.realpath(left) == os.path.realpath(right)
 
 
 def _is_socket(path: Path) -> bool:

@@ -183,6 +183,17 @@ def alive(pid):
     return bool(state) and not state.startswith("Z")
 
 
+def command_line(pid):
+    proc = Path(f"/proc/{pid}/cmdline")
+    if proc.exists():
+        return proc.read_bytes().decode()
+    return subprocess.check_output(
+        ["ps", "-p", str(pid), "-o", "command="],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def test_models_validate_provider_variant_strings():
     model = OpenCodeModel("anthropic", "claude/sonnet-9", "max-thinking")
     assert model.flag == "anthropic/claude/sonnet-9"
@@ -295,7 +306,7 @@ async def test_lifecycle_credentials_and_filtering(short_dir, fake_opencode, cap
         assert process_identity(identity.pid) == identity.identity
         assert os.getpgid(identity.pid) == identity.pid
         assert RuntimeIdentity.from_dict(identity.to_dict()) == identity
-        cmdline = Path(f"/proc/{identity.pid}/cmdline").read_bytes().decode()
+        cmdline = command_line(identity.pid)
         assert password not in cmdline
         assert logged(short_dir)[0]["pw_in_argv"] is False
         assert password not in json.dumps(identity.to_dict())

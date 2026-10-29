@@ -28,6 +28,7 @@ from kanbeat.native import process_identity
 
 THREAD = "01a18660-9ca4-71c0-ba25-81426f4ca65d"
 OTHER = "01a18660-9c94-76f3-84bb-bc18608da025"
+BAD = "01a18660-9cb4-74e0-9a25-81426f4ca65d"
 
 FAKE_SERVER = textwrap.dedent(
     """\
@@ -68,6 +69,9 @@ FAKE_SERVER = textwrap.dedent(
                           "reasoningEffort": None, "approvalPolicy": "on-request"}}
                 await ws.send(json.dumps({{"method": "thread/started", "params": {{"thread": THREADS[tid]}}}}))
             elif method == "thread/read":
+                if params.get("threadId") == "{bad}":
+                    await ws.send(json.dumps({{"id": mid, "error": {{"code": -32600, "message": "still creating"}}}}))
+                    continue
                 thread = THREADS.get(params.get("threadId"))
                 if thread is None:
                     await ws.send(json.dumps({{"id": mid, "error": {{"code": -32600, "message": "no thread"}}}}))
@@ -78,7 +82,7 @@ FAKE_SERVER = textwrap.dedent(
             elif method == "thread/unsubscribe":
                 result = {{"status": "unsubscribed"}}
             elif method == "thread/loaded/list":
-                result = {{"data": list(THREADS), "nextCursor": None}}
+                result = {{"data": list(THREADS) + ["{bad}"], "nextCursor": None}}
             elif method == "test/notify":
                 for target in ("{thread}", "{other}"):
                     await ws.send(json.dumps({{"method": "turn/completed", "params": {{"threadId": target, "n": 1}}}}))
@@ -152,7 +156,7 @@ def short_dir():
 def fake_codex(short_dir):
     path = short_dir / "codex"
     path.write_text(
-        FAKE_SERVER.format(python=sys.executable, thread=THREAD, other=OTHER)
+        FAKE_SERVER.format(python=sys.executable, thread=THREAD, other=OTHER, bad=BAD)
     )
     path.chmod(0o755)
     return path
@@ -290,7 +294,7 @@ async def test_host_lifecycle_metadata_and_cleanup(short_dir, fake_codex):
     assert metadata.status == "idle"
     reads = [e for e in logged(short_dir) if e.get("method") == "thread/read"]
     assert reads and all(e["params"]["includeTurns"] is False for e in reads)
-    assert set(await host.loaded_thread_ids()) == {THREAD, OTHER}
+    assert set(await host.loaded_thread_ids()) == {THREAD, OTHER, BAD}
     with pytest.raises(CodexRpcError):
         await host.read_thread("01a18660-0000-7000-8000-000000000000")
 
@@ -397,6 +401,22 @@ async def test_observe_and_wait_for_new_thread(short_dir, fake_codex):
             await host.wait_for_new_thread(
                 [THREAD], cwd=Path("/nowhere"), timeout=0.3, poll_interval=0.1
             )
+
+
+@pytest.mark.asyncio
+async def test_wait_for_new_thread_skips_errors_and_normalizes_cwd(
+    short_dir, fake_codex
+):
+    real = short_dir / "real-cwd"
+    real.mkdir()
+    link = short_dir / "linked-cwd"
+    link.symlink_to(real, target_is_directory=True)
+    async with make_host(short_dir, fake_codex) as host:
+        await host.start_thread(real)
+        found = await host.wait_for_new_thread(
+            [THREAD], cwd=link, timeout=2, poll_interval=0.05
+        )
+    assert found.thread_id == OTHER
 
 
 @pytest.mark.asyncio
