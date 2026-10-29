@@ -293,6 +293,40 @@ async def test_terminal_attach_recovers_stale_recovery_blocked_entry(runtime):
 
 
 @pytest.mark.asyncio
+async def test_resumed_opencode_session_keeps_its_model(runtime):
+    supervisor, host = runtime
+    ticket = supervisor.board.create("Task", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["phase"] = "progress"
+    state["iteration"] = 1
+    state["developer"] = {"harness": "opencode", "session": "ses_test"}
+    state["runtime"]["developer"] = {
+        "stage": "progress",
+        "iteration": 1,
+        "status": "running",
+    }
+    host.sessions["ses_test"] = OpenCodeSessionMetadata("ses_test", None, None)
+    supervisor.terminals.entries["cfg"] = {
+        "id": "cfg",
+        "owner": "custom",
+        "role": "config",
+        "harness": "opencode",
+        "native_session": "ses_config",
+    }
+    host.sessions["ses_config"] = OpenCodeSessionMetadata(
+        "ses_config", None, OpenCodeModel("p", "m", "high")
+    )
+    supervisor.runtime.data["execution"] = "running"
+    try:
+        await supervisor.start_worker(ticket, "developer", state["developer"])
+        await supervisor.jobs["001:developer"]
+        assert host.models == []
+        assert host.worker_models[0] is None
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
 async def test_terminal_attach_reports_missing_and_stale_sessions(runtime):
     supervisor, _host = runtime
     ticket = supervisor.board.create("Task", column="progress")

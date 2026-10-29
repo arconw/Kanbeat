@@ -416,8 +416,8 @@ class Supervisor:
                         )
                         model = None
                         if shared is not None:
-                            model = await self.opencode_model(shared)
                             if not session:
+                                model = await self.opencode_model(shared)
                                 validate_prompt(prompt_text)
                                 metadata = await shared.create_session(
                                     directory=self.board.project, model=model
