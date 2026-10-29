@@ -420,6 +420,19 @@ async def test_wait_for_new_thread_skips_errors_and_normalizes_cwd(
 
 
 @pytest.mark.asyncio
+async def test_loaded_thread_list_refuses_truncation():
+    host = object.__new__(CodexAppServerHost)
+
+    async def endless(method, params=None):
+        assert method == "thread/loaded/list"
+        return {"data": [], "nextCursor": "next"}
+
+    host.request = endless
+    with pytest.raises(CodexHostError, match="page limit"):
+        await host.loaded_thread_ids()
+
+
+@pytest.mark.asyncio
 async def test_startup_exit_and_timeout_clean_up(short_dir, fake_codex):
     host = make_host(short_dir, fake_codex, mode="exit")
     with pytest.raises(CodexHostError, match="exited during startup"):

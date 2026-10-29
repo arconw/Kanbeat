@@ -790,6 +790,8 @@ class CodexAppServerHost:
             cursor = result.get("nextCursor") if isinstance(result, dict) else None
             if not isinstance(cursor, str) or not cursor:
                 break
+        else:
+            raise CodexHostError("Codex loaded thread list exceeded its page limit")
         return ids
 
     async def observe_thread(self, thread_id: str) -> CodexThreadMetadata:
