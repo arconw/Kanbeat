@@ -319,7 +319,6 @@ async def test_task_expansion_and_session_move_survive_updates(tmp_path, monkeyp
         assert not ViewPreferences(tmp_path).is_collapsed("tasks", True)
 
 
-
 @pytest.mark.asyncio
 async def test_task_session_process_status_updates_without_rebuilding(
     tmp_path, monkeypatch
@@ -337,12 +336,8 @@ async def test_task_session_process_status_updates_without_rebuilding(
         tasks.collapsed = False
         await pilot.pause()
         task_row = app.query_one("#task-sessions-" + ticket.id, TaskSessions)
-        developer = task_row.query_one(
-            f"#task-status-{ticket.id}-developer", Static
-        )
-        reviewer = task_row.query_one(
-            f"#task-status-{ticket.id}-reviewer-1", Static
-        )
+        developer = task_row.query_one(f"#task-status-{ticket.id}-developer", Static)
+        reviewer = task_row.query_one(f"#task-status-{ticket.id}-reviewer-1", Static)
         assert str(developer.render()) == "not started"
         state["runtime"] = {
             "developer": {"status": "running"},
@@ -375,9 +370,7 @@ async def test_task_session_process_status_updates_without_rebuilding(
         assert app.query_one("#section-tasks") is tasks
         assert not tasks.collapsed
 
-        supervisor.terminals.entries["task-pty"].update(
-            status="exited", exit_code=9
-        )
+        supervisor.terminals.entries["task-pty"].update(status="exited", exit_code=9)
         await app.refresh_snapshot()
         assert "PTY exited (exit 9)" in str(reviewer.render())
 
@@ -395,6 +388,7 @@ def test_independent_session_label_includes_exit_and_error():
     }
     assert "exited (exit 5)" in SessionRow.label(entry)
     assert "native failure" in SessionRow.label(entry)
+
 
 def test_malformed_view_preferences_do_not_break_startup(tmp_path):
     path = tmp_path / ".kanbeat" / ".state" / "ui.json"
