@@ -53,6 +53,48 @@ async def test_failed_native_stop_awaits_other_workers_and_preserves_blocked_job
         await asyncio.gather(pending, return_exceptions=True)
 
 
+@pytest.mark.asyncio
+async def test_reconcile_continues_after_blocked_pty_cleanup(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path)
+    observed = []
+
+    async def failed_reconcile(_tickets):
+        raise RuntimeError("PTY still alive")
+
+    async def stale_jobs(_tickets):
+        observed.append("stale jobs reconciled")
+
+    monkeypatch.setattr(supervisor.terminals, "reconcile", failed_reconcile)
+    monkeypatch.setattr(supervisor, "stop_stale_jobs", stale_jobs)
+    await supervisor.reconcile()
+    assert observed == ["stale jobs reconciled"]
+    assert any(
+        "PTY still alive" in item.get("message", "")
+        for item in supervisor.runtime.data.get("notices", [])
+    )
+
+
+@pytest.mark.asyncio
+async def test_supervisor_exit_stops_independent_pty_despite_board_stop_error(
+    tmp_path, monkeypatch
+):
+    supervisor = Supervisor(tmp_path)
+    calls = []
+
+    async def fail_board_stop(_reason):
+        calls.append("board")
+        raise RuntimeError("Board PTY cannot stop")
+
+    async def stop_all_terminals():
+        calls.append("independent")
+
+    monkeypatch.setattr(supervisor, "stop", fail_board_stop)
+    monkeypatch.setattr(supervisor.terminals, "stop", stop_all_terminals)
+    with pytest.raises(RuntimeError, match="Board PTY cannot stop"):
+        await supervisor.stop_all()
+    assert calls == ["board", "independent"]
+
+
 def test_missing_state_is_stopped(tmp_path: Path):
     board = Board(tmp_path)
     board.ensure()

@@ -635,7 +635,13 @@ class Supervisor:
         async with self.guard:
             tickets, errors = self.board.scan()
             # Detect moves/deletions of active tickets before assigning fresh work.
-            await self.terminals.reconcile(tickets)
+            try:
+                await self.terminals.reconcile(tickets)
+            except RuntimeError as exc:
+                message = "Task PTY cleanup blocked: " + str(exc)
+                if message not in self._reported:
+                    self.notice(message, "error")
+                    self._reported.add(message)
             await self.stop_stale_jobs(tickets)
             if errors:
                 for error in errors:
@@ -645,6 +651,9 @@ class Supervisor:
                 return
             self.runtime.clean_deleted_tickets({ticket.id for ticket in tickets})
             if self.runtime.data["execution"] != "running":
+                return
+            # Never schedule another writer while a task PTY is unresolved.
+            if self.terminals.running("board"):
                 return
             if any(
                 entry.get("status") == "recovery_blocked"
@@ -858,7 +867,12 @@ class Supervisor:
                     "Stop the board before manually moving an active ticket"
                 )
             if op != "reorder":
-                await self.terminals.stop_ticket(ticket_id)
+                try:
+                    await self.terminals.stop_ticket(ticket_id)
+                except RuntimeError as exc:
+                    raise ValueError(
+                        "Task PTY could not stop; ticket change cancelled"
+                    ) from exc
             if op == "move":
                 self.move_ticket(ticket_id, str(request["column"]))
             elif op == "archive":
@@ -974,6 +988,13 @@ class Supervisor:
         with suppress(ConnectionError):
             await writer.wait_closed()
 
+    async def stop_all(self) -> None:
+        """Always attempt independent PTY cleanup, even if Board Stop fails."""
+        try:
+            await self.stop("Supervisor exiting")
+        finally:
+            await self.terminals.stop()
+
     async def serve(self) -> None:
         self.acquire()
         try:
@@ -1000,8 +1021,7 @@ class Supervisor:
                     pass
         finally:
             try:
-                await self.stop("Supervisor exiting")
-                await self.terminals.stop()
+                await self.stop_all()
             finally:
                 if self.server is not None:
                     self.server.close()
