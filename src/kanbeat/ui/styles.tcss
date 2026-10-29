@@ -90,3 +90,5 @@ Confirm, LogView, TicketView, Assignment, TicketActions, NewTicket {
 
 TerminalView { align: center middle; }
 TerminalDisplay { width: 1fr; height: 1fr; background: #0b1019; }
+
+GroupForm, NewSession, SessionActions { align: center middle; background: #050a12 85%; }

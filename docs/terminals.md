@@ -32,5 +32,24 @@ Viewport dimensions are bounded to 240 columns and 100 rows. Native mouse report
 and forwarding clipboard OSC requests are not enabled by Kanbeat's display client.
 
 Implemented for [Issue #2](https://github.com/arconw/Kanbeat/issues/2).
-Custom groups and session-management controls are tracked in
+Custom groups and session-management controls are implemented in
 [Issue #3](https://github.com/arconw/Kanbeat/issues/3).
+
+## Independent sessions and groups
+
+Sessions provides New group and New session. Choose a native harness, a group,
+an optional initial prompt and, if available, an explicit native session ID.
+Independent sessions can start while the board is running. Board Play/Stop never
+stops them, and removing a board ticket does not affect them.
+
+Actions lets you rename or move a session, explicitly stop it, restart it, or
+remove a stopped local record. Stop and removal require confirmation. Group
+removal requires an empty group; first move or remove its session records.
+Removing records does not delete native CLI history or retained local output logs.
+
+Groups, session IDs, titles, prompts, ownership and known native IDs persist in
+`.state`. Restart after supervisor recovery reuses the same local session ID;
+a known native ID resumes vendor history, otherwise a fresh native context starts.
+No active process is silently restarted. Unresolved crash-orphan identities block
+restart/removal until manually resolved. Deleting `.state` intentionally discards
+this optional organization and local session metadata, not ticket status.
