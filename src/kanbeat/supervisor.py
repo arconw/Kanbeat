@@ -639,7 +639,8 @@ class Supervisor:
                 continue
             try:
                 stopped = await stop_recorded(runtime)
-            except (HostError, OSError, RuntimeError):
+            except (HostError, OSError, RuntimeError) as exc:
+                self.notice(f"{kind}: could not stop recorded host: {exc}", "error")
                 continue
             if not stopped and process_identity(runtime.pid) == runtime.identity:
                 try:
