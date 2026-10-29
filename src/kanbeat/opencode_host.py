@@ -29,6 +29,7 @@ PASSWORD_ENV = "OPENCODE_SERVER_PASSWORD"
 USERNAME_ENV = "OPENCODE_SERVER_USERNAME"
 MAX_BODY_BYTES = 1024 * 1024
 MAX_VALUE_CHARS = 200
+MAX_PROMPT_BYTES = 64 * 1024
 STARTUP_TAIL_BYTES = 4096
 
 
@@ -206,9 +207,11 @@ def worker_argv(
         if model.variant is not None:
             argv += ["--variant", model.variant]
     if prompt is not None:
-        if not prompt or prompt.startswith("-") or "\x00" in prompt:
+        if not prompt or "\x00" in prompt:
             raise OpenCodeHostError("Invalid prompt for the OpenCode worker")
-        argv.append(prompt)
+        if len(prompt.encode()) > MAX_PROMPT_BYTES:
+            raise OpenCodeHostError("Prompt is too large for the OpenCode worker")
+        argv += ["--", prompt]
     return argv
 
 
