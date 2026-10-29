@@ -581,14 +581,16 @@ class CodexAppServerHost:
         )
 
     async def connect_observer(
-        self, client_name: str = "kanbeat-observer"
+        self, client_name: str = "kanbeat-observer", *, timeout: float = 30.0
     ) -> CodexRpcClient:
         if self._token is not None:
             return await CodexRpcClient.connect_ws(
-                self.remote, self._token, client_name=client_name
+                self.remote, self._token, client_name=client_name, timeout=timeout
             )
         assert self.socket_path is not None
-        return await CodexRpcClient.connect(self.socket_path, client_name=client_name)
+        return await CodexRpcClient.connect(
+            self.socket_path, client_name=client_name, timeout=timeout
+        )
 
     async def start(self) -> RuntimeIdentity:
         if self._process is not None or self._closed:
@@ -616,6 +618,7 @@ class CodexAppServerHost:
             self._client = await self._connect_when_ready(process, socket_path)
             self._owned_link = recorded_link(socket_path)
         except BaseException:
+            self._owned_link = recorded_link(socket_path)
             await self._teardown()
             raise
 
@@ -692,7 +695,9 @@ class CodexAppServerHost:
                 raise CodexTimeout("Codex app-server did not become ready")
             if socket_path is None or _is_socket(socket_path):
                 try:
-                    return await self.connect_observer("kanbeat")
+                    return await self.connect_observer(
+                        "kanbeat", timeout=min(CONNECT_ATTEMPT_SECONDS, remaining)
+                    )
                 except (CodexDisconnected, CodexTimeout):
                     pass
             await asyncio.sleep(0.05)
@@ -712,6 +717,8 @@ class CodexAppServerHost:
         if drain is not None:
             drain.cancel()
             await asyncio.gather(drain, return_exceptions=True)
+        if owned is None and self.socket_path is not None:
+            owned = recorded_link(self.socket_path)
         if owned is not None:
             try:
                 remove_recorded_link(*owned)
@@ -830,25 +837,62 @@ def _unlink_owned(path: Path, kinds: tuple[Any, ...]) -> None:
     path.unlink()
 
 
-def remove_stale_socket(path: Path) -> None:
-    """Remove only a plain, owned, unconnectable socket. Never follow a symlink."""
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return
-    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
-        raise RuntimeError("Refusing to replace an existing non-socket or linked path")
+def _stale_socket(path: Path) -> bool:
     probe = socket.socket(socket.AF_UNIX)
     probe.settimeout(1.0)
     try:
         probe.connect(os.fspath(path))
     except (ConnectionRefusedError, FileNotFoundError):
-        path.unlink(missing_ok=True)
-        return
+        return True
     except OSError:
-        raise RuntimeError("Cannot prove the existing socket is stale")
+        raise RuntimeError("Cannot prove the existing socket is stale") from None
     finally:
         probe.close()
+    return False
+
+
+def _codex_daemon_root() -> Path:
+    return Path("/tmp") / f"codex-daemon-{os.getuid()}"
+
+
+def remove_stale_socket(path: Path) -> None:
+    """Remove an owned dead socket or a Codex-created symlink to one."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode):
+        if info.st_uid != os.getuid():
+            raise RuntimeError("Refusing to replace a foreign runtime link")
+        target = Path(os.readlink(path))
+        if not target.is_absolute():
+            target = path.parent / target
+        try:
+            target_info = target.lstat()
+        except FileNotFoundError:
+            path.unlink(missing_ok=True)
+            return
+        if (
+            target_info.st_uid != os.getuid()
+            or not stat.S_ISSOCK(target_info.st_mode)
+            or (
+                target.parent != path.parent
+                and _codex_daemon_root() not in target.parents
+            )
+        ):
+            raise RuntimeError("Refusing to replace an unexpected runtime link")
+        if not _stale_socket(target):
+            raise RuntimeError(
+                "Another server is already listening on this socket path"
+            )
+        target.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+        return
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError("Refusing to replace an existing non-socket or linked path")
+    if _stale_socket(path):
+        path.unlink(missing_ok=True)
+        return
     raise RuntimeError("Another server is already listening on this socket path")
 
 

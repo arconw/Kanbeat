@@ -31,7 +31,7 @@ OTHER = "01a18660-9c94-76f3-84bb-bc18608da025"
 FAKE_SERVER = textwrap.dedent(
     """\
     #!{python}
-    import asyncio, hashlib, json, os, subprocess, sys
+    import asyncio, hashlib, json, os, socket, subprocess, sys
     import websockets
     from websockets.asyncio.server import serve, unix_serve
 
@@ -117,6 +117,13 @@ FAKE_SERVER = textwrap.dedent(
                 await asyncio.sleep(3600)
             return
         path = listen[len("unix://"):]
+        if MODE == "symlink_exit":
+            real = path + ".real"
+            stale = socket.socket(socket.AF_UNIX)
+            stale.bind(real)
+            stale.close()
+            os.symlink(real, path)
+            sys.exit(4)
         if MODE == "symlink":
             real = path + ".real"
             async with unix_serve(handler, real):
@@ -457,6 +464,41 @@ async def test_live_listener_at_path_is_refused(short_dir, fake_codex):
         await host.start()
     assert (short_dir / "c.sock").exists()
     foreign.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_socket_symlink_and_target_are_replaced(short_dir, fake_codex):
+    import socket as socket_module
+
+    real = short_dir / "c.sock.real"
+    stale = socket_module.socket(socket_module.AF_UNIX)
+    stale.bind(str(real))
+    stale.close()
+    link = short_dir / "c.sock"
+    link.symlink_to(real)
+    async with make_host(short_dir, fake_codex, mode="symlink") as host:
+        assert (await host.request("thread/loaded/list"))["data"]
+    assert not link.is_symlink()
+    assert not real.exists()
+
+
+@pytest.mark.asyncio
+async def test_symlink_to_missing_target_is_removed(short_dir, fake_codex):
+    link = short_dir / "c.sock"
+    link.symlink_to(short_dir / "missing.sock")
+    async with make_host(short_dir, fake_codex) as host:
+        assert (await host.request("thread/loaded/list"))["data"]
+    assert not link.is_symlink()
+
+
+@pytest.mark.asyncio
+async def test_failed_start_cleans_codex_created_link(short_dir, fake_codex):
+    host = make_host(short_dir, fake_codex, mode="symlink_exit")
+    with pytest.raises(CodexHostError):
+        await host.start()
+    link = short_dir / "c.sock"
+    assert not link.is_symlink()
+    assert not (short_dir / "c.sock.real").exists()
 
 
 @pytest.mark.asyncio
