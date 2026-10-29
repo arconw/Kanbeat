@@ -14,6 +14,12 @@ the board is running. Saved native session IDs resume only that ticket/role/slot
 A fresh slot starts a fresh native CLI with its role instructions and ticket path.
 No permissions, authentication, model or sandbox overrides are passed.
 
+Sessions Tasks displays the recorded lifecycle of each structured worker and
+its supervisor-owned task PTY separately, including available exit codes and
+errors. Independent-session rows also show available exit codes and errors.
+These are process and execution states, not inferred native busy/idle/waiting
+signals; semantic agent activity still requires supported vendor events.
+
 Use Detach or Ctrl+backslash to close the full-screen view. Stop requires explicit
 confirmation and interrupts/terminates the process group. Stop task terminals
 before Play resumes structured dispatch. Board Stop interrupts board-owned PTYs;

@@ -319,6 +319,83 @@ async def test_task_expansion_and_session_move_survive_updates(tmp_path, monkeyp
         assert not ViewPreferences(tmp_path).is_collapsed("tasks", True)
 
 
+
+@pytest.mark.asyncio
+async def test_task_session_process_status_updates_without_rebuilding(
+    tmp_path, monkeypatch
+):
+    from kanbeat.ui.session_rows import TaskSessions
+
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Lifecycle")
+    state = supervisor.ticket_state(ticket.id)
+    state["reviewers"] = [{"id": "reviewer-1"}]
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.click("#nav-sessions")
+        tasks = app.query_one("#section-tasks", SessionSection)
+        tasks.collapsed = False
+        await pilot.pause()
+        task_row = app.query_one("#task-sessions-" + ticket.id, TaskSessions)
+        developer = task_row.query_one(
+            f"#task-status-{ticket.id}-developer", Static
+        )
+        reviewer = task_row.query_one(
+            f"#task-status-{ticket.id}-reviewer-1", Static
+        )
+        assert str(developer.render()) == "not started"
+        state["runtime"] = {
+            "developer": {"status": "running"},
+            "reviewer-1": {"status": "starting"},
+        }
+        await app.refresh_snapshot()
+        assert app.query_one("#task-sessions-" + ticket.id) is task_row
+        assert task_row.query_one(f"#task-status-{ticket.id}-developer") is developer
+        assert str(developer.render()) == "Worker running"
+        assert str(reviewer.render()) == "Worker starting"
+
+        state["runtime"]["developer"] = {
+            "status": "failed",
+            "error": "native call failed",
+            "exit_code": 17,
+        }
+        supervisor.terminals.entries["task-pty"] = {
+            "id": "task-pty",
+            "owner": "board",
+            "ticket": ticket.id,
+            "slot": "reviewer-1",
+            "harness": "codex",
+            "title": "Reviewer",
+            "status": "running",
+        }
+        await app.refresh_snapshot()
+        assert "failed (exit 17)" in str(developer.render())
+        assert "native call failed" in str(developer.render())
+        assert "PTY running" in str(reviewer.render())
+        assert app.query_one("#section-tasks") is tasks
+        assert not tasks.collapsed
+
+        supervisor.terminals.entries["task-pty"].update(
+            status="exited", exit_code=9
+        )
+        await app.refresh_snapshot()
+        assert "PTY exited (exit 9)" in str(reviewer.render())
+
+
+def test_independent_session_label_includes_exit_and_error():
+    from kanbeat.ui.session_rows import SessionRow
+
+    entry = {
+        "id": "example",
+        "title": "Tool",
+        "harness": "pi",
+        "status": "exited",
+        "exit_code": 5,
+        "error": "native failure",
+    }
+    assert "exited (exit 5)" in SessionRow.label(entry)
+    assert "native failure" in SessionRow.label(entry)
+
 def test_malformed_view_preferences_do_not_break_startup(tmp_path):
     path = tmp_path / ".kanbeat" / ".state" / "ui.json"
     path.parent.mkdir(parents=True)

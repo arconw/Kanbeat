@@ -249,7 +249,11 @@ class SessionsView(VerticalScroll):
             "tasks", "Tasks", self.app.preferences.is_collapsed("tasks", True)
         ):
             for ticket in self.snapshot.get("tickets", []):
-                yield TaskSessions(ticket, self.snapshot.get("execution") == "running")
+                yield TaskSessions(
+                    ticket,
+                    self.snapshot.get("execution") == "running",
+                    self.snapshot.get("terminals", {}),
+                )
         for group_id, group in self.groups(self.snapshot).items():
             yield self.group_section(group_id, group)
         yield Static(
@@ -280,11 +284,17 @@ class SessionsView(VerticalScroll):
         for ticket_id, ticket in wanted_tasks.items():
             if ticket_id in current_tasks:
                 await current_tasks[ticket_id].update_ticket(
-                    ticket, snapshot.get("execution") == "running"
+                    ticket,
+                    snapshot.get("execution") == "running",
+                    snapshot.get("terminals", {}),
                 )
             else:
                 await tasks.mount(
-                    TaskSessions(ticket, snapshot.get("execution") == "running")
+                    TaskSessions(
+                        ticket,
+                        snapshot.get("execution") == "running",
+                        snapshot.get("terminals", {}),
+                    )
                 )
         order = {
             "task-sessions-" + key: index for index, key in enumerate(wanted_tasks)
