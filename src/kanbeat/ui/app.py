@@ -386,13 +386,15 @@ class KanbeatApp(App[None]):
     async def on_mount(self) -> None:
         self.push_screen(StartupScreen())
         started = asyncio.get_running_loop().time()
-        await self.refresh_snapshot()
-        minimum = 0 if self.animation_level == "none" else 0.45
-        await asyncio.sleep(
-            max(0, minimum - (asyncio.get_running_loop().time() - started))
-        )
-        self.pop_screen()
-        self.set_interval(1.5, self.refresh_snapshot)
+        try:
+            await self.refresh_snapshot()
+            minimum = 0 if self.animation_level == "none" else 0.45
+            await asyncio.sleep(
+                max(0, minimum - (asyncio.get_running_loop().time() - started))
+            )
+        finally:
+            self.pop_screen()
+            self.set_interval(1.5, self.refresh_snapshot)
 
     async def rpc(self, message: dict[str, Any]) -> dict[str, Any]:
         return await request(self.project, message)

@@ -41,6 +41,27 @@ async def test_startup_wordmark_precedes_first_board_snapshot(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_startup_recovers_after_initial_snapshot_failure(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path)
+    app = KanbeatApp(tmp_path)
+    calls = 0
+
+    async def rpc(message):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("Snapshot temporarily unavailable")
+        return await supervisor.dispatch(message)
+
+    monkeypatch.setattr(app, "rpc", rpc)
+    async with app.run_test(size=(100, 35)) as pilot:
+        assert not isinstance(app.screen, StartupScreen)
+        await pilot.pause(1.7)
+        assert calls >= 2
+        assert isinstance(app.query_one(BoardView), BoardView)
+
+
+@pytest.mark.asyncio
 async def test_runtime_refresh_preserves_card_focus_scroll_and_modal(
     tmp_path, monkeypatch
 ):
