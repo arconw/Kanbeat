@@ -247,7 +247,9 @@ async def terminate_process(proc: asyncio.subprocess.Process | None) -> None:
         try:
             await asyncio.wait_for(proc.wait(), timeout=3)
         except asyncio.TimeoutError as exc:
-            raise RuntimeError("Native child did not exit after signal escalation") from exc
+            raise RuntimeError(
+                "Native child did not exit after signal escalation"
+            ) from exc
 
 
 class NativeRun:
