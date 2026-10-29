@@ -1,3 +1,4 @@
+import asyncio
 import copy
 
 import pytest
@@ -59,6 +60,27 @@ async def test_startup_recovers_after_initial_snapshot_failure(tmp_path, monkeyp
         await pilot.pause(1.7)
         assert calls >= 2
         assert isinstance(app.query_one(BoardView), BoardView)
+
+
+@pytest.mark.asyncio
+async def test_startup_renders_board_through_supervisor_socket(tmp_path, monkeypatch):
+    monkeypatch.setattr("kanbeat.ipc.socket_root", lambda: tmp_path.parent / "s")
+    supervisor = Supervisor(tmp_path)
+    supervisor.acquire()
+    server = await asyncio.start_unix_server(
+        supervisor.handle, path=str(supervisor.socket)
+    )
+    try:
+        app = KanbeatApp(tmp_path)
+        async with app.run_test(size=(100, 35)):
+            assert not isinstance(app.screen, StartupScreen)
+            assert isinstance(app.query_one(BoardView), BoardView)
+            assert app.snapshot["execution"] == "stopped"
+    finally:
+        server.close()
+        await server.wait_closed()
+        supervisor.socket.unlink(missing_ok=True)
+        supervisor.lock_stream.close()
 
 
 @pytest.mark.asyncio
