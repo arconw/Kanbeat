@@ -382,6 +382,94 @@ async def test_task_session_process_status_updates_without_rebuilding(
         assert "PTY exited (exit 9)" in str(reviewer.render())
 
 
+@pytest.mark.asyncio
+async def test_worker_pulse_tracks_activity_without_rebuilding_rows(
+    tmp_path, monkeypatch
+):
+    from kanbeat.ui.session_rows import TaskSessions
+
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Pulse")
+    state = supervisor.ticket_state(ticket.id)
+    state["reviewers"] = [{"id": "reviewer-1"}]
+    state["runtime"] = {
+        "developer": {"status": "running"},
+        "reviewer-1": {"status": "waiting"},
+    }
+    supervisor.runtime.data["execution"] = "running"
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(120, 45)) as pilot:
+        card = app.query_one("#card-" + ticket.id, TicketCard)
+        card_status = card.query_one(".card-runtime", Static)
+        assert card_status.has_class("agent-working")
+        app._pulse_bright = False
+        app.pulse_working()
+        assert card_status.has_class("agent-pulse")
+
+        await pilot.click("#nav-sessions")
+        tasks = app.query_one("#section-tasks", SessionSection)
+        tasks.collapsed = False
+        await pilot.pause()
+        row = app.query_one("#task-sessions-" + ticket.id, TaskSessions)
+        dev = row.query_one(f"#task-status-{ticket.id}-developer", Static)
+        reviewer = row.query_one(f"#task-status-{ticket.id}-reviewer-1", Static)
+        assert dev.has_class("agent-working")
+        assert not reviewer.has_class("agent-working")
+        app._pulse_bright = False
+        app.pulse_working()
+        assert dev.has_class("agent-pulse")
+        assert not reviewer.has_class("agent-pulse")
+
+        app.animation_level = "none"
+        app.pulse_working()
+        assert not dev.has_class("agent-pulse")
+        app.animation_level = "full"
+        state["runtime"]["developer"]["status"] = "completed"
+        await app.refresh_snapshot(force=True)
+        assert app.query_one("#task-sessions-" + ticket.id) is row
+        assert not dev.has_class("agent-working")
+        app.pulse_working()
+        assert not dev.has_class("agent-pulse")
+        assert not tasks.collapsed
+
+        supervisor.runtime.data["execution"] = "stopped"
+        state["runtime"]["developer"]["status"] = "running"
+        await app.refresh_snapshot(force=True)
+        assert not dev.has_class("agent-working")
+
+
+@pytest.mark.asyncio
+async def test_ticket_modal_pulse_only_for_confirmed_running_worker(
+    tmp_path, monkeypatch
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Modal pulse")
+    state = supervisor.ticket_state(ticket.id)
+    state["reviewers"] = [{"id": "reviewer-1"}]
+    state["runtime"] = {
+        "developer": {"status": "running"},
+        "reviewer-1": {"status": "waiting"},
+    }
+    supervisor.runtime.data["execution"] = "running"
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(120, 40)) as pilot:
+        view = TicketView(app.find_ticket(ticket.id))
+        app.push_screen(view)
+        await pilot.pause()
+        dev = view.query_one("#developer-runtime", Static)
+        reviewer = view.query_one("#runtime-reviewer-1", Static)
+        assert dev.has_class("agent-working")
+        assert not reviewer.has_class("agent-working")
+        app._pulse_bright = False
+        app.pulse_working()
+        assert dev.has_class("agent-pulse")
+        state["runtime"]["developer"]["status"] = "completed"
+        await app.refresh_snapshot(force=True)
+        await view.refresh_ticket()
+        assert not dev.has_class("agent-working")
+        assert not dev.has_class("agent-pulse")
+
+
 def test_independent_session_label_includes_exit_and_error():
     from kanbeat.ui.session_rows import SessionRow
 

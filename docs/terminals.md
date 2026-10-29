@@ -14,6 +14,12 @@ the board is running. Saved native session IDs resume only that ticket/role/slot
 A fresh slot starts a fresh native CLI with its role instructions and ticket path.
 No permissions, authentication, model or sandbox overrides are passed.
 
+Only structured workers with a confirmed running dispatch receive a gentle
+color pulse in ticket, board and Sessions status labels. Native PTY existence
+alone does not imply active inference, so PTYs never pulse without vendor
+activity events. Textual reduced-motion mode disables the pulse; it updates
+label styles in place without rebuilding the board.
+
 Sessions Tasks displays the recorded lifecycle of each structured worker and
 its supervisor-owned task PTY separately, including available exit codes and
 errors. Independent-session rows also show available exit codes and errors.
