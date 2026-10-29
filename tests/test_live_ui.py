@@ -383,7 +383,9 @@ async def test_task_session_process_status_updates_without_rebuilding(
 
 
 @pytest.mark.asyncio
-async def test_worker_pulse_tracks_activity_without_rebuilding_rows(tmp_path, monkeypatch):
+async def test_worker_pulse_tracks_activity_without_rebuilding_rows(
+    tmp_path, monkeypatch
+):
     from kanbeat.ui.session_rows import TaskSessions
 
     supervisor = Supervisor(tmp_path)
@@ -437,7 +439,9 @@ async def test_worker_pulse_tracks_activity_without_rebuilding_rows(tmp_path, mo
 
 
 @pytest.mark.asyncio
-async def test_ticket_modal_pulse_only_for_confirmed_running_worker(tmp_path, monkeypatch):
+async def test_ticket_modal_pulse_only_for_confirmed_running_worker(
+    tmp_path, monkeypatch
+):
     supervisor = Supervisor(tmp_path)
     ticket = supervisor.board.create("Modal pulse")
     state = supervisor.ticket_state(ticket.id)

@@ -104,9 +104,8 @@ class TicketView(BackdropModal[None]):
         return (state.get("runtime") or {}).get(slot, {}).get("status") == "running"
 
     def status_classes(self, state: dict[str, Any], slot: str) -> str:
-        active = (
-            self.app.snapshot.get("execution") == "running"
-            and self.active_worker(state, slot)
+        active = self.app.snapshot.get("execution") == "running" and self.active_worker(
+            state, slot
         )
         return "runtime agent-working" if active else "runtime"
 
