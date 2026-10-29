@@ -59,12 +59,7 @@ class SessionGroups:
         ):
             raise ValueError("Stop the session and resolve orphan recovery first")
 
-    async def open_opencode_config(self) -> dict[str, Any]:
-        async with self.config_lock:
-            return await self._open_opencode_config()
-
-    async def _open_opencode_config(self) -> dict[str, Any]:
-        assert self.opencode_host is not None
+    def opencode_config_entry(self) -> dict[str, Any] | None:
         matches = [
             entry
             for entry in self.terminals.entries.values()
@@ -72,7 +67,7 @@ class SessionGroups:
             and entry.get("role") == "config"
             and entry.get("harness") == "opencode"
         ]
-        entry = next(
+        return next(
             (
                 row
                 for row in reversed(matches)
@@ -80,6 +75,15 @@ class SessionGroups:
             ),
             matches[-1] if matches else None,
         )
+
+    async def open_opencode_config(self) -> dict[str, Any]:
+        async with self.config_lock:
+            return await self._open_opencode_config()
+
+    async def _open_opencode_config(self) -> dict[str, Any]:
+        if self.opencode_host is None:
+            raise ValueError("OpenCode host provider is unavailable")
+        entry = self.opencode_config_entry()
         if entry is not None:
             attached = entry["id"] in self.terminals.sessions
             status = entry.get("status")
@@ -89,7 +93,10 @@ class SessionGroups:
                 )
             if attached and status in ("starting", "running"):
                 return {"terminal": entry["id"]}
-            host = await self.opencode_host()
+            try:
+                host = await self.opencode_host()
+            except (OpenCodeHostError, OSError) as error:
+                raise ValueError(f"Could not start OpenCode host: {error}") from error
             if not attached and status in ("starting", "running", "stopping"):
                 pid = entry.get("pid")
                 current = process_identity(int(pid)) if pid is not None else None
@@ -118,7 +125,10 @@ class SessionGroups:
                 env=host.child_env(),
             )
             return {"terminal": entry["id"]}
-        host = await self.opencode_host()
+        try:
+            host = await self.opencode_host()
+        except (OpenCodeHostError, OSError) as error:
+            raise ValueError(f"Could not start OpenCode host: {error}") from error
         metadata = await host.create_session(directory=self.state.board.project)
         terminal_id = await self.terminals.create(
             "opencode",

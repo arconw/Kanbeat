@@ -96,18 +96,8 @@ class Supervisor:
             return host
 
     async def opencode_model(self, host: Any) -> Any:
-        entry = next(
-            (
-                row
-                for row in reversed(list(self.terminals.entries.values()))
-                if row.get("owner") == "custom"
-                and row.get("role") == "config"
-                and row.get("harness") == "opencode"
-                and row.get("native_session")
-            ),
-            None,
-        )
-        if entry is None:
+        entry = self.session_groups.opencode_config_entry()
+        if entry is None or not entry.get("native_session"):
             return None
         try:
             metadata = await host.read_session(entry["native_session"])
