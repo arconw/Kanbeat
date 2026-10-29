@@ -71,6 +71,7 @@ class TerminalSession:
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
         self.log = None
         self.stop_requested = False
+        self.pending_stops = 0
         self.revision = 0
         self.changed = asyncio.Event()
 
@@ -203,18 +204,25 @@ class TerminalSession:
 
     async def stop(self) -> None:
         self.stop_requested = True
-        if self.process is not None and self.process.returncode is None:
+        stopping = self.process is not None and self.process.returncode is None
+        if stopping:
+            self.pending_stops += 1
             self.entry["status"] = "stopping"
             self.state.save()
             self.touch()
-            try:
+        try:
+            if stopping:
                 await terminate_process(self.process)
-            except BaseException:
-                if self.process.returncode is None:
-                    self.entry["status"] = "running"
-                    self.state.save()
-                    self.touch()
-                raise
+        except BaseException:
+            if self.process.returncode is None and self.pending_stops == 1:
+                self.entry["status"] = "running"
+                self.stop_requested = False
+                self.state.save()
+                self.touch()
+            raise
+        finally:
+            if stopping:
+                self.pending_stops -= 1
         if self.waiter is not None:
             await self.waiter
 

@@ -149,6 +149,9 @@ async def test_stop_failure_restores_running_status(supervisor, monkeypatch):
             await session.stop()
         assert session.entry["status"] == "running"
         assert supervisor.terminals.running("custom")
+        session.write("quit\n")
+        await asyncio.wait_for(session.waiter, timeout=5)
+        assert session.entry["status"] == "exited"
     finally:
         monkeypatch.setattr(terminals, "terminate_process", real_terminate)
         await supervisor.terminals.stop()
@@ -177,9 +180,53 @@ async def test_cancelled_stop_restores_running_status(supervisor, monkeypatch):
             await job
         assert session.entry["status"] == "running"
         assert supervisor.terminals.running("custom")
+        session.write("quit\n")
+        await asyncio.wait_for(session.waiter, timeout=5)
+        assert session.entry["status"] == "exited"
     finally:
         job.cancel()
         await asyncio.gather(job, return_exceptions=True)
+        monkeypatch.setattr(terminals, "terminate_process", real_terminate)
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stop_keeps_stopping_while_another_stop_is_pending(
+    supervisor, monkeypatch
+):
+    from kanbeat import terminals
+
+    terminal_id = await supervisor.terminals.create("codex", owner="custom")
+    session = supervisor.terminals.get(terminal_id)
+    real_terminate = terminals.terminate_process
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_termination(proc):
+        entered.set()
+        await release.wait()
+        await real_terminate(proc)
+
+    monkeypatch.setattr(terminals, "terminate_process", delayed_termination)
+    first = asyncio.create_task(session.stop())
+    second = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        second = asyncio.create_task(session.stop())
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert session.entry["status"] == "stopping"
+        release.set()
+        await asyncio.wait_for(second, timeout=8)
+        assert session.entry["status"] == "stopped"
+    finally:
+        first.cancel()
+        if second is not None:
+            second.cancel()
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
         monkeypatch.setattr(terminals, "terminate_process", real_terminate)
         await supervisor.terminals.stop()
 
@@ -302,6 +349,25 @@ async def test_terminal_identity_survives_restart(supervisor):
     assert entry["native_session"] == "native-123"
     assert entry["status"] == "stopped"
     assert restored.runtime.data["execution"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_stale_stopping_status_is_cleared(supervisor):
+    stale = {
+        "id": "stale",
+        "harness": "codex",
+        "owner": "board",
+        "title": "Stale",
+        "status": "stopping",
+    }
+    supervisor.terminals.entries["stale"] = dict(stale)
+    await supervisor.stop()
+    assert supervisor.terminals.entries["stale"]["status"] == "interrupted"
+    supervisor.terminals.entries["stale"] = dict(stale)
+    supervisor.save()
+    restored = Supervisor(supervisor.board.project)
+    await restored.recover_orphans()
+    assert restored.terminals.entries["stale"]["status"] == "interrupted"
 
 
 @pytest.mark.asyncio
