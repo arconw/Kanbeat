@@ -184,7 +184,12 @@ async def test_runtime_refresh_preserves_card_focus_scroll_and_modal(
         lane = app.query_one("#lane-backlog", VerticalScroll)
         button.focus(scroll_visible=False)
         lane.scroll_to(y=8, animate=False)
-        await pilot.pause()
+        # Textual may apply scroll_to on a later layout cycle.
+        for _ in range(25):
+            await pilot.pause(0.05)
+            if lane.scroll_y == 8:
+                break
+        assert lane.scroll_y == 8, "Initial lane scroll did not settle"
         scroll = lane.scroll_y
         supervisor.ticket_state(tickets[0].id)["runtime"] = {
             "developer": {"status": "running"}
