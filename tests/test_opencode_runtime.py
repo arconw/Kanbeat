@@ -182,6 +182,34 @@ async def test_terminal_attach_reports_missing_and_stale_sessions(runtime):
 
 
 @pytest.mark.asyncio
+async def test_terminal_attach_converts_host_errors(runtime, monkeypatch):
+    supervisor, host = runtime
+    ticket = supervisor.board.create("Task", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["developer"] = {"harness": "opencode", "session": "ses_test"}
+    state["runtime"]["developer"] = {"status": "running", "harness": "opencode"}
+
+    async def broken():
+        raise OSError("host unavailable")
+
+    monkeypatch.setattr(supervisor, "opencode_host", broken)
+    with pytest.raises(ValueError, match="host unavailable"):
+        await supervisor.dispatch({"op": "terminal_attach", "ticket": ticket.id})
+
+    async def failing_read(session_id):
+        raise OpenCodeHttpError(500)
+
+    host.read_session = failing_read
+
+    async def working():
+        return host
+
+    monkeypatch.setattr(supervisor, "opencode_host", working)
+    with pytest.raises(ValueError, match="HTTP 500"):
+        await supervisor.dispatch({"op": "terminal_attach", "ticket": ticket.id})
+
+
+@pytest.mark.asyncio
 async def test_terminal_attach_rejects_unsupported_harness(runtime):
     supervisor, _host = runtime
     ticket = supervisor.board.create("Task", column="progress")

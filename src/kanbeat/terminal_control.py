@@ -4,7 +4,8 @@ import asyncio
 import math
 from typing import Any, TYPE_CHECKING
 
-from .opencode_host import OpenCodeHostError, OpenCodeHttpError
+from .host_process import HostError
+from .opencode_host import OpenCodeHttpError
 
 if TYPE_CHECKING:
     from .supervisor import Supervisor
@@ -87,18 +88,18 @@ async def terminal_request(
             )
         if not isinstance(session, str) or not session:
             raise ValueError("The OpenCode session has not been reported yet")
-        host = await supervisor.opencode_host()
         try:
+            host = await supervisor.opencode_host()
             await host.read_session(session)
         except OpenCodeHttpError as error:
-            if error.status != 404:
-                raise
-            assignment.pop("session", None)
-            supervisor.save()
-            raise ValueError(
-                "The OpenCode session is no longer available; start the worker again"
-            ) from None
-        except OpenCodeHostError as error:
+            if error.status == 404:
+                assignment.pop("session", None)
+                supervisor.save()
+                raise ValueError(
+                    "The OpenCode session is no longer available; start the worker again"
+                ) from None
+            raise ValueError(str(error)) from error
+        except (HostError, OSError) as error:
             raise ValueError(str(error)) from error
         for terminal_id, entry in supervisor.terminals.entries.items():
             if (

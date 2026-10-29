@@ -361,8 +361,6 @@ class Supervisor:
 
             shared = None
             try:
-                if harness == "opencode":
-                    shared = await self.opencode_host()
                 while key not in self.cancelled:
                     current = self.current_ticket(ticket_id, stage, iteration)
                     if current is None:
@@ -372,6 +370,8 @@ class Supervisor:
                     entry["task_hash"] = content_hash
                     command_builder = None
                     command_env = None
+                    if harness == "opencode":
+                        shared = await self.opencode_host()
                     if shared is not None:
                         if session:
                             try:
