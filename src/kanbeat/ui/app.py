@@ -16,6 +16,9 @@ from ..supervisor import request
 from .terminal import TerminalView
 from .sessions import SessionsView
 from .options import HARNESS
+from .board import BoardView
+from .preferences import ViewPreferences
+from .settings import Settings
 
 COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed")
 ALL_COLUMNS = COLUMNS + ("archive",)
@@ -326,122 +329,6 @@ class NewTicket(BackdropModal[None]):
                 self.dismiss(None)
 
 
-class Settings(VerticalScroll):
-    def __init__(self, snapshot: dict[str, Any]):
-        super().__init__(id="settings")
-        self.config = snapshot.get("config") or {}
-
-    def compose(self) -> ComposeResult:
-        yield Static("SETTINGS / PROJECT DEFAULTS", classes="page-heading")
-        yield Static("Default harness", classes="field")
-        yield Select(
-            HARNESS,
-            value=self.config.get("default_harness") or "codex",
-            id="cfg-harness",
-        )
-        for field, title in (
-            ("global_cp", "Global CP"),
-            ("developer_prompt", "Developer Prompt"),
-            ("reviewer_prompt", "Reviewer / QA Prompt"),
-        ):
-            yield Static(title, classes="field")
-            yield TextArea(
-                str(self.config.get(field) or ""),
-                id="cfg-" + field,
-                classes="settings-editor",
-            )
-        yield Static("TRANSITION HOOK", classes="section-title")
-        hook = self.config.get("transition_hook") or {}
-        yield Select(
-            [("Project default", "")] + HARNESS,
-            value=hook.get("harness") or "",
-            allow_blank=False,
-            id="cfg-hook-harness",
-        )
-        yield TextArea(
-            str(hook.get("prompt") or ""),
-            id="cfg-hook-prompt",
-            classes="settings-editor",
-        )
-        yield Static(
-            "Empty prompt disables hooks. Hooks run after moves on Play. "
-            "Failures never revert tickets; interrupted hooks are not replayed.",
-            classes="hint",
-        )
-        yield Button("Save settings", id="settings-save", variant="primary")
-
-
-class BoardView(Vertical):
-    def __init__(
-        self, snapshot: dict[str, Any], select_mode: bool, selection: set[str]
-    ):
-        super().__init__(id="board-page")
-        self.snapshot = snapshot
-        self.select_mode = select_mode
-        self.selection = selection
-
-    def compose(self) -> ComposeResult:
-        with Horizontal(classes="toolbar"):
-            yield Static("BOARD / PROJECT PIPELINE", classes="page-heading")
-            yield Button(
-                "Select mode " + ("ON" if self.select_mode else "OFF"), id="select-mode"
-            )
-            yield Button(
-                "Bulk archive", id="bulk-archive", disabled=not self.select_mode
-            )
-            yield Button("+ Ticket", id="new-ticket")
-        with Horizontal(id="lanes"):
-            for column in COLUMNS:
-                items = [
-                    t for t in self.snapshot.get("tickets", []) if t["column"] == column
-                ]
-                with VerticalScroll(classes="lane"):
-                    yield Static(
-                        ("REVIEW/QA" if column == "review" else column.upper())
-                        + f"   {len(items):02d}",
-                        classes="lane-title",
-                    )
-                    for ticket in items:
-                        with Vertical(classes="card"):
-                            with Horizontal(classes="card-head"):
-                                yield Button(
-                                    ticket["title"][:48],
-                                    id="view-" + ticket["id"],
-                                    classes="card-title",
-                                )
-                                yield Button(
-                                    "···", id="act-" + ticket["id"], classes="card-menu"
-                                )
-                            lines = ticket["body"].splitlines()
-                            summary = next(
-                                (
-                                    line.strip()
-                                    for line in lines
-                                    if line.strip() and not line.startswith("#")
-                                ),
-                                "",
-                            )
-                            yield Static(
-                                summary[:100] or "No description",
-                                classes="card-summary",
-                            )
-                            state = ticket.get("state") or {}
-                            runtimes = state.get("runtime") or {}
-                            if runtimes:
-                                status = ", ".join(
-                                    str(name) + ":" + str(info.get("status", "?"))
-                                    for name, info in runtimes.items()
-                                )
-                                yield Static("◌ " + status[:88], classes="card-runtime")
-                            if self.select_mode:
-                                yield Button(
-                                    ("☑" if ticket["id"] in self.selection else "☐")
-                                    + " Select",
-                                    id="pick-" + ticket["id"],
-                                    classes="check-button",
-                                )
-
-
 class ArchiveView(VerticalScroll):
     def __init__(self, snapshot: dict[str, Any]):
         super().__init__(id="archive-page")
@@ -474,6 +361,7 @@ class KanbeatApp(App[None]):
     def __init__(self, project: Path):
         super().__init__()
         self.project = project
+        self.preferences = ViewPreferences(project)
         self.tab = "board"
         self.snapshot: dict[str, Any] = {}
         self._signature = ""
@@ -541,9 +429,7 @@ class KanbeatApp(App[None]):
                     self._seen_notice_id = max(self._seen_notice_id, sequence)
             if signature != self._signature or force:
                 self._signature = signature
-                # Avoid wiping unsaved settings text while the board is active.
-                if force or self.tab != "settings":
-                    await self.render_page()
+                await self.render_page()
         except (RuntimeError, OSError) as exc:
             self.notify(str(exc), severity="error", timeout=4)
         finally:
@@ -551,17 +437,48 @@ class KanbeatApp(App[None]):
 
     async def render_page(self) -> None:
         panel = self.query_one("#content", Vertical)
-        await panel.remove_children()
-        if self.tab == "board":
-            await panel.mount(
-                BoardView(self.snapshot, self.select_mode, self.selection)
-            )
-        elif self.tab == "sessions":
-            await panel.mount(SessionsView(self.snapshot))
-        elif self.tab == "archive":
-            await panel.mount(ArchiveView(self.snapshot))
-        else:
-            await panel.mount(Settings(self.snapshot))
+        current = panel.children[0] if panel.children else None
+        previous_focus = self.focused
+        focused_id = previous_focus.id if previous_focus is not None else None
+        with self.batch_update():
+            if self.tab == "board" and isinstance(current, BoardView):
+                await current.update_snapshot(
+                    self.snapshot, self.select_mode, self.selection
+                )
+            elif self.tab == "sessions" and isinstance(current, SessionsView):
+                await current.update_snapshot(self.snapshot)
+            elif self.tab == "settings" and isinstance(current, Settings):
+                current.update_snapshot(self.snapshot)
+            elif self.tab == "archive" and isinstance(current, ArchiveView):
+                old = [
+                    t
+                    for t in current.snapshot.get("tickets", [])
+                    if t["column"] == "archive"
+                ]
+                new = [
+                    t
+                    for t in self.snapshot.get("tickets", [])
+                    if t["column"] == "archive"
+                ]
+                if old != new:
+                    await panel.remove_children()
+                    await panel.mount(ArchiveView(self.snapshot))
+            else:
+                await panel.remove_children()
+                if self.tab == "board":
+                    await panel.mount(
+                        BoardView(self.snapshot, self.select_mode, self.selection)
+                    )
+                elif self.tab == "sessions":
+                    await panel.mount(SessionsView(self.snapshot))
+                elif self.tab == "archive":
+                    await panel.mount(ArchiveView(self.snapshot))
+                else:
+                    await panel.mount(Settings(self.snapshot))
+        if focused_id:
+            target = next(iter(panel.query("#" + focused_id)), None)
+            if target is not None and target is not previous_focus:
+                target.focus(scroll_visible=False)
         for tab in ("board", "sessions", "archive", "settings"):
             self.query_one("#nav-" + tab, Button).set_class(tab == self.tab, "selected")
 

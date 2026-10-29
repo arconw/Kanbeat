@@ -56,6 +56,8 @@ TUI keys: `1` Board, `2` Sessions, `3` Archive, `4` Settings, `Ctrl+R` refresh, 
 
 Clicking the visible backdrop outside a dialog closes that dialog without saving. A confirmation is cancelled. Clicks inside controls and drags that start inside the dialog do not dismiss it; nested dialogs close one at a time. Full-screen views use their Close/Detach controls, and detaching a terminal keeps its process running.
 
+Background snapshots update existing board cards and session rows in place. Runtime/notice changes preserve focus, scrolling and selection; moving or removing a ticket changes only its affected card.
+
 ## On-disk layout
 
 ```text
