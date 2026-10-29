@@ -429,6 +429,26 @@ async def test_harness_open_buttons_forward_selected_harness(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_open_harness_config_normalizes_blank_select(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path)
+    app = client(supervisor, monkeypatch)
+    original = app.rpc
+    messages = []
+
+    async def rpc(message):
+        if message["op"] == "session_config_open":
+            messages.append(message)
+            raise ValueError("stop after capture")
+        return await original(message)
+
+    monkeypatch.setattr(app, "rpc", rpc)
+    async with app.run_test(size=(100, 35)) as pilot:
+        await app.open_harness_config(Select.BLANK)
+        await pilot.pause()
+    assert messages == [{"op": "session_config_open", "harness": ""}]
+
+
+@pytest.mark.asyncio
 async def test_open_harness_config_reattaches_the_same_terminal(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "kanbeat.terminals.interactive_command",

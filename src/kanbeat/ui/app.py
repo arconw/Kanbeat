@@ -293,7 +293,8 @@ class Assignment(BackdropModal[None]):
             yield Static("Custom Prompt", classes="field")
             yield TextArea(str(value.get("cp") or ""), id="cp")
             yield Static(
-                "Terminal uses saved slot settings. Save edits first; Board Stop is required.",
+                "Terminal uses saved slot settings. Save edits first; Board Stop is required. "
+                "Open starts a separate harness configuration session and does not save these edits.",
                 classes="hint",
             )
             with Horizontal(classes="modal-actions"):
@@ -516,7 +517,9 @@ class KanbeatApp(App[None]):
         except (RuntimeError, ValueError, OSError) as exc:
             self.notify(str(exc), severity="error", timeout=7)
 
-    async def open_harness_config(self, harness: str) -> None:
+    async def open_harness_config(self, harness: Any) -> None:
+        if not isinstance(harness, str):
+            harness = ""
         try:
             result = await self.rpc({"op": "session_config_open", "harness": harness})
             await self.refresh_snapshot(force=True)
