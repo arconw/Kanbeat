@@ -2,7 +2,7 @@
 
 Detailed behavior reference. For what Kanbeat is, installation and a first run, start with the [README](../README.md). Interactive terminal details live in [terminals.md](terminals.md); the product and architecture design is in the [standalone design specification](design/design.html).
 
-Kanbeat is an early release (v0.5.1). Everything below describes the implemented behavior; items marked as not validated have not been exercised against live vendor CLIs.
+Kanbeat is an early release. Everything below describes the implemented behavior; items marked as not validated have not been exercised against live vendor CLIs.
 
 - [Principles](#principles)
 - [Command line and TUI](#command-line-and-tui)
@@ -42,6 +42,7 @@ kanbeat move 001 backlog
 kanbeat play
 kanbeat stop
 kanbeat --project /path/to/project   # select another project root
+kanbeat --version
 ```
 
 The project root is the current working directory by default. `--project` is a top-level option and goes before the subcommand. `kanbeat run` is the explicit form of plain `kanbeat`. `kanbeat supervisor` runs a foreground supervisor for debugging; the normal CLI starts a detached supervisor automatically.

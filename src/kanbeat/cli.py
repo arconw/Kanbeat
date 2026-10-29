@@ -7,18 +7,28 @@ import asyncio
 from pathlib import Path
 import sys
 
+from . import __version__
 from .filesystem import Board
+from .launcher import run_internal
+from .ipc import socket_path
 from .supervisor import Supervisor, ensure_supervisor, request
 
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="kanbeat")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--project", type=Path, default=Path.cwd(), help="Project directory")
     sub = p.add_subparsers(dest="command")
     sub.add_parser("run", help="Connect TUI to the local supervisor")
     sub.add_parser("supervisor", help="Run the supervisor in the foreground")
     sub.add_parser("play", help="Start/restart the board queue")
     sub.add_parser("stop", help="Interrupt board workers and stop dispatching")
+    shutdown = sub.add_parser(
+        "shutdown", help="Stop this project supervisor and its sessions"
+    )
+    shutdown.add_argument(
+        "--yes", action="store_true", help="Confirm stopping independent sessions"
+    )
     sub.add_parser("list", help="List ticket files by column")
     new = sub.add_parser("new", help="Create plain Markdown ticket")
     new.add_argument("title")
@@ -38,7 +48,25 @@ async def _send(project: Path, payload: dict) -> dict:
     return await request(project, payload)
 
 
+async def shutdown(project: Path, confirmed: bool) -> None:
+    await request(project, {"op": "shutdown", "confirmed": confirmed})
+    for _ in range(400):
+        if not socket_path(project).exists():
+            return
+        await asyncio.sleep(0.05)
+    raise RuntimeError("Supervisor shutdown did not complete within 20 seconds")
+
+
 def main() -> None:
+    if run_internal(sys.argv):
+        return
+    try:
+        run()
+    except KeyboardInterrupt:
+        raise SystemExit(130) from None
+
+
+def run() -> None:
     args = parser().parse_args()
     project = args.project.expanduser().resolve()
     try:
@@ -49,6 +77,8 @@ def main() -> None:
             from .ui.app import KanbeatApp
 
             KanbeatApp(project).run()
+        elif args.command == "shutdown":
+            asyncio.run(shutdown(project, args.yes))
         elif args.command == "list":
             board = Board(project)
             for ticket in board.scan()[0]:

@@ -190,3 +190,56 @@ async def test_shutdown_preserves_replacement_file_and_releases_lock(
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         supervisor.socket.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_requires_confirmation_for_independent_sessions(
+    tmp_path, short_socket_root, monkeypatch
+):
+    import sys
+
+    from kanbeat.native import process_identity
+
+    monkeypatch.setattr(
+        "kanbeat.terminals.interactive_command",
+        lambda *args: [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    supervisor = Supervisor(tmp_path)
+    task = asyncio.create_task(supervisor.serve())
+    try:
+        for _ in range(100):
+            if supervisor.server is not None:
+                break
+            await asyncio.sleep(0.01)
+        terminal_id = await supervisor.terminals.create("codex", owner="custom")
+        pid = supervisor.terminals.get(terminal_id).process.pid
+        with pytest.raises(RuntimeError, match="shutdown --yes"):
+            await request(tmp_path, {"op": "shutdown"})
+        assert not supervisor.shutdown_requested.is_set()
+        assert (await request(tmp_path, {"op": "shutdown", "confirmed": True}))[
+            "shutdown"
+        ] == "requested"
+        await asyncio.wait_for(task, timeout=10)
+        assert process_identity(pid) is None
+        assert not supervisor.socket.exists()
+        assert supervisor.lock_stream is None
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_queued_mutation_is_rejected_after_shutdown(tmp_path):
+    supervisor = Supervisor(tmp_path)
+    async with supervisor.guard:
+        stopping = asyncio.create_task(supervisor.dispatch({"op": "shutdown"}))
+        creating = asyncio.create_task(
+            supervisor.dispatch({"op": "group_create", "name": "Too late"})
+        )
+        await asyncio.sleep(0)
+    assert await stopping == {"shutdown": "requested"}
+    with pytest.raises(RuntimeError, match="shutting down"):
+        await creating
+    assert not supervisor.session_groups.groups
