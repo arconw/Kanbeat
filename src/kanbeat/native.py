@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -21,6 +22,7 @@ from .launcher import external_environment
 
 HARNESS = {"codex": "codex", "claude": "claude", "opencode": "opencode", "pi": "pi"}
 VERDICT = re.compile(r"(?m)^KANBEAT_VERDICT:\s*(approve|changes_requested)\s*$")
+LOGGER = logging.getLogger(__name__)
 
 
 def available(name: str) -> bool:
@@ -209,23 +211,43 @@ def process_identity(pid: int) -> str | None:
         return None
 
 
+def signal_owned_process(proc: asyncio.subprocess.Process, signum: int) -> None:
+    """Signal only the current child-led group, otherwise the child itself."""
+    if proc.returncode is not None:
+        return
+    try:
+        owned_group = os.getpgid(proc.pid) == proc.pid
+    except (ProcessLookupError, PermissionError):
+        LOGGER.debug("Cannot verify group of tracked process %s", proc.pid)
+        owned_group = False
+    if owned_group:
+        try:
+            os.killpg(proc.pid, signum)
+            return
+        except (ProcessLookupError, PermissionError):
+            # macOS may deny group signals after PTY hangup. Never retry the
+            # group identifier; the still-owned child can be signaled directly.
+            pass
+    try:
+        proc.send_signal(signum)
+    except (ProcessLookupError, PermissionError):
+        # A denied direct signal must not abort escalation and reaping.
+        pass
+
+
 async def terminate_process(proc: asyncio.subprocess.Process | None) -> None:
     if not proc or proc.returncode is not None:
         return
-    try:
-        os.killpg(proc.pid, signal.SIGINT)
-    except ProcessLookupError:
-        return
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=3)
-    except asyncio.TimeoutError:
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal_owned_process(proc, signum)
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
             await asyncio.wait_for(proc.wait(), timeout=3)
-        except (ProcessLookupError, asyncio.TimeoutError):
-            if proc.returncode is None:
-                os.killpg(proc.pid, signal.SIGKILL)
-                await proc.wait()
+            return
+        except asyncio.TimeoutError:
+            continue
+    if proc.returncode is None:
+        signal_owned_process(proc, signal.SIGKILL)
+        await proc.wait()
 
 
 class NativeRun:

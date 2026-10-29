@@ -1,9 +1,13 @@
 import asyncio
+import os
+import pty
+import signal
 import sys
 
 import pytest
 
-from kanbeat.native import NativeRun, process_identity
+from kanbeat.launcher import pty_child_command
+from kanbeat.native import NativeRun, process_identity, terminate_process
 
 
 def run_script(tmp_path, monkeypatch, script, prompt="", callback=None):
@@ -104,3 +108,143 @@ async def test_cancelled_execution_reaps_process_and_readers(tmp_path, monkeypat
     assert run.process.returncode is not None
     assert process_identity(run.process.pid) is None
     assert not set(asyncio.all_tasks()) - before
+
+
+@pytest.mark.asyncio
+async def test_denied_group_signal_falls_back_to_owned_child(monkeypatch):
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
+    )
+    calls = []
+    real_killpg = os.killpg
+
+    def deny_own_group(group, signum):
+        if group == proc.pid:
+            calls.append(signum)
+            raise PermissionError("simulated group denial after hangup")
+        return real_killpg(group, signum)
+
+    monkeypatch.setattr("kanbeat.native.os.killpg", deny_own_group)
+    try:
+        await asyncio.wait_for(terminate_process(proc), timeout=8)
+        assert proc.returncode is not None
+        assert signal.SIGINT in calls
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
+@pytest.mark.asyncio
+async def test_denied_child_signal_continues_to_term_escalation(monkeypatch):
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
+    )
+    signals = []
+    real_send = proc.send_signal
+
+    def reject_group(_pid, _signum):
+        raise PermissionError("group denied")
+
+    def reject_first_child(signum):
+        signals.append(signum)
+        if signum == signal.SIGINT:
+            raise PermissionError("child denied")
+        real_send(signum)
+
+    monkeypatch.setattr("kanbeat.native.os.killpg", reject_group)
+    monkeypatch.setattr(proc, "send_signal", reject_first_child)
+    try:
+        await asyncio.wait_for(terminate_process(proc), timeout=9)
+        assert proc.returncode is not None
+        assert signals[:2] == [signal.SIGINT, signal.SIGTERM]
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
+@pytest.mark.asyncio
+async def test_live_child_group_signal_does_not_require_fingerprint(monkeypatch):
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
+    )
+    calls = []
+    actual_killpg = os.killpg
+    monkeypatch.setattr("kanbeat.native.process_identity", lambda _pid: None)
+
+    def record_group(group, signum):
+        calls.append((group, signum))
+        return actual_killpg(group, signum)
+
+    monkeypatch.setattr("kanbeat.native.os.killpg", record_group)
+    try:
+        await asyncio.wait_for(terminate_process(proc), timeout=8)
+        assert proc.returncode is not None
+        assert (proc.pid, signal.SIGINT) in calls
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
+@pytest.mark.asyncio
+async def test_changed_process_group_does_not_signal_unverified_group(monkeypatch):
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
+    )
+    groups = []
+    monkeypatch.setattr("kanbeat.native.os.getpgid", lambda _pid: -1)
+    monkeypatch.setattr("kanbeat.native.os.killpg", lambda *args: groups.append(args))
+    try:
+        await asyncio.wait_for(terminate_process(proc), timeout=8)
+        assert proc.returncode is not None
+        assert not groups
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
+@pytest.mark.asyncio
+async def test_real_pty_hangup_reaps_owned_child():
+    master, slave = pty.openpty()
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *pty_child_command(
+                [
+                    sys.executable,
+                    "-u",
+                    "-c",
+                    "import time; print('READY', flush=True); time.sleep(30)",
+                ]
+            ),
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            start_new_session=True,
+        )
+        os.close(slave)
+        slave = -1
+        loop = asyncio.get_running_loop()
+        readable = asyncio.Event()
+        loop.add_reader(master, readable.set)
+        try:
+            await asyncio.wait_for(readable.wait(), timeout=8)
+            assert b"READY" in os.read(master, 4096)
+        finally:
+            loop.remove_reader(master)
+        os.close(master)
+        master = -1
+        await asyncio.wait_for(terminate_process(proc), timeout=8)
+        assert proc.returncode is not None
+        assert process_identity(proc.pid) is None
+    finally:
+        if master >= 0:
+            os.close(master)
+        if slave >= 0:
+            os.close(slave)
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            await proc.wait()
