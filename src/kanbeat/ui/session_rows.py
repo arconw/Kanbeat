@@ -13,7 +13,7 @@ def lifecycle_label(entry):
     code = entry.get("exit_code")
     if code is not None:
         status += f" (exit {code})"
-    error = str(entry.get("error") or "").replace("\\n", " ").strip()
+    error = " ".join(str(entry.get("error") or "").split())
     if error:
         status += " / error: " + error[:100]
     return status
