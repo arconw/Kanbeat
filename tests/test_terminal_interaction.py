@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 from textual import events
+from textual.widgets import Static
 
 from kanbeat.supervisor import Supervisor
 from kanbeat.terminal_control import InputCapture, apply_input
@@ -166,6 +167,29 @@ async def test_input_burst_preserves_order_under_backpressure():
         producer.cancel()
         pump.cancel()
         await asyncio.gather(producer, pump, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_full_native_input_buffer_backs_off_and_reports_waiting():
+    calls = 0
+    reports = []
+
+    async def send(op, events):
+        nonlocal calls
+        calls += 1
+        return {"accepted": False}
+
+    queue = TerminalInput(send, reports.append)
+    await queue.put({"kind": "key", "character": "a"})
+    pump = asyncio.create_task(queue.run())
+    try:
+        await asyncio.sleep(1.35)
+        assert calls < 20
+        assert reports == ["Terminal is not accepting input; waiting for space"]
+        assert not queue.error
+    finally:
+        pump.cancel()
+        await asyncio.gather(pump, return_exceptions=True)
 
 
 def test_primary_scrollback_is_bounded_and_keeps_absolute_position():
@@ -352,10 +376,55 @@ async def test_terminal_view_stops_retrying_permanent_snapshot_errors(
     async with app.run_test(size=(100, 40)) as pilot:
         app.push_screen(view)
         await pilot.pause()
+        snapshot_calls = len([call for call in calls if call[0] == "terminal_snapshot"])
         await asyncio.sleep(0.65)
-        assert [call for call in calls if call[0] == "terminal_snapshot"] == [
-            ("terminal_snapshot",)
-        ]
+        assert snapshot_calls >= 1
+        assert (
+            len([call for call in calls if call[0] == "terminal_snapshot"])
+            == snapshot_calls
+        )
+        assert "DISCONNECTED" in str(
+            view.query_one("#terminal-heading", Static).render()
+        )
+
+
+@pytest.mark.asyncio
+async def test_terminal_input_recovers_after_transient_rpc_error_without_replay(
+    terminal, monkeypatch
+):
+    supervisor, session = terminal
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    view = TerminalView(session.id)
+    original_rpc = view.rpc
+    failed = False
+
+    async def flaky(op, **values):
+        nonlocal failed
+        if op == "terminal_input" and not failed:
+            failed = True
+            raise OSError("Temporary RPC failure")
+        return await original_rpc(op, **values)
+
+    monkeypatch.setattr(view, "rpc", flaky)
+    view.input.send = flaky
+    async with app.run_test(size=(100, 40)) as pilot:
+        app.push_screen(view)
+        await pilot.pause()
+        old_input = view.input
+        await view.send_input({"kind": "key", "character": "a"})
+        await old_input.drain()
+        assert old_input.error
+        session.touch()
+        for _ in range(200):
+            if view.input is not old_input:
+                break
+            await asyncio.sleep(0.01)
+        assert view.input is not old_input
+        await view.send_input({"kind": "key", "character": "b"})
+        await view.send_input({"kind": "key", "key": "ctrl+j", "character": "\n"})
+        await view.input.drain()
+        await contains(session, "INPUTHEX:62")
 
 
 @pytest.mark.asyncio

@@ -119,12 +119,29 @@ class TerminalView(BackdropModal[None]):
                     )
                 if epoch == self.view_epoch:
                     self.apply_snapshot(snapshot)
+                if self.input.error and snapshot["status"] == "running":
+                    self.input = TerminalInput(self.rpc, self.report_input_error)
+                    self.pump_input()
+                    self.app.notify(
+                        "Terminal input reconnected; previous delivery is unconfirmed",
+                        severity="warning",
+                    )
                 failed = False
                 retry = RETRY_SECONDS
             except (OSError, RuntimeError, ValueError) as exc:
                 if not failed:
                     self.app.notify(str(exc), severity="error")
-                if isinstance(exc, ValueError) or "shutting down" in str(exc).lower():
+                reason = str(exc).lower()
+                heading = "TERMINAL DISCONNECTED · " + str(exc)[:80]
+                if heading != self.heading:
+                    self.heading = heading
+                    self.query_one("#terminal-heading", Static).update(heading)
+                if (
+                    "not attached" in reason
+                    or "no longer attached" in reason
+                    or "not found" in reason
+                    or "shutting down" in reason
+                ):
                     return
                 failed = True
                 await asyncio.sleep(retry)

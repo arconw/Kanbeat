@@ -43,6 +43,9 @@ class TerminalInput:
                 batch.append(item)
                 size += amount
             try:
+                rejected_since = None
+                backoff = 0.01
+                warned = False
                 while True:
                     result = await self.send("terminal_input", events=batch)
                     rejected = result.get("rejected") or []
@@ -62,7 +65,18 @@ class TerminalInput:
                         continue
                     if result.get("accepted", True):
                         break
-                    await asyncio.sleep(0.01)
+                    if rejected_since is None:
+                        rejected_since = asyncio.get_running_loop().time()
+                    if (
+                        not warned
+                        and asyncio.get_running_loop().time() - rejected_since >= 1
+                    ):
+                        self.report(
+                            "Terminal is not accepting input; waiting for space"
+                        )
+                        warned = True
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 1)
             except (OSError, ValueError, RuntimeError) as exc:
                 self.error = str(exc)
                 count = len(batch) + int(carry is not None) + self.queue.qsize()
