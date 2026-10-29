@@ -2,6 +2,8 @@
 
 Kanbeat 0.6.0 adds a release path: a wheel and sdist for Python installs, and standalone PyInstaller **onedir** archives that bundle their own Python runtime. Onedir is used instead of onefile because the supervisor is a long-lived background process: a onefile build unpacks itself into a temporary directory that must outlive the first client and survive restarts.
 
+Version 0.6.1 preserves the draft tag explicitly when refreshing release notes and checks the stored tag and draft state after uploads.
+
 ## Current status
 
 - No release containing standalone archives has been published yet. The Python quick-start pins the tested `v0.5.1` tag, which installs from Git as described in the [README](../README.md#installation).
@@ -33,10 +35,10 @@ Download the archive for your platform and `SHA256SUMS` from the release page, t
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS      # Linux
 shasum -a 256 --check --ignore-missing SHA256SUMS  # macOS
-tar -xzf kanbeat-0.6.0-linux-x86_64.tar.gz
+tar -xzf kanbeat-0.6.1-linux-x86_64.tar.gz
 mkdir -p ~/.local/opt ~/.local/bin
-mv kanbeat-0.6.0-linux-x86_64 ~/.local/opt/kanbeat-0.6.0
-ln -sfn ~/.local/opt/kanbeat-0.6.0 ~/.local/opt/kanbeat
+mv kanbeat-0.6.1-linux-x86_64 ~/.local/opt/kanbeat-0.6.1
+ln -sfn ~/.local/opt/kanbeat-0.6.1 ~/.local/opt/kanbeat
 ln -sf ~/.local/opt/kanbeat/kanbeat ~/.local/bin/kanbeat
 kanbeat --version
 ```
@@ -46,7 +48,7 @@ Keep the `_internal` directory next to the `kanbeat` executable. Make sure `~/.l
 On macOS, a browser download carries a quarantine attribute. After verifying the checksum, remove it from the unpacked directory only if you trust the source:
 
 ```sh
-xattr -dr com.apple.quarantine ~/.local/opt/kanbeat-0.6.0
+xattr -dr com.apple.quarantine ~/.local/opt/kanbeat-0.6.1
 ```
 
 Download and trust behavior depends on the download tool and local macOS policy.
@@ -68,7 +70,7 @@ Project data lives in each project's `.kanbeat/` directory and is unaffected.
 ```sh
 rm ~/.local/bin/kanbeat
 rm ~/.local/opt/kanbeat
-rm -rf ~/.local/opt/kanbeat-0.6.0
+rm -rf ~/.local/opt/kanbeat-0.6.1
 ```
 
 Your projects' `.kanbeat/` directories are not touched; delete them yourself if you no longer want the tickets.
@@ -90,7 +92,7 @@ Wheel and sdist installs are unchanged: `uv tool install`, `pipx install` or `pi
 python -m venv .tmp/venv
 .tmp/venv/bin/python -m pip install '.[release]'
 .tmp/venv/bin/python tools/build_release.py --output .tmp/release/out --work .tmp/release/work
-.tmp/venv/bin/python tools/smoke_release.py .tmp/release/out/kanbeat-0.6.0-linux-x86_64.tar.gz --work .tmp/release/smoke
+.tmp/venv/bin/python tools/smoke_release.py .tmp/release/out/kanbeat-0.6.1-linux-x86_64.tar.gz --work .tmp/release/smoke
 ```
 
 `build_release.py` writes `kanbeat-<version>-<os>-<arch>.tar.gz` and a matching `.sha256`. `smoke_release.py` verifies the checksum, extracts into a fresh directory, and runs the extracted program outside the source tree against a fixture executable named `codex` on an isolated `PATH`. No vendor CLI or model is called. It checks:
