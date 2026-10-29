@@ -444,6 +444,18 @@ async def test_config_model_failure_does_not_block_worker(runtime):
 
 
 @pytest.mark.asyncio
+async def test_config_session_create_failure_is_value_error(runtime):
+    supervisor, host = runtime
+
+    async def failing_create(*, directory=None, model=None):
+        raise OpenCodeHostError("create failed")
+
+    host.create_session = failing_create
+    with pytest.raises(ValueError, match="Could not create OpenCode config session"):
+        await supervisor.dispatch({"op": "session_config_open", "harness": "opencode"})
+
+
+@pytest.mark.asyncio
 async def test_terminal_attach_rejects_unsupported_harness(runtime):
     supervisor, _host = runtime
     ticket = supervisor.board.create("Task", column="progress")

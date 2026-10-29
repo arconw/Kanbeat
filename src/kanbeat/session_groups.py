@@ -114,7 +114,7 @@ class SessionGroups:
             if not session_id or not await self.opencode_session_exists(
                 host, session_id
             ):
-                metadata = await host.create_session(directory=self.state.board.project)
+                metadata = await self.create_opencode_session(host)
                 session_id = metadata.session_id
                 entry["native_session"] = session_id
                 self.state.save()
@@ -129,7 +129,7 @@ class SessionGroups:
             host = await self.opencode_host()
         except (OpenCodeHostError, OSError) as error:
             raise ValueError(f"Could not start OpenCode host: {error}") from error
-        metadata = await host.create_session(directory=self.state.board.project)
+        metadata = await self.create_opencode_session(host)
         terminal_id = await self.terminals.create(
             "opencode",
             owner="custom",
@@ -140,6 +140,14 @@ class SessionGroups:
             env=host.child_env(),
         )
         return {"terminal": terminal_id}
+
+    async def create_opencode_session(self, host: Any) -> Any:
+        try:
+            return await host.create_session(directory=self.state.board.project)
+        except (OpenCodeHostError, OSError) as error:
+            raise ValueError(
+                f"Could not create OpenCode config session: {error}"
+            ) from error
 
     @staticmethod
     async def opencode_session_exists(host: Any, session_id: str) -> bool:
