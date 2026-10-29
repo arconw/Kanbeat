@@ -74,6 +74,7 @@ def runtime(tmp_path, monkeypatch):
 
     monkeypatch.setattr(supervisor, "opencode_host", fake_host)
     monkeypatch.setattr("kanbeat.supervisor.available", lambda name: True)
+    monkeypatch.setattr("kanbeat.session_groups.available", lambda name: True)
     return supervisor, host
 
 
