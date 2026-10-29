@@ -88,6 +88,51 @@ async def test_real_pty_input_resize_and_reconnect(supervisor):
 
 
 @pytest.mark.asyncio
+async def test_stopping_status_is_visible_and_prevents_restart(supervisor, monkeypatch):
+    from kanbeat.ui.session_rows import SessionRow
+    from kanbeat import terminals
+
+    terminal_id = await supervisor.terminals.create("codex", owner="custom")
+    session = supervisor.terminals.get(terminal_id)
+    real_terminate = terminals.terminate_process
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_termination(proc):
+        entered.set()
+        await release.wait()
+        await real_terminate(proc)
+
+    monkeypatch.setattr(terminals, "terminate_process", delayed_termination)
+    job = asyncio.create_task(session.stop())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        entry = supervisor.snapshot()["terminals"][terminal_id]
+        assert entry["status"] == "stopping"
+        assert "stopping" in SessionRow.label(entry)
+        assert supervisor.terminals.running("custom")
+        with pytest.raises(ValueError, match="Stop the session"):
+            await supervisor.dispatch(
+                {"op": "session_restart", "terminal": terminal_id}
+            )
+        with pytest.raises(ValueError, match="Stop the session"):
+            await supervisor.dispatch(
+                {"op": "session_delete", "terminal": terminal_id, "confirmed": True}
+            )
+        with pytest.raises(ValueError, match="Stop the session"):
+            await supervisor.terminals.restart(terminal_id)
+        release.set()
+        await asyncio.wait_for(job, timeout=8)
+        assert session.entry["status"] == "stopped"
+        assert not supervisor.terminals.running("custom")
+    finally:
+        release.set()
+        await asyncio.gather(job, return_exceptions=True)
+        monkeypatch.setattr(terminals, "terminate_process", real_terminate)
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
 async def test_board_stop_does_not_stop_independent_terminal(supervisor):
     board_id = await supervisor.terminals.create("codex", owner="board")
     custom_id = await supervisor.terminals.create("claude", owner="custom")

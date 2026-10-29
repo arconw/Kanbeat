@@ -123,7 +123,7 @@ class SessionActions(BackdropModal[None]):
         self.entry = entry
 
     def compose(self) -> ComposeResult:
-        running = self.entry["status"] in ("starting", "running")
+        running = self.entry["status"] in ("starting", "running", "stopping")
         with Vertical(classes="sm"):
             yield Static("INDEPENDENT SESSION", classes="section-title")
             yield Input(self.entry["title"], id="session-title")
@@ -145,7 +145,11 @@ class SessionActions(BackdropModal[None]):
                 yield Button(
                     "Stop",
                     id="session-stop",
-                    disabled=not running or not self.entry.get("attached"),
+                    disabled=(
+                        not running
+                        or self.entry["status"] == "stopping"
+                        or not self.entry.get("attached")
+                    ),
                 )
                 yield Button(
                     "Remove record",

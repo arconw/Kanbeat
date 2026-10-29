@@ -27,7 +27,9 @@ These are process and execution states, not inferred native busy/idle/waiting
 signals; semantic agent activity still requires supported vendor events.
 
 Use Detach or Ctrl+backslash to close the full-screen view. Stop requires explicit
-confirmation and interrupts/terminates the process group. Stop task terminals
+confirmation and reports `stopping` until the child exits. Start/Resume and
+removal are blocked while stopping; a second client sees the same lifecycle.
+Stop interrupts/terminates the process group. Stop task terminals
 before Play resumes structured dispatch. Board Stop interrupts board-owned PTYs;
 independent sessions are outside its scope. Teardown signals the child-led process
 group only while it is still verifiably the owned child's group. If the OS

@@ -204,6 +204,9 @@ class TerminalSession:
     async def stop(self) -> None:
         self.stop_requested = True
         if self.process is not None and self.process.returncode is None:
+            self.entry["status"] = "stopping"
+            self.state.save()
+            self.touch()
             await terminate_process(self.process)
         if self.waiter is not None:
             await self.waiter
@@ -304,7 +307,7 @@ class Terminals:
 
     async def restart(self, terminal_id: str) -> None:
         entry = self.entries[terminal_id]
-        if entry.get("status") in ("starting", "running", "recovery_blocked"):
+        if entry.get("status") in ("starting", "running", "stopping", "recovery_blocked"):
             raise ValueError("Stop the session before restarting it")
         await self.start_entry(entry)
 
@@ -354,7 +357,7 @@ class Terminals:
 
     def running(self, owner: str | None = None) -> bool:
         return any(
-            e.get("status") in ("starting", "running", "recovery_blocked")
+            e.get("status") in ("starting", "running", "stopping", "recovery_blocked")
             and (owner is None or e.get("owner") == owner)
             for e in self.entries.values()
         )
