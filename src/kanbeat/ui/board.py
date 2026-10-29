@@ -9,6 +9,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Static
 
 from ..filesystem import COLUMNS
+from .session_rows import worker_is_active
 
 
 def summary(ticket: dict[str, Any]) -> str:
@@ -22,16 +23,24 @@ def summary(ticket: dict[str, Any]) -> str:
     )
 
 
+def runtime_status(info: dict[str, Any]) -> str:
+    status = str(info.get("status", "?"))
+    activity = info.get("activity")
+    if status == "running" and activity in ("working", "waiting", "idle", "error"):
+        status += "/" + str(activity)
+    return status
+
+
 def runtime(ticket: dict[str, Any]) -> str:
     slots = (ticket.get("state") or {}).get("runtime") or {}
     return ", ".join(
-        f"{slot_label(name)}:{info.get('status', '?')}" for name, info in slots.items()
+        f"{slot_label(name)}:{runtime_status(info)}" for name, info in slots.items()
     )[:88]
 
 
 def worker_active(ticket: dict[str, Any]) -> bool:
     return any(
-        entry.get("status") == "running"
+        worker_is_active(entry)
         for entry in ((ticket.get("state") or {}).get("runtime") or {}).values()
     )
 

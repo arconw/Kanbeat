@@ -21,6 +21,27 @@ def lifecycle_label(entry):
     return status
 
 
+def worker_is_active(entry):
+    return entry.get("status") == "running" and entry.get("activity") not in (
+        "idle",
+        "waiting",
+        "error",
+    )
+
+
+def worker_status_label(entry):
+    status = lifecycle_label(entry)
+    activity = entry.get("activity")
+    if entry.get("status") == "running" and activity in (
+        "working",
+        "waiting",
+        "idle",
+        "error",
+    ):
+        status += " / " + activity
+    return status
+
+
 class SessionRow(Horizontal):
     def __init__(self, entry):
         super().__init__(id="session-row-" + entry["id"], classes="slot-row")
@@ -71,7 +92,7 @@ class TaskSessions(Vertical):
         worker = ((ticket.get("state") or {}).get("runtime") or {}).get(slot) or {}
         parts = []
         if worker:
-            parts.append("Worker " + lifecycle_label(worker))
+            parts.append("Worker " + worker_status_label(worker))
         matches = [
             entry
             for entry in terminals.values()
@@ -95,7 +116,7 @@ class TaskSessions(Vertical):
 
     def worker_active(self, slot):
         worker = ((self.ticket.get("state") or {}).get("runtime") or {}).get(slot)
-        return bool(self.running and worker and worker.get("status") == "running")
+        return bool(self.running and worker and worker_is_active(worker))
 
     def row(self, slot):
         row = Horizontal(

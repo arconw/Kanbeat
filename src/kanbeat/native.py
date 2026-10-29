@@ -82,6 +82,7 @@ class EventStream:
         self.failed = False
         self.error = ""
         self.events = 0
+        self.activity: str | None = None
 
     def push(self, event: dict[str, Any]) -> None:
         self.events += 1
@@ -93,21 +94,29 @@ class EventStream:
                 item = event.get("item") or {}
                 if isinstance(item, dict) and item.get("type") == "agent_message":
                     self.answer = str(item.get("text") or self.answer)
+            if kind in ("turn.started", "item.started"):
+                self.activity = "working"
             if kind == "turn.completed":
                 self.finished = True
+                self.activity = "idle"
             if kind in ("turn.failed", "error"):
                 self.failed = True
                 self.error = str(event.get("message") or event.get("error") or kind)
+                if kind == "turn.failed":
+                    self.activity = "error"
         elif self.harness == "claude":
             sid = event.get("session_id")
             if isinstance(sid, str) and sid:
                 self.session_id = sid
+            if kind in ("assistant", "user"):
+                self.activity = "working"
             if kind == "result":
                 self.finished = True
                 self.failed = (
                     bool(event.get("is_error")) or event.get("subtype") != "success"
                 )
                 self.answer = str(event.get("result") or "")
+                self.activity = "error" if self.failed else "idle"
                 if self.failed:
                     self.error = self.answer[:400]
         elif self.harness == "opencode":
@@ -117,8 +126,29 @@ class EventStream:
             part = event.get("part") or {}
             if kind == "text" and isinstance(part, dict):
                 self.answer = str(part.get("text") or self.answer)
+            if kind in ("step_start", "text"):
+                self.activity = "working"
+            if kind == "step_finish":
+                self.activity = "idle"
+            if kind in (
+                "permission.asked",
+                "permission.v2.asked",
+                "question.asked",
+                "question.v2.asked",
+            ):
+                self.activity = "waiting"
+            if kind in (
+                "permission.replied",
+                "permission.v2.replied",
+                "question.replied",
+                "question.rejected",
+                "question.v2.replied",
+                "question.v2.rejected",
+            ):
+                self.activity = "working"
             if kind == "error":
                 self.failed = True
+                self.activity = "error"
                 self.error = str(event.get("error") or "OpenCode emitted error")[:400]
             # OpenCode run exits after its turn; no universal end event across versions.
         elif self.harness == "pi":
@@ -149,11 +179,16 @@ class EventStream:
                             msg.get("errorMessage")
                             or "Pi assistant " + msg["stopReason"]
                         )[:400]
+            if kind in ("agent_start", "message_start", "tool_execution_start"):
+                self.activity = "working"
+            if kind in ("message_end", "turn_end"):
+                self.activity = "error" if self.failed else "working"
             if kind in ("agent_end", "agent_settled"):
                 self.finished = True
                 if event.get("aborted"):
                     self.failed = True
                     self.error = "Pi run aborted"
+                self.activity = "error" if self.failed else "idle"
 
     def result(self, return_code: int, stderr: str) -> Outcome:
         error_text = stderr + " " + self.error
@@ -260,6 +295,7 @@ class NativeRun:
         log_path: Path,
         on_session: Callable[[str], None] | None = None,
         on_process: Callable[[int, str | None], None] | None = None,
+        on_activity: Callable[[str | None], None] | None = None,
     ):
         self.harness = harness
         self.prompt = prompt
@@ -268,6 +304,7 @@ class NativeRun:
         self.log_path = log_path
         self.on_session = on_session or (lambda _value: None)
         self.on_process = on_process or (lambda _pid, _identity: None)
+        self.on_activity = on_activity or (lambda _value: None)
         self.process: asyncio.subprocess.Process | None = None
         self.stopping = False
 
@@ -320,6 +357,7 @@ class NativeRun:
                 while await proc.stdout.read(65536):
                     pass
 
+            activity = None
             try:
                 self.on_process(proc.pid, process_identity(proc.pid))
                 if self.stopping:
@@ -344,6 +382,9 @@ class NativeRun:
                         stream.push(event)
                     except (ValueError, TypeError, KeyError):
                         continue
+                    if stream.activity != activity:
+                        activity = stream.activity
+                        self.on_activity(activity)
                     if stream.session_id and stream.session_id != self.session_id:
                         self.session_id = stream.session_id
                         self.on_session(self.session_id)

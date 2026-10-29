@@ -10,7 +10,7 @@ from kanbeat.launcher import pty_child_command
 from kanbeat.native import NativeRun, process_identity, terminate_process
 
 
-def run_script(tmp_path, monkeypatch, script, prompt="", callback=None):
+def run_script(tmp_path, monkeypatch, script, prompt="", callback=None, activity=None):
     monkeypatch.setattr(
         "kanbeat.native.command",
         lambda *args: (
@@ -19,7 +19,13 @@ def run_script(tmp_path, monkeypatch, script, prompt="", callback=None):
         ),
     )
     return NativeRun(
-        "codex", prompt, None, tmp_path, tmp_path / "native.log", on_process=callback
+        "codex",
+        prompt,
+        None,
+        tmp_path,
+        tmp_path / "native.log",
+        on_process=callback,
+        on_activity=activity,
     )
 
 
@@ -38,6 +44,24 @@ async def test_oversized_event_reaps_process_and_readers(tmp_path, monkeypatch):
     assert process_identity(run.process.pid) is None
     assert not run.stopping
     assert not set(asyncio.all_tasks()) - before
+
+
+@pytest.mark.asyncio
+async def test_activity_callback_follows_explicit_events(tmp_path, monkeypatch):
+    activities = []
+    script = """
+import json
+for event in (
+    {"type": "thread.started", "thread_id": "thread-1"},
+    {"type": "turn.started"},
+    {"type": "turn.completed"},
+):
+    print(json.dumps(event), flush=True)
+"""
+    run = run_script(tmp_path, monkeypatch, script, activity=activities.append)
+    outcome = await asyncio.wait_for(run.execute(), timeout=10)
+    assert outcome.ok
+    assert activities == ["working", "idle"]
 
 
 @pytest.mark.asyncio

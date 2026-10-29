@@ -162,6 +162,8 @@ No custom agent implementation is embedded. Kanbeat uses documented native comma
 
 If a session no longer exists, the worker attempts a fresh run in the same slot. This is not equivalent to rolling back tools or Git modifications. Stop interrupts process groups, then terminates unresponsive workers. Custom non-board sessions must not be interrupted by board Stop. On an ordinary supervisor restart, the board starts stopped; previously launched board-owned processes are matched by PID and OS process-start identity before any orphan shutdown is attempted. If the process cannot be identified safely, Play remains blocked pending manual resolution. External moves of active tickets interrupt their old workers; failed parallel reviews interrupt remaining Reviewer processes.
 
+**Native activity:** while a structured worker runs, Kanbeat shows `working`, `waiting`, `idle` or `error` only when the harness emits an explicit event for it: Codex turn/item starts and completion, Claude assistant/user messages and result, OpenCode step and permission/question events, and Pi agent/message/tool events. Without such an event the UI falls back to process lifecycle and does not guess semantic busy or idle state from the PID. Waiting animation stops while a declared wait is active.
+
 **Limitations:** JSON event shapes and session recovery vary by installed CLI version. The Sessions tab offers supervisor-owned interactive PTYs alongside structured worker logs; task terminals require a stopped board. See [terminal lifecycle and limits](terminals.md). Runtime session IDs are only available for CLIs/events that disclose them. You should verify your chosen CLI version before relying on the workflow unattended.
 
 ## Interactive terminals and sessions

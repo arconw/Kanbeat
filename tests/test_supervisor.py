@@ -73,7 +73,15 @@ async def test_modified_ticket_is_redispatched_to_same_session(
         stopping = False
 
         def __init__(
-            self, harness, prompt, session, cwd, log, on_session=None, on_process=None
+            self,
+            harness,
+            prompt,
+            session,
+            cwd,
+            log,
+            on_session=None,
+            on_process=None,
+            on_activity=None,
         ):
             captured.append((prompt, session))
             self.on_session = on_session
@@ -99,6 +107,52 @@ async def test_modified_ticket_is_redispatched_to_same_session(
     assert state["runtime"]["developer"]["task_hash"] == supervisor.content_hash(
         supervisor.board.find(ticket.id)
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_activity_is_persisted_and_cleared(tmp_path: Path, monkeypatch):
+    import kanbeat.supervisor as module
+
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Activity", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["phase"] = "progress"
+    state["iteration"] = 1
+    supervisor.runtime.data["execution"] = "running"
+    seen = []
+
+    class FakeRun:
+        stopping = False
+
+        def __init__(
+            self,
+            harness,
+            prompt,
+            session,
+            cwd,
+            log,
+            on_session=None,
+            on_process=None,
+            on_activity=None,
+        ):
+            self.on_activity = on_activity
+
+        async def execute(self):
+            self.on_activity("working")
+            seen.append(state["runtime"]["developer"].get("activity"))
+            self.on_activity("waiting")
+            seen.append(state["runtime"]["developer"].get("activity"))
+            return Outcome(True, "completed", None, "done")
+
+        async def stop(self):
+            self.stopping = True
+
+    monkeypatch.setattr(module, "NativeRun", FakeRun)
+    monkeypatch.setattr(module, "available", lambda _name: True)
+    await supervisor.start_worker(ticket, "developer", state["developer"])
+    await supervisor.jobs["001:developer"]
+    assert seen == ["working", "waiting"]
+    assert "activity" not in state["runtime"]["developer"]
 
 
 @pytest.mark.asyncio
@@ -160,7 +214,15 @@ async def test_external_move_interrupts_old_worker(tmp_path: Path, monkeypatch):
         stopping = False
 
         def __init__(
-            self, harness, prompt, session, cwd, log, on_session=None, on_process=None
+            self,
+            harness,
+            prompt,
+            session,
+            cwd,
+            log,
+            on_session=None,
+            on_process=None,
+            on_activity=None,
         ):
             pass
 
@@ -202,7 +264,15 @@ async def test_reviewer_failure_stops_parallel_workers(tmp_path: Path, monkeypat
         stopping = False
 
         def __init__(
-            self, harness, prompt, session, cwd, log, on_session=None, on_process=None
+            self,
+            harness,
+            prompt,
+            session,
+            cwd,
+            log,
+            on_session=None,
+            on_process=None,
+            on_activity=None,
         ):
             pass
 
