@@ -126,7 +126,7 @@ jobs:
             echo "See docs/releases.md for install, update and removal steps and for platform limits."
             echo
             echo "Archives in this release:"
-            (cd .tmp/assets && ls -1 -- *.tar.gz | sed 's/^/- /')
+            (cd .tmp/assets && printf -- '- %s\n' *.tar.gz)
           } > .tmp/notes.md
       - name: Create or refresh the draft release
         env:
@@ -134,19 +134,20 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          if gh api "repos/$GH_REPO/releases/tags/$TAG" --silent 2>/dev/null; then
-            echo "A published release already exists for $TAG; refusing to modify it." >&2
-            exit 1
-          fi
-          draft="$(gh api --paginate "repos/$GH_REPO/releases" --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id" | head -n 1)"
-          if [ -n "$draft" ]; then
-            gh api --method PATCH "repos/$GH_REPO/releases/$draft" --field body=@.tmp/notes.md --silent
+          release_id="$(gh api --paginate "repos/$GH_REPO/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
+          if [ -n "$release_id" ]; then
+            is_draft="$(gh api "repos/$GH_REPO/releases/$release_id" --jq .draft)"
+            if [ "$is_draft" != true ]; then
+              echo "A published release already exists for $TAG; refusing to modify it." >&2
+              exit 1
+            fi
+            gh api --method PATCH "repos/$GH_REPO/releases/$release_id" --field body=@.tmp/notes.md --silent
             for asset in .tmp/assets/*; do
-              existing="$(gh api "repos/$GH_REPO/releases/$draft/assets" --paginate --jq ".[] | select(.name == \"$(basename "$asset")\") | .id")"
+              existing="$(gh api "repos/$GH_REPO/releases/$release_id/assets" --paginate --jq ".[] | select(.name == \"$(basename "$asset")\") | .id")"
               for id in $existing; do
                 gh api --method DELETE "repos/$GH_REPO/releases/assets/$id"
               done
-              gh release upload "$TAG" "$asset"
+              gh api --method POST "https://uploads.github.com/repos/$GH_REPO/releases/$release_id/assets?name=$(basename "$asset")" --header 'Content-Type: application/octet-stream' --input "$asset" --silent
             done
           else
             gh release create "$TAG" .tmp/assets/* --draft --verify-tag --title "Kanbeat ${TAG#v}" --notes-file .tmp/notes.md
