@@ -136,6 +136,35 @@ async def test_denied_group_signal_falls_back_to_owned_child(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_denied_child_signal_continues_to_term_escalation(monkeypatch):
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
+    )
+    signals = []
+    real_send = proc.send_signal
+
+    def reject_group(_pid, _signum):
+        raise PermissionError("group denied")
+
+    def reject_first_child(signum):
+        signals.append(signum)
+        if signum == signal.SIGINT:
+            raise PermissionError("child denied")
+        real_send(signum)
+
+    monkeypatch.setattr("kanbeat.native.os.killpg", reject_group)
+    monkeypatch.setattr(proc, "send_signal", reject_first_child)
+    try:
+        await asyncio.wait_for(terminate_process(proc), timeout=9)
+        assert proc.returncode is not None
+        assert signals[:2] == [signal.SIGINT, signal.SIGTERM]
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
+@pytest.mark.asyncio
 async def test_live_child_group_signal_does_not_require_fingerprint(monkeypatch):
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True

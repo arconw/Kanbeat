@@ -227,7 +227,8 @@ def signal_owned_process(proc: asyncio.subprocess.Process, signum: int) -> None:
             pass
     try:
         proc.send_signal(signum)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
+        # A denied direct signal must not abort escalation and reaping.
         pass
 
 
@@ -243,7 +244,10 @@ async def terminate_process(proc: asyncio.subprocess.Process | None) -> None:
             continue
     if proc.returncode is None:
         signal_owned_process(proc, signal.SIGKILL)
-        await proc.wait()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError("Native child did not exit after signal escalation") from exc
 
 
 class NativeRun:
