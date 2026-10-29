@@ -91,6 +91,10 @@ class TaskSessions(Vertical):
             parts.append("PTY " + lifecycle_label(terminal))
         return " / ".join(parts) if parts else "not started"
 
+    def worker_active(self, slot):
+        worker = ((self.ticket.get("state") or {}).get("runtime") or {}).get(slot)
+        return bool(self.running and worker and worker.get("status") == "running")
+
     def row(self, slot):
         row = Horizontal(
             classes="slot-row", id=f"task-slot-{self.ticket['id']}-{slot}", name=slot
@@ -109,6 +113,7 @@ class TaskSessions(Vertical):
             markup=False,
         )
         status.tooltip = self.slot_status(self.ticket, slot, self.terminals)
+        status.set_class(self.worker_active(slot), "agent-working")
         row.compose_add_child(status)
         return row
 
@@ -139,6 +144,10 @@ class TaskSessions(Vertical):
             status = self.query_one(f"#task-status-{ticket['id']}-{slot}", Static)
             status.update(self.slot_status(ticket, slot, self.terminals))
             status.tooltip = self.slot_status(ticket, slot, self.terminals)
+            active = self.worker_active(slot)
+            status.set_class(active, "agent-working")
+            if not active:
+                status.remove_class("agent-pulse")
         if [row.name for row in self.query(".slot-row")] != wanted:
             order = {slot: index for index, slot in enumerate(wanted)}
             self.sort_children(key=lambda row: order.get(row.name, -1))

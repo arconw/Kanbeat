@@ -99,6 +99,17 @@ class TicketView(BackdropModal[None]):
             (state.get("runtime") or {}).get(slot, {}).get("status") or "not started"
         )
 
+    @staticmethod
+    def active_worker(state: dict[str, Any], slot: str) -> bool:
+        return (state.get("runtime") or {}).get(slot, {}).get("status") == "running"
+
+    def status_classes(self, state: dict[str, Any], slot: str) -> str:
+        active = (
+            self.app.snapshot.get("execution") == "running"
+            and self.active_worker(state, slot)
+        )
+        return "runtime agent-working" if active else "runtime"
+
     def compose(self) -> ComposeResult:
         state = self.ticket.get("state") or {}
         with Vertical(classes="full"):
@@ -131,7 +142,7 @@ class TicketView(BackdropModal[None]):
                     yield Button("Logs", id="dev-log")
                     yield Static(
                         self.runtime_label(state, "developer"),
-                        classes="runtime",
+                        classes=self.status_classes(state, "developer"),
                         id="developer-runtime",
                     )
                 for slot in state.get("reviewers") or []:
@@ -148,7 +159,7 @@ class TicketView(BackdropModal[None]):
                         yield Button("Remove", id="remove-" + sid)
                         yield Static(
                             self.runtime_label(state, sid),
-                            classes="runtime",
+                            classes=self.status_classes(state, sid),
                             id="runtime-" + sid,
                         )
                 yield Button("+ Reviewer", id="add-reviewer")
@@ -186,15 +197,27 @@ class TicketView(BackdropModal[None]):
                 "TICKET " + latest["id"] + " · " + latest["title"]
             )
         state = latest.get("state") or {}
-        self.query_one("#developer-runtime", Static).update(
-            self.runtime_label(state, "developer")
+        developer = self.query_one("#developer-runtime", Static)
+        developer.update(self.runtime_label(state, "developer"))
+        active = self.active_worker(state, "developer") and (
+            self.app.snapshot.get("execution") == "running"
         )
+        developer.set_class(active, "agent-working")
+        if not active:
+            developer.remove_class("agent-pulse")
         stopped = self.app.snapshot.get("execution") != "running"
         self.query_one("#dev-terminal", Button).disabled = not stopped
         for slot in state.get("reviewers") or []:
             label = self.query("#runtime-" + slot["id"])
             if label:
-                label.first(Static).update(self.runtime_label(state, slot["id"]))
+                widget = label.first(Static)
+                widget.update(self.runtime_label(state, slot["id"]))
+                active = self.active_worker(state, slot["id"]) and (
+                    self.app.snapshot.get("execution") == "running"
+                )
+                widget.set_class(active, "agent-working")
+                if not active:
+                    widget.remove_class("agent-pulse")
             button = self.query("#terminal-" + slot["id"])
             if button:
                 button.first(Button).disabled = not stopped
@@ -441,6 +464,7 @@ class KanbeatApp(App[None]):
         self.selection: set[str] = set()
         self._seen_notice_id = 0
         self._initial_snapshot = True
+        self._pulse_bright = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="root"):
@@ -466,6 +490,14 @@ class KanbeatApp(App[None]):
             if self.screen is splash:
                 self.pop_screen()
             self.set_interval(1.5, self.refresh_snapshot)
+            self.set_interval(0.8, self.pulse_working)
+
+    def pulse_working(self) -> None:
+        """Pulse only confirmed running workers, without rebuilding the board."""
+        self._pulse_bright = not self._pulse_bright
+        bright = self.animation_level != "none" and self._pulse_bright
+        for label in self.screen.query(".agent-working"):
+            label.set_class(bright, "agent-pulse")
 
     async def rpc(self, message: dict[str, Any]) -> dict[str, Any]:
         return await request(self.project, message)

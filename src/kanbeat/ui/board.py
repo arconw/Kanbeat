@@ -29,6 +29,13 @@ def runtime(ticket: dict[str, Any]) -> str:
     )[:88]
 
 
+def worker_active(ticket: dict[str, Any]) -> bool:
+    return any(
+        entry.get("status") == "running"
+        for entry in ((ticket.get("state") or {}).get("runtime") or {}).values()
+    )
+
+
 def slot_label(name: str) -> str:
     if name == "developer":
         return "dev"
@@ -61,6 +68,11 @@ class TicketCard(Vertical):
         status = runtime(self.ticket)
         indicator = Static("◌ " + status, classes="card-runtime", markup=False)
         indicator.display = bool(status)
+        indicator.set_class(
+            self.app.snapshot.get("execution") == "running"
+            and worker_active(self.ticket),
+            "agent-working",
+        )
         yield indicator
         selected = Button(
             ("☑" if self.selected else "☐") + " Select",
@@ -78,10 +90,16 @@ class TicketCard(Vertical):
         if summary(ticket) != summary(self.ticket):
             self.query_one(".card-summary", Static).update(summary(ticket))
         status = runtime(ticket)
+        indicator = self.query_one(".card-runtime", Static)
         if status != runtime(self.ticket):
-            indicator = self.query_one(".card-runtime", Static)
             indicator.update("◌ " + status)
             indicator.display = bool(status)
+        active = self.app.snapshot.get("execution") == "running" and worker_active(
+            ticket
+        )
+        indicator.set_class(active, "agent-working")
+        if not active:
+            indicator.remove_class("agent-pulse")
         selected_button = self.query_one(".check-button", Button)
         if selected != self.selected:
             selected_button.label = ("☑" if selected else "☐") + " Select"
