@@ -275,6 +275,7 @@ async def test_slot_terminal_action_rejects_unsaved_config_and_running_board(
         assert form.query_one("#open-terminal", Button).disabled
     assert not supervisor.terminals.entries
 
+
 @pytest.mark.asyncio
 async def test_concurrent_clients_share_one_task_terminal(supervisor):
     ticket = supervisor.board.create("Task")
