@@ -47,7 +47,7 @@ Kanbeat is not published on PyPI or Homebrew, and no prebuilt installers have be
 - Python 3.11 or newer, and Git (the install command below fetches the release tag from GitHub).
 - [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/) for an isolated install; plain `pip` in a virtual environment also works.
 - At least one native CLI installed on your `PATH` and already authenticated: `codex`, `claude`, `opencode` or `pi`. Kanbeat does not log in for you.
-- A terminal about 130 columns wide to see all six board columns without scrolling.
+- A terminal at least 80 × 24 characters; about 130 columns shows all six board columns without scrolling.
 
 ## Installation
 

@@ -93,6 +93,12 @@ class TicketView(BackdropModal[None]):
         super().__init__()
         self.ticket = ticket
 
+    @staticmethod
+    def runtime_label(state: dict[str, Any], slot: str) -> str:
+        return str(
+            (state.get("runtime") or {}).get(slot, {}).get("status") or "not started"
+        )
+
     def compose(self) -> ComposeResult:
         state = self.ticket.get("state") or {}
         with Vertical(classes="full"):
@@ -119,9 +125,7 @@ class TicketView(BackdropModal[None]):
                     yield Button("Configure", id="dev-config")
                     yield Button("Logs", id="dev-log")
                     yield Static(
-                        (state.get("runtime") or {})
-                        .get("developer", {})
-                        .get("status", "idle"),
+                        self.runtime_label(state, "developer"),
                         classes="runtime",
                         id="developer-runtime",
                     )
@@ -132,6 +136,11 @@ class TicketView(BackdropModal[None]):
                         yield Button("Configure", id="conf-" + sid)
                         yield Button("Logs", id="log-" + sid)
                         yield Button("Remove", id="remove-" + sid)
+                        yield Static(
+                            self.runtime_label(state, sid),
+                            classes="runtime",
+                            id="runtime-" + sid,
+                        )
                 yield Button("+ Reviewer", id="add-reviewer")
             yield Static(
                 "Ticket Markdown is read-only here. Edit its .md file in your editor.",
@@ -162,10 +171,14 @@ class TicketView(BackdropModal[None]):
             self.query_one("#ticket-heading", Static).update(
                 "TICKET " + latest["id"] + " · " + latest["title"]
             )
-        dev = (latest.get("state") or {}).get("runtime") or {}
+        state = latest.get("state") or {}
         self.query_one("#developer-runtime", Static).update(
-            dev.get("developer", {}).get("status", "idle")
+            self.runtime_label(state, "developer")
         )
+        for slot in state.get("reviewers") or []:
+            label = self.query("#runtime-" + slot["id"])
+            if label:
+                label.first(Static).update(self.runtime_label(state, slot["id"]))
         self.ticket = latest
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -218,7 +231,7 @@ class Assignment(BackdropModal[None]):
                 (r for r in state.get("reviewers", []) if r.get("id") == self.slot), {}
             )
         )
-        with Vertical(classes="sm"):
+        with VerticalScroll(classes="sm"):
             with Horizontal(classes="modal-header"):
                 yield Static("SLOT CONFIGURATION · " + self.slot, classes="modal-name")
                 yield Button("×", id="close")

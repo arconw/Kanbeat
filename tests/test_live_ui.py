@@ -6,7 +6,7 @@ from textual.containers import VerticalScroll
 from textual.widgets import Button, Input, Static
 
 from kanbeat.supervisor import Supervisor
-from kanbeat.ui.app import KanbeatApp, NewTicket
+from kanbeat.ui.app import Assignment, KanbeatApp, NewTicket, TicketView
 from kanbeat.ui.board import BoardView, TicketCard
 from kanbeat.ui.preferences import ViewPreferences
 from kanbeat.ui.session_rows import SessionRow, SessionSection
@@ -81,6 +81,93 @@ async def test_startup_renders_board_through_supervisor_socket(tmp_path, monkeyp
         await server.wait_closed()
         supervisor.socket.unlink(missing_ok=True)
         supervisor.lock_stream.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(80, 24), (120, 40)])
+async def test_ticket_slot_controls_have_separate_labels_and_status(
+    tmp_path, monkeypatch, size
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Check the layout")
+    state = supervisor.ticket_state(ticket.id)
+    state["reviewers"] = [{"id": "reviewer-1"}]
+    state["runtime"] = {"developer": {"status": "running"}}
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=size) as pilot:
+        view = TicketView(app.find_ticket(ticket.id))
+        app.push_screen(view)
+        await pilot.pause()
+        for row in view.query(".slot-row"):
+            label = row.query_one(".slot-name", Static)
+            controls = list(row.query(Button))
+            status = row.query_one(".runtime", Static)
+            assert label.region.width >= 14
+            assert label.region.right < controls[0].region.x
+            assert all(
+                before.region.right < after.region.x
+                for before, after in zip(controls, controls[1:])
+            )
+            assert controls[-1].region.right < status.region.x
+            assert label.region.y <= status.region.y < label.region.bottom
+        assert str(view.query_one("#developer-runtime", Static).render()) == "running"
+        assert (
+            str(view.query_one("#runtime-reviewer-1", Static).render()) == "not started"
+        )
+
+
+@pytest.mark.asyncio
+async def test_assignment_actions_remain_reachable_in_compact_terminal(
+    tmp_path, monkeypatch
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Compact form")
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(80, 24)) as pilot:
+        form = Assignment(app.find_ticket(ticket.id), "developer")
+        app.push_screen(form)
+        await pilot.pause()
+        form.query_one(".sm", VerticalScroll).scroll_end(animate=False)
+        await pilot.pause()
+        assert form.query_one("#save", Button).region.bottom <= 24
+
+
+@pytest.mark.asyncio
+async def test_invalid_harness_setting_has_visible_warning(tmp_path, monkeypatch):
+    from kanbeat.ui.settings import Settings
+
+    supervisor = Supervisor(tmp_path)
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.click("#nav-settings")
+        page = app.query_one(Settings)
+        supervisor.runtime.config["default_harness"] = "removed-harness"
+        supervisor.runtime.config["transition_hook"]["harness"] = "missing-hook"
+        await app.refresh_snapshot()
+        first = page.query_one("#cfg-harness-warning", Static)
+        second = page.query_one("#cfg-hook-harness-warning", Static)
+        assert first.display and "removed-harness" in str(first.render())
+        assert second.display and "missing-hook" in str(second.render())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [(80, 24), (130, 35)])
+async def test_board_columns_keep_compact_width_and_order(tmp_path, monkeypatch, size):
+    supervisor = Supervisor(tmp_path)
+    supervisor.board.create("A task")
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=size):
+        lanes = list(app.query("#lanes .lane"))
+        assert len(lanes) == 6
+        assert [lane.region.width for lane in lanes] == [20] * 6
+        assert [
+            after.region.x - before.region.x for before, after in zip(lanes, lanes[1:])
+        ] == [21] * 5
+        actions = list(app.query("#board-page .toolbar Button"))
+        assert all(
+            before.region.right < after.region.x
+            for before, after in zip(actions, actions[1:])
+        )
 
 
 @pytest.mark.asyncio
