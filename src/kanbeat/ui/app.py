@@ -559,7 +559,7 @@ class KanbeatApp(App[None]):
             return False
 
     async def refresh_snapshot(self, force: bool = False) -> None:
-        if self._updating:
+        if self._updating or not self.is_mounted:
             return
         self._updating = True
         try:
