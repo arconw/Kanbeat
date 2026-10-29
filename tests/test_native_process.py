@@ -116,6 +116,7 @@ async def test_group_permission_denial_falls_back_to_owned_child(monkeypatch):
         sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
     )
     identity = process_identity(proc.pid)
+    assert identity is not None
     calls = []
     real_killpg = os.killpg
 
@@ -136,20 +137,16 @@ async def test_group_permission_denial_falls_back_to_owned_child(monkeypatch):
             await proc.wait()
 
 
+
 @pytest.mark.asyncio
 async def test_refuses_group_signal_when_process_identity_changes(monkeypatch):
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "-c", "import time; time.sleep(30)", start_new_session=True
     )
     observed = process_identity(proc.pid)
-    if observed is None:
-        proc.kill()
-        await proc.wait()
-        pytest.skip("OS process birth identity unavailable")
+    assert observed is not None
     calls = []
-    monkeypatch.setattr(
-        "kanbeat.native.os.killpg", lambda *args: calls.append(args)
-    )
+    monkeypatch.setattr("kanbeat.native.os.killpg", lambda *args: calls.append(args))
     try:
         with pytest.raises(RuntimeError, match="changed PID identity"):
             await terminate_process(proc, "not-" + observed)
@@ -161,6 +158,7 @@ async def test_refuses_group_signal_when_process_identity_changes(monkeypatch):
             await proc.wait()
 
 
+
 @pytest.mark.asyncio
 async def test_real_pty_hangup_reaps_owned_child_without_group_reuse():
     master, slave = pty.openpty()
@@ -168,7 +166,12 @@ async def test_real_pty_hangup_reaps_owned_child_without_group_reuse():
     try:
         proc = await asyncio.create_subprocess_exec(
             *pty_child_command(
-                [sys.executable, "-u", "-c", "import time; print('READY', flush=True); time.sleep(30)"]
+                [
+                    sys.executable,
+                    "-u",
+                    "-c",
+                    "import time; print('READY', flush=True); time.sleep(30)",
+                ]
             ),
             stdin=slave,
             stdout=slave,

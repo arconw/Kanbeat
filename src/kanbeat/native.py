@@ -220,7 +220,7 @@ def signal_owned_process(
         raise RuntimeError("Refusing to signal a process with a changed PID identity")
     # A missing identity or a changed process group only permits signaling the
     # subprocess directly. Do not target an unverified/reused process group.
-    if identity is None or current == identity:
+    if identity is not None and current == identity:
         try:
             own_group = os.getpgid(proc.pid) == proc.pid
         except (ProcessLookupError, PermissionError):
