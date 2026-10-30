@@ -61,10 +61,6 @@ async def shutdown(project: Path, confirmed: bool) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) > 1 and sys.argv[1] == "--native-bridge":
-        from .native_events import main as bridge
-
-        raise SystemExit(bridge(sys.argv[2:]))
     if run_internal(sys.argv):
         return
     try:
