@@ -135,7 +135,7 @@ A ticket declares what it waits for with a line in its own Markdown, right after
 Blocked by: #002, #003
 ```
 
-A `## Blocked by` section with one ticket ID per list item is read as well; lines inside code fences are ignored. The "blocks" side is derived and shown in the TUI, never written to files.
+In the inline form every ID needs the `#` prefix, so free text such as `Blocked by: the 2 auth tickets` creates no blocker. A `## Blocked by` section with one ticket ID per list item (the `#` is optional there) is read as well; lines inside code fences are ignored. The "blocks" side is derived and shown in the TUI, never written to files.
 
 - A ticket in Todo starts only when every blocker is in `done/` or `archive/`. Otherwise it stays in Todo until the blockers finish, so a batch of tickets dropped into Todo works through itself in dependency order.
 - Unblocked tickets start in ascending ID order, in parallel, up to `max_parallel`. In a chain of four tickets only the first is started.

@@ -1143,6 +1143,20 @@ class Supervisor:
                 if self.runtime.data["execution"] != "running":
                     return
 
+    def require_unblocked(self, ticket_id: str, column: str, force: bool) -> None:
+        if column != "progress" or force:
+            return
+        waiting = [
+            row["id"]
+            for row in dependencies(self.board.scan()[0])[ticket_id]["blocked_by"]
+            if not row["satisfied"]
+        ]
+        if waiting:
+            raise ValueError(
+                "Blocked by unfinished tickets: "
+                + ", ".join("#" + ticket for ticket in waiting)
+            )
+
     def report_stuck_tickets(self, todo: list[Ticket], tickets: list[Ticket]) -> None:
         problems = dependency_problems(todo, tickets)
         if not problems:
@@ -1330,27 +1344,19 @@ class Supervisor:
                 raise ValueError(
                     "Stop the board before manually moving an active ticket"
                 )
-            await self.terminals.stop_ticket(ticket_id)
             if op == "move":
                 column = str(request["column"])
-                if column == "progress" and not request.get("force"):
-                    waiting = [
-                        row["id"]
-                        for row in dependencies(self.board.scan()[0])[ticket_id][
-                            "blocked_by"
-                        ]
-                        if not row["satisfied"]
-                    ]
-                    if waiting:
-                        raise ValueError(
-                            "Blocked by unfinished tickets: "
-                            + ", ".join("#" + ticket for ticket in waiting)
-                        )
+            else:
+                column = str(request.get("column") or "backlog")
+            if op in ("move", "restore"):
+                self.require_unblocked(ticket_id, column, bool(request.get("force")))
+            await self.terminals.stop_ticket(ticket_id)
+            if op == "move":
                 self.move_ticket(ticket_id, column)
             elif op == "archive":
                 self.move_ticket(ticket_id, "archive")
             elif op == "restore":
-                self.move_ticket(ticket_id, str(request.get("column") or "backlog"))
+                self.move_ticket(ticket_id, column)
             else:
                 self.board.remove_archived(ticket_id)
         elif op == "set_assignment":

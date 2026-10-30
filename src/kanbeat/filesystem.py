@@ -85,6 +85,7 @@ BLOCKED_LINE = re.compile(
 )
 BLOCKED_HEADING = re.compile(r"^#{2,6}\s*blocked[ _-]?by\s*$", re.IGNORECASE)
 TICKET_REF = re.compile(r"(?<![\w.])#?(\d+)(?![\w.])")
+INLINE_REF = re.compile(r"(?<![\w.])#(\d+)(?!\w)(?!\.\d)")
 
 
 def ticket_ref(text: str) -> str:
@@ -105,7 +106,7 @@ def blocker_ids(body: str) -> list[str]:
         refs: list[str] = []
         if line_match:
             in_section = False
-            refs = TICKET_REF.findall(line_match["ids"])
+            refs = INLINE_REF.findall(line_match["ids"])
         elif BLOCKED_HEADING.match(line):
             in_section = True
         elif in_section:

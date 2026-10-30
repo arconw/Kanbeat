@@ -541,6 +541,13 @@ async def test_explicit_move_can_override_a_block(tmp_path: Path):
         await supervisor.dispatch(
             {"op": "move", "ticket": waiting.id, "column": "progress"}
         )
+    supervisor.board.move(waiting.id, "archive")
+    with pytest.raises(ValueError, match="Blocked by unfinished"):
+        await supervisor.dispatch(
+            {"op": "restore", "ticket": waiting.id, "column": "progress"}
+        )
+    assert supervisor.board.find(waiting.id).column == "archive"
+    supervisor.board.move(waiting.id, "todo")
     await supervisor.dispatch(
         {"op": "move", "ticket": waiting.id, "column": "progress", "force": True}
     )

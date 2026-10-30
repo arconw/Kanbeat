@@ -144,7 +144,7 @@ def test_invalid_id_ledger_fails_closed(tmp_path):
 def test_blocked_by_line_and_section_are_parsed_outside_code_fences():
     from kanbeat.filesystem import blocker_ids
 
-    assert blocker_ids("# T\n\nBlocked by: #2, 003 and #0040\n") == [
+    assert blocker_ids("# T\n\nBlocked by: #2, #003 and #0040.\n") == [
         "002",
         "003",
         "040",
@@ -152,11 +152,24 @@ def test_blocked_by_line_and_section_are_parsed_outside_code_fences():
     assert blocker_ids("# T\n- **Blocked by:** #002\n") == ["002"]
     assert blocker_ids(
         "# T\n## Blocked by\n- #002 Title 5\n- 3\n\n## Other\n- 77\n"
-    ) == [
-        "002",
-        "003",
-    ]
+    ) == ["002", "003"]
     assert blocker_ids("# T\n```\nBlocked by: #9\n```\nFixed in 2024.\n") == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Blocked by: the 2 auth tickets",
+        "Blocked by: none, see 3 notes",
+        "Blocked by: 002, 003",
+        "**Blocked by:** none",
+        "Blocked by: #1.2 of the spec",
+    ],
+)
+def test_free_text_after_blocked_by_does_not_create_blockers(line):
+    from kanbeat.filesystem import blocker_ids
+
+    assert blocker_ids("# T\n\n" + line + "\n") == []
 
 
 def test_dependencies_derive_blocks_and_treat_done_and_archive_as_satisfied(
