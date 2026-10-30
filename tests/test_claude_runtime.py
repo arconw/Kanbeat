@@ -27,6 +27,7 @@ class FakeClaudeRuntime:
         self.found = 0
         self.vanish_after = None
         self.configs = 0
+        self.stdin_texts = []
 
     def child_env(self):
         return {"PATH": "/usr/bin"}
@@ -41,7 +42,8 @@ class FakeClaudeRuntime:
             return (0, "", "")
         if "--resume" in args:
             self.session = args[args.index("--resume") + 1]
-        assert self.events_id is not None
+        if self.events_id is None:
+            self.events_id = "resume-events"
         if self.mode == "ok":
             record_event(
                 "hook",
@@ -151,7 +153,8 @@ class FakeClaudeRuntime:
             self.rows = [{"status": "busy", "state": "working"}]
         return (0, "", "")
 
-    async def launch_background(self, args, *, timeout=60):
+    async def launch_background(self, args, *, timeout=60, stdin_text=None):
+        self.stdin_texts.append(stdin_text)
         await self.launch(args)
         return (0, "backgrounded · abc12345\n")
 
@@ -238,7 +241,9 @@ async def test_new_claude_run_uses_settings_and_waits_for_completion(tmp_path):
     assert sessions == [run.session_id]
     args = runtime.launches[0]
     assert "--session-id" not in args
-    assert args[-6:] == ["--model", "claude-x", "--effort", "high", "--", "do work"]
+    assert args[-4:] == ["--model", "claude-x", "--effort", "high"]
+    assert "do work" not in args
+    assert runtime.stdin_texts[0] == "do work"
     assert activities[:3] == ["working", "idle", None]
 
 
@@ -246,12 +251,14 @@ async def test_new_claude_run_uses_settings_and_waits_for_completion(tmp_path):
 async def test_resumed_claude_run_keeps_its_own_settings(tmp_path):
     runtime = FakeClaudeRuntime(tmp_path)
     runtime.rows = [{"status": "busy", "state": "working"}]
+    events_id = "resume-events"
     run = ClaudeRun(
         runtime,
         "continue",
         "session-1",
         tmp_path / "run.log",
         settings=NativeSettings("claude", "template", None, "high"),
+        events_id=events_id,
     )
     original_find = runtime.find
 
@@ -277,11 +284,12 @@ async def test_resumed_claude_run_keeps_its_own_settings(tmp_path):
             "last_assistant_message": "done",
         },
         runtime.events_dir,
-        runtime.events_id,
+        events_id,
     )
     outcome = await asyncio.wait_for(task, timeout=5)
     assert outcome.ok
-    assert "--resume" in runtime.launches[0]
+    assert runtime.launches[0][:3] == ["--bg", "--resume", "session-1"]
+    assert "--settings" not in runtime.launches[0]
     assert "--model" not in runtime.launches[0]
     assert "--effort" not in runtime.launches[0]
 
@@ -294,7 +302,7 @@ async def test_stop_with_a_different_session_id_is_accepted(tmp_path, monkeypatc
     runtime = FakeClaudeRuntime(tmp_path)
     runtime.mode = "ok"
 
-    async def launch(args, *, timeout=60):
+    async def launch(args, *, timeout=60, stdin_text=None):
         runtime.launches.append(list(args))
         record_event(
             "hook",
@@ -407,7 +415,14 @@ async def test_claude_failure_and_stop_are_reported(tmp_path):
 async def test_resume_stops_a_running_session_before_taking_over(tmp_path):
     runtime = FakeClaudeRuntime(tmp_path)
     runtime.rows = [{"status": "busy", "state": "working"}]
-    run = ClaudeRun(runtime, "continue", "session-1", tmp_path / "run.log")
+    runtime.events_id = "resume-events"
+    run = ClaudeRun(
+        runtime,
+        "continue",
+        "session-1",
+        tmp_path / "run.log",
+        events_id="resume-events",
+    )
     original_stop = runtime.stop_session
     stopped = []
 
@@ -459,16 +474,6 @@ async def test_unconfirmed_stop_keeps_session_and_fails(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_oversized_prompt_fails_before_launch(tmp_path):
-    runtime = FakeClaudeRuntime(tmp_path)
-    run = ClaudeRun(runtime, "x" * (96 * 1024 + 1), None, tmp_path / "run.log")
-    outcome = await asyncio.wait_for(run.execute(), timeout=5)
-    assert not outcome.ok
-    assert "too large" in outcome.reason
-    assert not runtime.launches
-
-
-@pytest.mark.asyncio
 async def test_resume_missing_session_is_classified(tmp_path, monkeypatch):
     from kanbeat.claude_runtime import ClaudeRuntime, ClaudeSessionMissing
 
@@ -486,7 +491,14 @@ async def test_resume_missing_session_is_classified(tmp_path, monkeypatch):
 async def test_idle_live_session_is_stopped_before_resume(tmp_path):
     runtime = FakeClaudeRuntime(tmp_path)
     runtime.rows = [{"status": "idle", "state": "working"}]
-    run = ClaudeRun(runtime, "continue", "session-1", tmp_path / "run.log")
+    runtime.events_id = "resume-events"
+    run = ClaudeRun(
+        runtime,
+        "continue",
+        "session-1",
+        tmp_path / "run.log",
+        events_id="resume-events",
+    )
     original_stop = runtime.stop_session
     stopped = []
 

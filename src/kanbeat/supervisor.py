@@ -658,6 +658,14 @@ class Supervisor:
                                     ticket_id, worker, sid
                                 ),
                                 on_activity=activity_changed,
+                                events_id=(
+                                    assignment.get("claude_events_id")
+                                    if resumed
+                                    else None
+                                ),
+                                on_events=lambda events_id: self.record_claude_events(
+                                    ticket_id, worker, events_id
+                                ),
                             )
                         else:
                             run_settings = (
@@ -802,6 +810,18 @@ class Supervisor:
         self.cancelled.discard(key)
         self.job_scopes[key] = (ticket.id, stage, iteration)
         self.jobs[key] = asyncio.create_task(job())
+
+    def record_claude_events(self, ticket_id: str, worker: str, events_id: str) -> None:
+        state = self.ticket_state(ticket_id)
+        if worker == "developer":
+            assignment = state.setdefault("developer", {})
+        else:
+            assignment = next(
+                (r for r in state.get("reviewers", []) if r.get("id") == worker), None
+            )
+        if assignment is not None:
+            assignment["claude_events_id"] = events_id
+            self.save()
 
     def record_session(self, ticket_id: str, worker: str, session: str) -> None:
         state = self.ticket_state(ticket_id)
@@ -1334,6 +1354,7 @@ class Supervisor:
                         encoding="utf-8", errors="replace"
                     )[-8000:]
                 target.pop("session", None)
+                target.pop("claude_events_id", None)
                 # A slot's old verdict is invalid after manual harness replacement.
                 state.setdefault("review_results", {}).pop(slot, None)
                 state.setdefault("runtime", {}).pop(slot, None)

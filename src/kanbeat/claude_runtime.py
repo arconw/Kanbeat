@@ -22,10 +22,10 @@ BACKGROUND_ID = re.compile(r"backgrounded\s*.\s*([0-9a-f]{8})")
 IDLE_GRACE = 5.0
 FAILURE_GRACE = 5.0
 STARTUP_GRACE = 30.0
-EVENT_MAX_AGE = 7 * 24 * 60 * 60
+EVENT_MAX_AGE = 24 * 60 * 60
 STOP_CONFIRM_ATTEMPTS = 20
 STOP_CONFIRM_INTERVAL = 0.1
-MAX_PROMPT_BYTES = 96 * 1024
+STOP_SETTLE = 0.2
 MAX_ROWS = 500
 MAX_MESSAGE = 1_000_000
 
@@ -135,7 +135,11 @@ class ClaudeRuntime:
         )
 
     async def launch_background(
-        self, args: list[str], *, timeout: float = BACKGROUND_TIMEOUT
+        self,
+        args: list[str],
+        *,
+        timeout: float = BACKGROUND_TIMEOUT,
+        stdin_text: str | None = None,
     ) -> tuple[int, str]:
         descriptor, path = tempfile.mkstemp(
             dir=self.state_dir, prefix=".claude-bg-", suffix=".log"
@@ -147,12 +151,22 @@ class ClaudeRuntime:
                     self.executable,
                     *args,
                     cwd=self.project,
-                    stdin=asyncio.subprocess.DEVNULL,
+                    stdin=asyncio.subprocess.PIPE
+                    if stdin_text is not None
+                    else asyncio.subprocess.DEVNULL,
                     stdout=output,
                     stderr=asyncio.subprocess.STDOUT,
                     env=self.child_env(),
                     start_new_session=True,
                 )
+                if stdin_text is not None and process.stdin is not None:
+                    try:
+                        process.stdin.write(stdin_text.encode("utf-8"))
+                        await process.stdin.drain()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                    finally:
+                        process.stdin.close()
                 try:
                     await asyncio.wait_for(process.wait(), timeout=timeout)
                 except asyncio.TimeoutError as error:
@@ -290,7 +304,7 @@ class ClaudeRuntime:
             await asyncio.sleep(self.poll_interval)
 
     async def resume_idle(self, session: str, events_id: str) -> dict[str, Any]:
-        args = ["--bg", "--resume", session, *self.settings_args(events_id)]
+        args = ["--bg", "--resume", session]
         code, output = await self.launch_background(args)
         if code != 0:
             if session_missing(output):
@@ -403,6 +417,8 @@ class ClaudeRun:
         settings: NativeSettings | None = None,
         on_session: Callable[[str], None] | None = None,
         on_activity: Callable[[str | None], None] | None = None,
+        events_id: str | None = None,
+        on_events: Callable[[str], None] | None = None,
     ):
         self.runtime = runtime
         self.prompt = prompt
@@ -411,6 +427,8 @@ class ClaudeRun:
         self.settings = settings
         self.on_session = on_session or (lambda _value: None)
         self.on_activity = on_activity or (lambda _value: None)
+        self.events_id = events_id
+        self.on_events = on_events or (lambda _value: None)
         self.stopping = False
         self.activity: str | None = None
         self.answer = ""
@@ -432,15 +450,12 @@ class ClaudeRun:
     async def execute(self) -> Outcome:
         if self.stopping:
             return Outcome(False, "interrupted before start", self.session_id, "")
-        if len(self.prompt.encode()) > MAX_PROMPT_BYTES:
-            return Outcome(
-                False,
-                "Claude prompt is too large for a command-line invocation",
-                self.session_id,
-                "",
-            )
         resumed = bool(self.session_id)
-        events_id = "run-" + uuid.uuid4().hex[:24]
+        if not self.events_id:
+            self.events_id = "run-" + uuid.uuid4().hex[:24]
+        events_id = self.events_id
+        self.on_events(events_id)
+        offset = 0
         args = ["--bg"]
         if resumed:
             row = None
@@ -471,16 +486,22 @@ class ClaudeRun:
                         "",
                     )
             args += ["--resume", self.session_id]
-        args += self.runtime.settings_args(events_id)
-        if not resumed and self.settings is not None:
-            args += cli_args("claude", self.settings)
-        args += ["--", self.prompt]
+            try:
+                offset = events_path(self.runtime.events_dir, events_id).stat().st_size
+            except OSError:
+                offset = 0
+        else:
+            args += self.runtime.settings_args(events_id)
+            if self.settings is not None:
+                args += cli_args("claude", self.settings)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8") as log:
             log.write("[Kanbeat] Claude background turn. Starting.\n")
             log.flush()
             try:
-                code, output = await self.runtime.launch_background(args)
+                code, output = await self.runtime.launch_background(
+                    args, stdin_text=self.prompt
+                )
             except (ClaudeRuntimeError, OSError) as error:
                 return Outcome(
                     False, f"Claude launch failed: {error}", self.session_id, ""
@@ -526,12 +547,12 @@ class ClaudeRun:
             loop = asyncio.get_running_loop()
             startup_deadline = loop.time() + STARTUP_GRACE
             idle_deadline: float | None = None
-            offset = 0
             seen = False
             saw_activity = False
             saw_process_activity = False
             session_ended = False
             last_stop: dict[str, Any] | None = None
+            stop_deadline: float | None = None
             failure: dict[str, Any] | None = None
             failure_deadline: float | None = None
             row: dict[str, Any] | None = None
@@ -578,6 +599,9 @@ class ClaudeRun:
                             last_stop = record
                             failure = None
                             failure_deadline = None
+                            stop_deadline = loop.time() + (
+                                0 if record.get("stop_hook_active") else STOP_SETTLE
+                            )
                         elif event == "StopFailure":
                             saw_activity = True
                             failure = record
@@ -589,8 +613,16 @@ class ClaudeRun:
                     if last_stop is not None and session_ended:
                         break
                     status = str((row or {}).get("status") or "")
+                    if status in ("busy", "waiting") and last_stop is not None:
+                        stop_deadline = loop.time() + STOP_SETTLE
                     if status == "idle":
-                        if last_stop is not None or failure is not None:
+                        if failure is not None:
+                            break
+                        if (
+                            last_stop is not None
+                            and stop_deadline is not None
+                            and loop.time() >= stop_deadline
+                        ):
                             break
                         if saw_process_activity:
                             if idle_deadline is None:
@@ -641,4 +673,3 @@ class ClaudeRun:
                 return Outcome(True, "completed", self.session_id, self.answer)
             finally:
                 self.activity_update(None)
-                self.runtime.remove_events(events_id)
