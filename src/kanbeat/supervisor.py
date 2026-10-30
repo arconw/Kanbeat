@@ -18,7 +18,14 @@ import signal
 import subprocess
 from typing import Any
 
-from .filesystem import Board, Ticket, ACTIVE, dependencies, unblocked
+from .filesystem import (
+    Board,
+    Ticket,
+    ACTIVE,
+    dependencies,
+    dependency_problems,
+    unblocked,
+)
 from .native import NativeRun, Outcome, VERDICT, available, process_identity
 from .native_settings import NativeSettings, SettingsError, from_codex_thread
 from .claude_runtime import ClaudeRun, ClaudeRuntime
@@ -75,7 +82,7 @@ class Supervisor:
         self.guard = asyncio.Lock()
         self.shutdown_requested = asyncio.Event()
         self._seen_queue = False
-        self._blocked_reported = False
+        self._blocked_signature = ""
         self._reported: set[str] = set()
         self._host_lock = asyncio.Lock()
         self._codex_lock = asyncio.Lock()
@@ -1118,26 +1125,37 @@ class Supervisor:
                 ready = unblocked(todo, tickets)
                 if ready:
                     self._seen_queue = True
-                    self._blocked_reported = False
+                    self._blocked_signature = ""
                     self.move_ticket(ready[0].id, "progress")
                     return
             if not active:
                 if not todo:
+                    self._blocked_signature = ""
                     if self._seen_queue:
                         self.notice("All queued tasks completed")
                         self._seen_queue = False
-                elif not self._blocked_reported:
-                    self._blocked_reported = True
-                    self.notice(
-                        "Todo tickets are waiting for unfinished dependencies",
-                        "warning",
-                    )
+                else:
+                    self.report_stuck_tickets(todo, tickets)
                 return
             self._seen_queue = True
             for ticket in active:
                 await self.advance_ticket(ticket)
                 if self.runtime.data["execution"] != "running":
                     return
+
+    def report_stuck_tickets(self, todo: list[Ticket], tickets: list[Ticket]) -> None:
+        problems = dependency_problems(todo, tickets)
+        if not problems:
+            return
+        text = "Todo tickets cannot start: " + "; ".join(
+            f"#{ticket_id} ({', '.join(reasons)})"
+            for ticket_id, reasons in list(problems.items())[:5]
+        )
+        if len(problems) > 5:
+            text += f"; and {len(problems) - 5} more"
+        if text != self._blocked_signature:
+            self._blocked_signature = text
+            self.notice(text, "warning")
 
     def parallel_limit(self) -> int:
         try:
@@ -1315,7 +1333,7 @@ class Supervisor:
             await self.terminals.stop_ticket(ticket_id)
             if op == "move":
                 column = str(request["column"])
-                if column == "progress":
+                if column == "progress" and not request.get("force"):
                     waiting = [
                         row["id"]
                         for row in dependencies(self.board.scan()[0])[ticket_id][

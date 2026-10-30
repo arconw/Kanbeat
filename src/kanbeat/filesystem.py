@@ -15,8 +15,11 @@ from typing import Any
 
 COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed", "archive")
 ACTIVE = ("progress", "review")
-FILENAME = re.compile(r"^(?P<id>\d{3,})-(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)\.md$")
+FILENAME = re.compile(
+    r"^(?P<id>\d{3,})-(?P<slug>(?!\d+-)[a-z0-9]+(?:-[a-z0-9]+)*)\.md$"
+)
 SLUG = re.compile(r"[^a-z0-9]+")
+NUMBERED_SLUG = re.compile(r"\d+-")
 
 INSTRUCTION = """# Kanbeat ticket-writing guide
 
@@ -160,6 +163,42 @@ def dependencies(tickets: list[Ticket]) -> dict[str, dict[str, Any]]:
     return result
 
 
+def dependency_problems(
+    waiting: list[Ticket], tickets: list[Ticket]
+) -> dict[str, list[str]]:
+    links = dependencies(tickets)
+    by_id = {ticket.id: ticket for ticket in tickets}
+    waiting_ids = {ticket.id for ticket in waiting}
+
+    def reaches(start: str, goal: str, seen: set[str]) -> bool:
+        for row in links[start]["blocked_by"]:
+            target = row["id"]
+            if target == goal:
+                return True
+            if target in waiting_ids and target not in seen:
+                seen.add(target)
+                if reaches(target, goal, seen):
+                    return True
+        return False
+
+    problems: dict[str, list[str]] = {}
+    for ticket in waiting:
+        reasons = []
+        for row in links[ticket.id]["blocked_by"]:
+            if row["satisfied"]:
+                continue
+            blocker = by_id.get(row["id"])
+            if blocker is None:
+                reasons.append(f"#{row['id']} is missing")
+            elif blocker.column in ("backlog", "failed"):
+                reasons.append(f"#{row['id']} is in {blocker.column}")
+        if reaches(ticket.id, ticket.id, set()):
+            reasons.append("dependency cycle")
+        if reasons:
+            problems[ticket.id] = reasons
+    return problems
+
+
 def unblocked(candidates: list[Ticket], tickets: list[Ticket]) -> list[Ticket]:
     links = dependencies(tickets)
     return [ticket for ticket in candidates if not links[ticket.id]["blocked"]]
@@ -280,6 +319,8 @@ class Board:
             ticket_id = self._next_id(tickets)
             slug = SLUG.sub("-", title.lower()).strip("-") or "ticket"
             slug = slug[:72].rstrip("-")
+            if NUMBERED_SLUG.match(slug):
+                slug = "ticket-" + slug
             path = self.root / column / f"{ticket_id}-{slug}.md"
             text = "# " + title.strip() + "\n\n" + body.strip() + "\n"
             # exclusive create: do not overwrite a file created externally

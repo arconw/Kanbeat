@@ -821,14 +821,24 @@ class KanbeatApp(App[None]):
         if ticket is None or ticket["column"] == column:
             return
         step = (ticket["column"], column)
-        if step not in FREE_STEPS and not await self.push_screen_wait(
-            Confirm(
+        blockers = [
+            "#" + row["id"]
+            for row in ticket.get("blocked_by", [])
+            if not row.get("satisfied")
+        ]
+        blocked = column == "progress" and bool(blockers)
+        if step not in FREE_STEPS or blocked:
+            question = (
                 f"Move #{ticket_id} from {step[0].upper()} to {step[1].upper()} "
                 "by hand? Kanbeat normally does this step itself."
             )
-        ):
-            return
-        await self.execute({"op": "move", "ticket": ticket_id, "column": column})
+            if blocked:
+                question += " It is still blocked by " + ", ".join(blockers) + "."
+            if not await self.push_screen_wait(Confirm(question)):
+                return
+        await self.execute(
+            {"op": "move", "ticket": ticket_id, "column": column, "force": blocked}
+        )
 
     @work
     async def confirm_bulk_archive(self) -> None:

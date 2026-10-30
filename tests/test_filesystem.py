@@ -214,3 +214,24 @@ def test_instructions_file_is_upgraded_only_when_it_is_a_known_old_default(
     path.write_text("custom", encoding="utf-8")
     board.ensure()
     assert path.read_text(encoding="utf-8") == "custom"
+
+
+@pytest.mark.parametrize("order", [0, 20, 90, 100, 110, 1000])
+def test_legacy_order_prefixed_filenames_are_never_misparsed(tmp_path: Path, order):
+    board = Board(tmp_path)
+    board.ensure()
+    (board.root / "todo" / f"{order:03d}-001-old.md").write_text(
+        "# Old", encoding="utf-8"
+    )
+    tickets, errors = board.scan()
+    assert not tickets
+    assert len(errors) == 1 and errors[0].startswith("Invalid ticket filename")
+
+
+def test_title_that_starts_with_a_number_still_gets_a_valid_filename(tmp_path: Path):
+    board = Board(tmp_path)
+    board.ensure()
+    ticket = board.create("2024 roadmap", column="todo")
+    assert ticket.path.name == f"{ticket.id}-ticket-2024-roadmap.md"
+    assert not board.scan()[1]
+    assert board.create("3d model").path.name.endswith("-3d-model.md")

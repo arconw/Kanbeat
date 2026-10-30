@@ -471,3 +471,77 @@ async def test_todo_ticket_waits_until_blockers_are_done_or_archived(
     assert columns[waiting[0].id] == "progress"
     assert columns[waiting[1].id] == "progress"
     assert columns[waiting[2].id] == "todo"
+
+
+@pytest.mark.asyncio
+async def test_stuck_tickets_are_named_with_the_reason_and_reported_again_on_change(
+    tmp_path: Path, monkeypatch
+):
+    import kanbeat.supervisor as module
+
+    monkeypatch.setattr(module, "available", lambda _name: True)
+    supervisor = Supervisor(tmp_path)
+    supervisor.runtime.config["default_harness"] = "pi"
+    supervisor.runtime.data["execution"] = "running"
+    parked = supervisor.board.create("Parked", column="backlog")
+    broken = supervisor.board.create("Broken", column="failed")
+    missing = supervisor.board.create(
+        "Typo", "# Typo\n\nBlocked by: #099\n", column="todo"
+    )
+    on_parked = supervisor.board.create(
+        "Parked dep", f"# Parked dep\n\nBlocked by: #{parked.id}\n", column="todo"
+    )
+    on_broken = supervisor.board.create(
+        "Broken dep", f"# Broken dep\n\nBlocked by: #{broken.id}\n", column="todo"
+    )
+    first = supervisor.board.create("Loop A", column="todo")
+    second = supervisor.board.create(
+        "Loop B", f"# Loop B\n\nBlocked by: #{first.id}\n", column="todo"
+    )
+    first.path.write_text(f"# Loop A\n\nBlocked by: #{second.id}\n", encoding="utf-8")
+
+    async def start(ticket, worker, assignment):
+        raise AssertionError("no worker may start")
+
+    monkeypatch.setattr(supervisor, "start_worker", start)
+
+    def warnings():
+        return [
+            row["message"]
+            for row in supervisor.runtime.data["notices"]
+            if row["level"] == "warning"
+        ]
+
+    for _ in range(3):
+        await supervisor.reconcile()
+    assert len(warnings()) == 1
+    text = warnings()[0]
+    assert f"#{missing.id} (#099 is missing)" in text
+    assert f"#{on_parked.id} (#{parked.id} is in backlog)" in text
+    assert f"#{on_broken.id} (#{broken.id} is in failed)" in text
+    assert f"#{first.id} (dependency cycle)" in text
+    assert f"#{second.id} (dependency cycle)" in text
+
+    supervisor.board.move(on_broken.id, "done")
+    for _ in range(3):
+        await supervisor.reconcile()
+    assert len(warnings()) == 2
+    assert f"#{on_broken.id}" not in warnings()[-1]
+    assert f"#{on_parked.id} (#{parked.id} is in backlog)" in warnings()[-1]
+
+
+@pytest.mark.asyncio
+async def test_explicit_move_can_override_a_block(tmp_path: Path):
+    supervisor = Supervisor(tmp_path)
+    blocker = supervisor.board.create("Blocker", column="backlog")
+    waiting = supervisor.board.create(
+        "Waiting", f"# Waiting\n\nBlocked by: #{blocker.id}\n", column="todo"
+    )
+    with pytest.raises(ValueError, match="Blocked by unfinished"):
+        await supervisor.dispatch(
+            {"op": "move", "ticket": waiting.id, "column": "progress"}
+        )
+    await supervisor.dispatch(
+        {"op": "move", "ticket": waiting.id, "column": "progress", "force": True}
+    )
+    assert supervisor.board.find(waiting.id).column == "progress"

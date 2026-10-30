@@ -988,3 +988,28 @@ async def test_card_menu_jumps_to_any_column_and_archives_last(tmp_path, monkeyp
         await pilot.click("#yes")
         await pilot.pause(0.3)
         assert supervisor.board.find(ticket.id).column == "archive"
+
+
+@pytest.mark.asyncio
+async def test_moving_a_blocked_ticket_to_progress_needs_an_explicit_confirmation(
+    tmp_path, monkeypatch
+):
+    from kanbeat.ui.app import Confirm
+
+    supervisor = Supervisor(tmp_path)
+    blocker = supervisor.board.create("Blocker", column="backlog")
+    waiting = supervisor.board.create(
+        "Waiting", f"# Waiting\n\nBlocked by: #{blocker.id}\n", column="todo"
+    )
+    app = client(supervisor, monkeypatch)
+    app.tab = "board"
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        await pilot.click("#right-" + waiting.id)
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, Confirm)
+        text = str(app.screen.query_one(".modal-text").render())
+        assert f"still blocked by #{blocker.id}" in text
+        await pilot.click("#yes")
+        await pilot.pause(0.3)
+        assert supervisor.board.find(waiting.id).column == "progress"
