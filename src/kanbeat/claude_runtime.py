@@ -69,6 +69,7 @@ class ClaudeRuntime:
         return external_environment(self.base_env)
 
     def remove_events(self, events_id: str) -> None:
+        self._config_states.pop(events_id, None)
         path = events_path(self.events_dir, events_id)
         for candidate in (path, path.with_suffix(".settings.json")):
             try:
@@ -86,6 +87,15 @@ class ClaudeRuntime:
             try:
                 if path.is_file() and path.stat().st_mtime < cutoff:
                     path.unlink()
+                    name = path.name
+                    if name.endswith(".jsonl"):
+                        events_id = name[: -len(".jsonl")]
+                    elif name.endswith(".settings.json"):
+                        events_id = name[: -len(".settings.json")]
+                    else:
+                        events_id = ""
+                    if events_id:
+                        self._config_states.pop(events_id, None)
             except OSError:
                 continue
 
@@ -264,11 +274,17 @@ class ClaudeRuntime:
 
     async def resume_idle(self, session: str, events_id: str) -> dict[str, Any]:
         args = ["--bg", "--resume", session, *self.settings_args(events_id)]
-        code, stdout, stderr = await self.launch(args)
+        code, output = await self.launch_background(args)
         if code != 0:
+            if session_missing(output):
+                raise ClaudeSessionMissing(
+                    "Claude session no longer exists: " + output.strip()[:300]
+                )
             raise ClaudeRuntimeError(
-                "Could not resume Claude session: " + (stderr or stdout).strip()[:300]
+                "Could not resume Claude session: " + output.strip()[:300]
             )
+        if self.background_id(output) is None:
+            raise ClaudeRuntimeError("Claude did not report a background session")
         self.track(session)
         return await self.wait_running(session, ATTACH_TIMEOUT)
 
@@ -303,9 +319,15 @@ class ClaudeRuntime:
             events_id,
             {"offset": 0, "model": None, "effort": None, "activity": None},
         )
-        records, offset = read_events(
-            events_path(self.events_dir, events_id), int(state["offset"])
-        )
+        path = events_path(self.events_dir, events_id)
+        try:
+            info = path.stat()
+            size, inode = info.st_size, info.st_ino
+        except OSError:
+            size, inode = 0, None
+        if inode != state.get("inode") or size < int(state["offset"]):
+            state.update(offset=0, model=None, effort=None, activity=None, inode=inode)
+        records, offset = read_events(path, int(state["offset"]))
         state["offset"] = offset
         for record in records:
             event = record.get("event")
@@ -396,7 +418,17 @@ class ClaudeRun:
                     row.get("status") in ("busy", "waiting")
                     or row.get("state") == "blocked"
                 ):
-                    await self.runtime.stop_session(self.session_id)
+                    try:
+                        stopped = await self.runtime.stop_session(self.session_id)
+                    except (ClaudeRuntimeError, OSError, asyncio.TimeoutError):
+                        stopped = False
+                    if not stopped:
+                        return Outcome(
+                            False,
+                            "Could not stop the running Claude session before resume",
+                            self.session_id,
+                            "",
+                        )
             except (ClaudeRuntimeError, OSError):
                 pass
             args += ["--resume", self.session_id]

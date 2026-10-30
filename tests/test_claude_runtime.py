@@ -416,6 +416,58 @@ async def test_recover_orphans_stops_recorded_claude_sessions(tmp_path):
     assert "thread-1" not in runtime.stopped
 
 
+@pytest.mark.asyncio
+async def test_resume_missing_session_is_classified(tmp_path, monkeypatch):
+    from kanbeat.claude_runtime import ClaudeRuntime, ClaudeSessionMissing
+
+    runtime = ClaudeRuntime(tmp_path, tmp_path / "state")
+
+    async def missing(args, *, timeout=60):
+        return 1, "No conversation found with session ID: abc"
+
+    monkeypatch.setattr(runtime, "launch_background", missing)
+    with pytest.raises(ClaudeSessionMissing):
+        await runtime.resume_idle("session-1", "events")
+
+
+@pytest.mark.asyncio
+async def test_resume_fails_when_running_session_cannot_be_stopped(tmp_path):
+    runtime = FakeClaudeRuntime(tmp_path)
+    runtime.rows = [{"status": "busy", "state": "working"}]
+
+    async def refuse(session):
+        return False
+
+    runtime.stop_session = refuse
+    run = ClaudeRun(runtime, "continue", "session-1", tmp_path / "run.log")
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert not outcome.ok
+    assert "Could not stop" in outcome.reason
+    assert not runtime.launches
+
+
+def test_config_state_resets_after_file_truncation(tmp_path):
+    runtime = FakeClaudeRuntime(tmp_path)
+    events_id = "config"
+    record_event(
+        "statusline",
+        {"session_id": "s", "model": {"id": "first"}},
+        runtime.events_dir,
+        events_id,
+    )
+    settings, _activity = runtime.config_state(events_id)
+    assert settings.model == "first"
+    runtime._config_states[events_id]["offset"] = 10000
+    record_event(
+        "hook",
+        {"hook_event_name": "SessionStart", "session_id": "s", "model": "second"},
+        runtime.events_dir,
+        events_id,
+    )
+    settings, _activity = runtime.config_state(events_id)
+    assert settings.model == "second"
+
+
 def test_event_files_are_removed_and_old_files_are_swept(tmp_path):
     from kanbeat.claude_runtime import ClaudeRuntime
 
@@ -437,6 +489,9 @@ def test_event_files_are_removed_and_old_files_are_swept(tmp_path):
     assert keep.exists()
     runtime.remove_events("keep")
     assert not keep.exists()
+    runtime.config_state("keep")
+    runtime.remove_events("keep")
+    assert "keep" not in runtime._config_states
 
 
 def test_session_missing_detection():
