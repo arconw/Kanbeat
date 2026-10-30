@@ -1,0 +1,338 @@
+import asyncio
+import sys
+from types import SimpleNamespace
+
+import pytest
+
+from kanbeat.codex_host import CodexNotification, CodexRpcError
+from kanbeat.codex_runtime import CodexRun
+from kanbeat.native_settings import NativeSettings
+from kanbeat.supervisor import Supervisor
+
+
+class FakeSubscription:
+    def __init__(self):
+        self.queue = asyncio.Queue()
+        self.closed = False
+
+    async def get(self):
+        return await self.queue.get()
+
+    def push(self, method, params):
+        self.queue.put_nowait(CodexNotification(method, params, params.get("threadId")))
+
+    def close(self):
+        self.closed = True
+        self.queue.put_nowait(CodexNotification("__closed__", {}, None))
+
+
+class FakeCodexHost:
+    def __init__(self):
+        self.running = True
+        self.threads = {}
+        self.started_threads = []
+        self.turns = []
+        self.observed = []
+        self.interrupted = []
+        self.subscription = None
+        self.settings = NativeSettings("codex", "gpt-x", "openai", "high")
+
+    async def start_thread(self, cwd, *, model=None, model_provider=None):
+        self.started_threads.append((cwd, model, model_provider))
+        thread_id = "01a18660-9ca4-71c0-ba25-81426f4ca65d"
+        self.threads[thread_id] = {
+            "id": thread_id,
+            "model": model or "gpt-x",
+            "modelProvider": model_provider or "openai",
+            "reasoningEffort": self.settings.effort,
+            "status": {"type": "idle"},
+            "cwd": str(cwd),
+        }
+        return SimpleNamespace(thread_id=thread_id)
+
+    async def observe_thread(self, session):
+        self.observed.append(session)
+        if session not in self.threads:
+            raise CodexRpcError(-32600, "thread not found")
+
+    async def start_turn(self, session, text, *, model=None, effort=None):
+        self.turns.append((session, text, model, effort))
+        turn_id = "turn-1"
+        subscription = self.subscription
+        assert subscription is not None
+        subscription.push(
+            "turn/started",
+            {
+                "threadId": session,
+                "turn": {"id": turn_id, "status": "inProgress", "items": []},
+            },
+        )
+        subscription.push(
+            "item/started",
+            {
+                "threadId": session,
+                "turnId": turn_id,
+                "item": {"id": "item-1", "type": "commandExecution"},
+            },
+        )
+        subscription.push(
+            "item/completed",
+            {
+                "threadId": session,
+                "turnId": turn_id,
+                "item": {
+                    "id": "item-2",
+                    "type": "agentMessage",
+                    "text": "KANBEAT_VERDICT: approve",
+                },
+            },
+        )
+        subscription.push(
+            "turn/completed",
+            {
+                "threadId": session,
+                "turn": {
+                    "id": turn_id,
+                    "status": "completed",
+                    "items": [
+                        {
+                            "id": "item-2",
+                            "type": "agentMessage",
+                            "text": "KANBEAT_VERDICT: approve",
+                        }
+                    ],
+                },
+            },
+        )
+        return {"id": turn_id}
+
+    async def interrupt_turn(self, session, turn_id):
+        self.interrupted.append((session, turn_id))
+        if self.subscription is not None:
+            self.subscription.push(
+                "turn/completed",
+                {
+                    "threadId": session,
+                    "turn": {"id": turn_id, "status": "interrupted", "items": []},
+                },
+            )
+
+    def subscribe(self, session):
+        self.subscription = FakeSubscription()
+        return self.subscription
+
+    async def read_thread(self, session):
+        if session not in self.threads:
+            raise CodexRpcError(-32600, "thread not found")
+        return SimpleNamespace(
+            thread_id=session,
+            model=self.threads[session]["model"],
+            model_provider=self.threads[session]["modelProvider"],
+            reasoning_effort=self.threads[session]["reasoningEffort"],
+            status="idle",
+            active_flags=(),
+            to_dict=lambda: self.threads[session],
+            cwd=self.threads[session]["cwd"],
+        )
+
+    def viewer_argv(self, session):
+        return [sys.executable, "-u", "-c", "import time; time.sleep(30)"]
+
+    def child_env(self):
+        return {"PATH": "/usr/bin"}
+
+    def tui_argv(self, *, thread_id=None, prompt=None):
+        return self.viewer_argv(thread_id)
+
+    async def set_thread_name(self, session, name):
+        self.threads[session]["name"] = name
+
+    async def close(self):
+        self.running = False
+
+
+@pytest.fixture
+def codex_supervisor(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path)
+    host = FakeCodexHost()
+    supervisor.codex = host
+
+    async def fake_host():
+        return host
+
+    monkeypatch.setattr(supervisor, "codex_host", fake_host)
+    monkeypatch.setattr("kanbeat.supervisor.available", lambda name: True)
+    monkeypatch.setattr("kanbeat.session_groups.available", lambda name: True)
+    return supervisor, host
+
+
+@pytest.mark.asyncio
+async def test_new_codex_thread_uses_settings_and_reports_events(tmp_path):
+    host = FakeCodexHost()
+    activities = []
+    sessions = []
+    run = CodexRun(
+        host,
+        "do work",
+        None,
+        tmp_path,
+        tmp_path / "run.log",
+        settings=NativeSettings("codex", "gpt-x", "openai", "high"),
+        on_session=sessions.append,
+        on_activity=activities.append,
+    )
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert outcome.ok
+    assert outcome.answer == "KANBEAT_VERDICT: approve"
+    assert sessions == ["01a18660-9ca4-71c0-ba25-81426f4ca65d"]
+    assert host.started_threads == [(tmp_path, "gpt-x", "openai")]
+    assert host.turns[0][2:] == ("gpt-x", "high")
+    assert activities[:3] == ["working", "idle", None]
+    assert "KANBEAT_VERDICT: approve" in (tmp_path / "run.log").read_text()
+
+
+@pytest.mark.asyncio
+async def test_resume_keeps_native_settings_and_detects_missing_thread(tmp_path):
+    host = FakeCodexHost()
+    thread = "01a18660-9ca4-71c0-ba25-81426f4ca65d"
+    host.threads[thread] = {
+        "id": thread,
+        "model": "own-model",
+        "modelProvider": "own-provider",
+        "reasoningEffort": "low",
+        "status": {"type": "idle"},
+        "cwd": str(tmp_path),
+    }
+    run = CodexRun(
+        host,
+        "continue",
+        thread,
+        tmp_path,
+        tmp_path / "run.log",
+        settings=NativeSettings("codex", "template", "template", "high"),
+    )
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert outcome.ok
+    assert host.observed == [thread]
+    assert host.turns[0][2:] == (None, None)
+
+    missing = CodexRun(
+        host,
+        "continue",
+        "01a18660-0000-7000-8000-000000000000",
+        tmp_path,
+        tmp_path / "missing.log",
+    )
+    outcome = await asyncio.wait_for(missing.execute(), timeout=5)
+    assert not outcome.ok
+    assert outcome.resume_missing
+
+
+@pytest.mark.asyncio
+async def test_stop_interrupts_turn_and_returns_interrupted(tmp_path):
+    host = FakeCodexHost()
+
+    async def slow_start(session, text, *, model=None, effort=None):
+        host.turns.append((session, text, model, effort))
+        host.subscription.push(
+            "turn/started",
+            {
+                "threadId": session,
+                "turn": {"id": "turn-1", "status": "inProgress", "items": []},
+            },
+        )
+        return {"id": "turn-1"}
+
+    host.start_turn = slow_start
+    run = CodexRun(host, "long", None, tmp_path, tmp_path / "run.log")
+    task = asyncio.create_task(run.execute())
+    for _ in range(100):
+        if run.turn_id is not None:
+            break
+        await asyncio.sleep(0.01)
+    await run.stop()
+    outcome = await asyncio.wait_for(task, timeout=5)
+    assert not outcome.ok
+    assert "Stop" in outcome.reason
+    assert host.interrupted == [(run.session_id, "turn-1")]
+
+
+@pytest.mark.asyncio
+async def test_codex_config_session_opens_and_updates_settings(codex_supervisor):
+    supervisor, host = codex_supervisor
+    result = await supervisor.dispatch(
+        {"op": "session_config_open", "harness": "codex"}
+    )
+    terminal = supervisor.terminals.entries[result["terminal"]]
+    try:
+        assert terminal["role"] == "config"
+        assert terminal["native_session"] in host.threads
+        assert host.threads[terminal["native_session"]]["name"] == "Kanbeat config"
+        await supervisor.sync_codex_config()
+        assert supervisor.runtime.data["native_settings"]["codex"] == {
+            "model": "gpt-x",
+            "provider": "openai",
+            "effort": "high",
+        }
+        again = await supervisor.dispatch(
+            {"op": "session_config_open", "harness": "codex"}
+        )
+        assert again["terminal"] == result["terminal"]
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_codex_worker_attaches_live_and_is_read_only_while_running(
+    codex_supervisor,
+):
+    supervisor, host = codex_supervisor
+    ticket = supervisor.board.create("Task", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["phase"] = "progress"
+    state["iteration"] = 1
+    state["developer"]["harness"] = "codex"
+    state["developer"]["session"] = "01a18660-9ca4-71c0-ba25-81426f4ca65d"
+    host.threads[state["developer"]["session"]] = {
+        "id": state["developer"]["session"],
+        "model": "gpt-x",
+        "modelProvider": "openai",
+        "reasoningEffort": "high",
+        "status": {"type": "idle"},
+        "cwd": str(supervisor.board.project),
+    }
+    supervisor.runtime.data["execution"] = "running"
+    try:
+        attached = await supervisor.dispatch(
+            {"op": "terminal_attach", "ticket": ticket.id}
+        )
+        terminal = supervisor.terminals.get(attached["terminal"])
+        assert terminal.entry["owner"] == "attach"
+        assert terminal.entry["native_session"] == state["developer"]["session"]
+        assert supervisor.snapshot()["terminals"][attached["terminal"]]["attached"]
+
+        job = asyncio.create_task(asyncio.sleep(10))
+        supervisor.jobs[supervisor.slot_key(ticket.id, "developer")] = job
+        try:
+            snapshot = await supervisor.dispatch(
+                {"op": "terminal_snapshot", "terminal": attached["terminal"]}
+            )
+            assert snapshot["read_only"] is True
+            with pytest.raises(ValueError, match="live worker monitor"):
+                await supervisor.dispatch(
+                    {
+                        "op": "terminal_input",
+                        "terminal": attached["terminal"],
+                        "kind": "paste",
+                        "text": "x",
+                    }
+                )
+        finally:
+            job.cancel()
+            await asyncio.gather(job, return_exceptions=True)
+        snapshot = await supervisor.dispatch(
+            {"op": "terminal_snapshot", "terminal": attached["terminal"]}
+        )
+        assert snapshot["read_only"] is False
+    finally:
+        await supervisor.terminals.stop()

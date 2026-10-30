@@ -553,6 +553,14 @@ class CodexAppServerHost:
         return self._identity
 
     @property
+    def running(self) -> bool:
+        return (
+            not self._closed
+            and self._process is not None
+            and self._process.returncode is None
+        )
+
+    @property
     def client(self) -> CodexRpcClient:
         if self._client is None or self._client.closed:
             raise CodexDisconnected("Codex app-server host is not connected")
@@ -764,8 +772,19 @@ class CodexAppServerHost:
     ) -> CodexSubscription:
         return self.client.subscribe(thread_id, methods=methods, maxsize=maxsize)
 
-    async def start_thread(self, cwd: Path) -> CodexThreadMetadata:
-        result = await self.request("thread/start", {"cwd": os.fspath(cwd)})
+    async def start_thread(
+        self,
+        cwd: Path,
+        *,
+        model: str | None = None,
+        model_provider: str | None = None,
+    ) -> CodexThreadMetadata:
+        params: dict[str, Any] = {"cwd": os.fspath(cwd)}
+        if model is not None:
+            params["model"] = model
+        if model_provider is not None:
+            params["modelProvider"] = model_provider
+        result = await self.request("thread/start", params)
         return parse_thread_metadata(result)
 
     async def read_thread(self, thread_id: str) -> CodexThreadMetadata:
@@ -804,6 +823,47 @@ class CodexAppServerHost:
     async def stop_observing(self, thread_id: str) -> None:
         await self.request(
             "thread/unsubscribe", {"threadId": validate_thread_id(thread_id)}
+        )
+
+    async def set_thread_name(self, thread_id: str, name: str) -> None:
+        if not name or len(name) > MAX_VALUE_CHARS or CONTROL.search(name):
+            raise CodexHostError("Invalid Codex thread name")
+        await self.request(
+            "thread/name/set",
+            {"threadId": validate_thread_id(thread_id), "name": name},
+        )
+
+    async def start_turn(
+        self,
+        thread_id: str,
+        text: str,
+        *,
+        model: str | None = None,
+        effort: str | None = None,
+    ) -> dict[str, Any]:
+        if not text or len(text) > 8 * 1024 * 1024:
+            raise CodexHostError("Invalid Codex turn input")
+        params: dict[str, Any] = {
+            "threadId": validate_thread_id(thread_id),
+            "input": [{"type": "text", "text": text}],
+        }
+        if model is not None:
+            params["model"] = model
+        if effort is not None:
+            params["effort"] = effort
+        result = await self.request("turn/start", params)
+        turn = result.get("turn") if isinstance(result, dict) else None
+        if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
+            raise CodexHostError("Codex turn/start response has no turn")
+        return turn
+
+    async def interrupt_turn(self, thread_id: str, turn_id: str) -> None:
+        await self.request(
+            "turn/interrupt",
+            {
+                "threadId": validate_thread_id(thread_id),
+                "turnId": turn_id[:MAX_VALUE_CHARS],
+            },
         )
 
     async def wait_for_new_thread(

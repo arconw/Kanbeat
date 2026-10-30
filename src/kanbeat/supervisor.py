@@ -20,6 +20,9 @@ from typing import Any
 
 from .filesystem import Board, Ticket, ACTIVE
 from .native import NativeRun, Outcome, VERDICT, available, process_identity
+from .native_settings import NativeSettings, SettingsError, from_codex_thread
+from .codex_host import CodexAppServerHost, CodexHostError
+from .codex_runtime import CodexRun
 from .state import LocalState
 from .hooks import TransitionHooks
 from .terminals import Terminals
@@ -48,7 +51,10 @@ class Supervisor:
         self.hooks = TransitionHooks(self.runtime)
         self.terminals = Terminals(self.runtime)
         self.session_groups = SessionGroups(
-            self.runtime, self.terminals, lambda: self.opencode_host()
+            self.runtime,
+            self.terminals,
+            lambda: self.opencode_host(),
+            lambda: self.codex_host(),
         )
         self.state_dir = self.board.root / ".state"
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -65,8 +71,11 @@ class Supervisor:
         self._seen_queue = False
         self._reported: set[str] = set()
         self._host_lock = asyncio.Lock()
+        self._codex_lock = asyncio.Lock()
         self.opencode: OpenCodeServeHost | None = None
+        self.codex: CodexAppServerHost | None = None
         self.runtime.data.setdefault("hosts", {})
+        self.runtime.data.setdefault("native_settings", {})
 
     def record_host(self, kind: str, identity: RuntimeIdentity) -> None:
         self.runtime.data.setdefault("hosts", {})[kind] = identity.to_dict()
@@ -95,6 +104,96 @@ class Supervisor:
             self.record_host("opencode", identity)
             return host
 
+    async def codex_host(self) -> CodexAppServerHost:
+        async with self._codex_lock:
+            host = self.codex
+            if host is not None and host.running:
+                return host
+            if host is not None:
+                await host.close()
+                self.codex = None
+                self.forget_host("codex")
+            host = CodexAppServerHost(
+                cwd=self.board.project, env=external_environment()
+            )
+            try:
+                identity = await host.start()
+            except BaseException:
+                await host.close()
+                raise
+            self.codex = host
+            self.record_host("codex", identity)
+            return host
+
+    def native_settings(self, harness: str) -> NativeSettings | None:
+        raw = self.runtime.data.get("native_settings", {}).get(harness)
+        try:
+            settings = NativeSettings.from_dict(harness, raw)
+        except SettingsError:
+            self.runtime.data.setdefault("native_settings", {}).pop(harness, None)
+            self.save()
+            return None
+        return settings if not settings.empty else None
+
+    def save_native_settings(self, settings: NativeSettings) -> None:
+        values = settings.to_dict()
+        target = self.runtime.data.setdefault("native_settings", {})
+        if not values:
+            if target.pop(settings.harness, None) is not None:
+                self.save()
+            return
+        if target.get(settings.harness) != values:
+            target[settings.harness] = values
+            self.save()
+
+    async def sync_codex_config(self) -> None:
+        if self.codex is None or not self.codex.running:
+            return
+        entry = self.session_groups.config_entry("codex")
+        if entry is None or not entry.get("native_session"):
+            return
+        try:
+            metadata = await asyncio.wait_for(
+                self.codex.read_thread(entry["native_session"]), timeout=3
+            )
+        except (CodexHostError, OSError, asyncio.TimeoutError) as error:
+            logging.getLogger(__name__).debug("Codex config read failed: %s", error)
+            return
+        settings = from_codex_thread(metadata.to_dict())
+        activity = self.codex_activity(metadata)
+        changed = False
+        if entry.get("activity") != activity:
+            if activity:
+                entry["activity"] = activity
+            else:
+                entry.pop("activity", None)
+            changed = True
+        values = settings.to_dict()
+        target = self.runtime.data.setdefault("native_settings", {})
+        if values:
+            if target.get("codex") != values:
+                target["codex"] = values
+                changed = True
+        elif target.pop("codex", None) is not None:
+            changed = True
+        if changed:
+            self.save()
+
+    @staticmethod
+    def codex_activity(metadata: Any) -> str | None:
+        status = getattr(metadata, "status", None)
+        flags = getattr(metadata, "active_flags", ())
+        if status == "active":
+            waiting = any(
+                flag in ("waitingOnApproval", "waitingOnUserInput") for flag in flags
+            )
+            return "waiting" if waiting else "working"
+        if status == "idle":
+            return "idle"
+        if status == "systemError":
+            return "error"
+        return None
+
     async def opencode_model(self, host: Any) -> Any:
         entry = self.session_groups.opencode_config_entry()
         if entry is None or not entry.get("native_session"):
@@ -120,6 +219,11 @@ class Supervisor:
             if host is not None:
                 await host.close()
             self.forget_host("opencode")
+        async with self._codex_lock:
+            host, self.codex = self.codex, None
+            if host is not None:
+                await host.close()
+            self.forget_host("codex")
 
     def acquire(self) -> None:
         self.lock_stream = self.lock_path.open("a+b")
@@ -146,6 +250,10 @@ class Supervisor:
 
     def slot_key(self, ticket: str, worker: str) -> str:
         return f"{ticket}:{worker}"
+
+    def slot_active(self, ticket: str, worker: str) -> bool:
+        job = self.jobs.get(self.slot_key(ticket, worker))
+        return job is not None and not job.done()
 
     def ticket_state(self, ticket_id: str) -> dict[str, Any]:
         return self.runtime.ticket(ticket_id)
@@ -387,6 +495,7 @@ class Supervisor:
                 self.save()
 
             shared = None
+            settings = self.native_settings(harness) if harness != "opencode" else None
             try:
                 while key not in self.cancelled:
                     try:
@@ -400,8 +509,10 @@ class Supervisor:
                         command_env = None
                         if harness == "opencode":
                             shared = await self.opencode_host()
+                        elif harness == "codex":
+                            shared = await self.codex_host()
                         resumed = bool(session)
-                        if shared is not None and session:
+                        if harness == "opencode" and shared is not None and session:
                             try:
                                 await shared.read_session(session)
                             except OpenCodeHttpError as error:
@@ -415,7 +526,7 @@ class Supervisor:
                             current, worker, resumed, updated=updated
                         )
                         model = None
-                        if shared is not None:
+                        if harness == "opencode" and shared is not None:
                             if not session:
                                 model = await self.opencode_model(shared)
                                 validate_prompt(prompt_text)
@@ -431,22 +542,42 @@ class Supervisor:
                                     session, prompt=prompt_text, model=model
                                 ), None
 
-                        native = NativeRun(
-                            harness,
-                            prompt_text,
-                            session,
-                            self.board.project,
-                            self.state_dir / "logs" / f"{ticket_id}-{worker}.log",
-                            on_session=lambda sid: self.record_session(
-                                ticket_id, worker, sid
-                            ),
-                            on_process=lambda pid, token: self.record_process(
-                                ticket_id, worker, pid, token
-                            ),
-                            on_activity=activity_changed,
-                            command_builder=command_builder,
-                            env=command_env,
-                        )
+                        if harness == "codex":
+                            native = CodexRun(
+                                shared,
+                                prompt_text,
+                                session,
+                                self.board.project,
+                                self.state_dir / "logs" / f"{ticket_id}-{worker}.log",
+                                settings=None if resumed else settings,
+                                on_session=lambda sid: self.record_session(
+                                    ticket_id, worker, sid
+                                ),
+                                on_activity=activity_changed,
+                            )
+                        else:
+                            run_settings = (
+                                {}
+                                if resumed or not settings
+                                else {"settings": settings}
+                            )
+                            native = NativeRun(
+                                harness,
+                                prompt_text,
+                                session,
+                                self.board.project,
+                                self.state_dir / "logs" / f"{ticket_id}-{worker}.log",
+                                on_session=lambda sid: self.record_session(
+                                    ticket_id, worker, sid
+                                ),
+                                on_process=lambda pid, token: self.record_process(
+                                    ticket_id, worker, pid, token
+                                ),
+                                on_activity=activity_changed,
+                                command_builder=command_builder,
+                                env=command_env,
+                                **run_settings,
+                            )
                         self.runs[key] = native
                         entry["status"] = "running"
                         self.save()
@@ -776,6 +907,7 @@ class Supervisor:
             tickets, errors = self.board.scan()
             # Detect moves/deletions of active tickets before assigning fresh work.
             await self.terminals.reconcile(tickets)
+            await self.sync_codex_config()
             await self.stop_stale_jobs(tickets)
             if errors:
                 for error in errors:

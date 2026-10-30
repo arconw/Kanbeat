@@ -4,6 +4,7 @@ import asyncio
 import math
 from typing import Any, TYPE_CHECKING
 
+from .codex_host import CodexHostError, CodexRpcError
 from .host_process import HostError
 from .native import process_identity
 from .opencode_host import OpenCodeHttpError
@@ -82,26 +83,46 @@ async def terminal_request(
             or supervisor.runtime.config["default_harness"]
         )
         session = assignment.get("session")
-        if harness != "opencode":
+        if harness not in ("opencode", "codex"):
             raise ValueError(
-                "Live attach is only available for OpenCode sessions; "
+                "Live attach is available for OpenCode and Codex sessions; "
                 "stop the board to open this slot's task terminal"
             )
         if not isinstance(session, str) or not session:
-            raise ValueError("The OpenCode session has not been reported yet")
-        try:
-            host = await supervisor.opencode_host()
-            await host.read_session(session)
-        except OpenCodeHttpError as error:
-            if error.status == 404:
-                assignment.pop("session", None)
-                supervisor.save()
-                raise ValueError(
-                    "The OpenCode session is no longer available; start the worker again"
-                ) from None
-            raise ValueError(str(error)) from error
-        except (HostError, OSError) as error:
-            raise ValueError(str(error)) from error
+            raise ValueError(
+                "The " + harness.title() + " session has not been reported yet"
+            )
+        if harness == "opencode":
+            try:
+                host = await supervisor.opencode_host()
+                await host.read_session(session)
+            except OpenCodeHttpError as error:
+                if error.status == 404:
+                    assignment.pop("session", None)
+                    supervisor.save()
+                    raise ValueError(
+                        "The OpenCode session is no longer available; start the worker again"
+                    ) from None
+                raise ValueError(str(error)) from error
+            except (HostError, OSError) as error:
+                raise ValueError(str(error)) from error
+        else:
+            try:
+                host = await supervisor.codex_host()
+                await host.read_thread(session)
+            except CodexRpcError as error:
+                if (
+                    "not found" in error.message.lower()
+                    or "no rollout" in error.message.lower()
+                ):
+                    assignment.pop("session", None)
+                    supervisor.save()
+                    raise ValueError(
+                        "The Codex thread is no longer available; start the worker again"
+                    ) from None
+                raise ValueError(str(error)) from error
+            except (CodexHostError, HostError, OSError) as error:
+                raise ValueError(str(error)) from error
         for terminal_id, entry in supervisor.terminals.entries.items():
             if (
                 entry.get("owner") == "attach"
@@ -162,7 +183,9 @@ async def terminal_request(
     ):
         terminal = supervisor.terminals.get(str(request["terminal"]))
         if op == "terminal_snapshot":
-            return terminal.snapshot(request.get("history_position"))
+            return monitor_snapshot(
+                supervisor, terminal, terminal.snapshot(request.get("history_position"))
+            )
         if op == "terminal_wait":
             try:
                 revision = int(request.get("revision"))
@@ -186,7 +209,9 @@ async def terminal_request(
                 for task in (wait_screen, wait_shutdown):
                     task.cancel()
                 await asyncio.gather(wait_screen, wait_shutdown, return_exceptions=True)
-            return terminal.snapshot(request.get("history_position"))
+            return monitor_snapshot(
+                supervisor, terminal, terminal.snapshot(request.get("history_position"))
+            )
         if op == "terminal_stop":
             if request.get("confirmed") is not True:
                 raise ValueError("Explicit terminal stop confirmation required")
@@ -195,6 +220,11 @@ async def terminal_request(
             terminal.resize(int(request["rows"]), int(request["cols"]))
         elif terminal.entry["status"] != "running":
             raise ValueError("Terminal is no longer running")
+        elif monitor_only(supervisor, terminal):
+            raise ValueError(
+                "This is a live worker monitor; wait for the turn or use Board Stop "
+                "before sending input"
+            )
         else:
             events = request.get("events")
             if events is None:
@@ -230,8 +260,23 @@ async def terminal_request(
                 return {"accepted": accepted, "revision": terminal.revision}
             if not accepted:
                 raise ValueError("Terminal input queue is full")
-        return terminal.snapshot()
+        return monitor_snapshot(supervisor, terminal, terminal.snapshot())
     raise ValueError("Unsupported terminal command")
+
+
+def monitor_only(supervisor: Supervisor, terminal: TerminalSession) -> bool:
+    entry = terminal.entry
+    if entry.get("owner") != "attach":
+        return False
+    ticket, slot = entry.get("ticket"), entry.get("slot")
+    return bool(ticket and slot and supervisor.slot_active(ticket, slot))
+
+
+def monitor_snapshot(
+    supervisor: Supervisor, terminal: TerminalSession, snapshot: dict[str, Any]
+) -> dict[str, Any]:
+    snapshot["read_only"] = monitor_only(supervisor, terminal)
+    return snapshot
 
 
 class InputCapture:

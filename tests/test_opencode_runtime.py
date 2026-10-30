@@ -460,8 +460,10 @@ async def test_terminal_attach_rejects_unsupported_harness(runtime):
     supervisor, _host = runtime
     ticket = supervisor.board.create("Task", column="progress")
     state = supervisor.ticket_state(ticket.id)
-    state["developer"]["harness"] = "codex"
+    state["developer"]["harness"] = "pi"
     state["developer"]["session"] = "native-1"
-    state["runtime"]["developer"] = {"status": "running", "harness": "codex"}
-    with pytest.raises(ValueError, match="only available for OpenCode"):
+    state["runtime"]["developer"] = {"status": "running", "harness": "pi"}
+    with pytest.raises(
+        ValueError, match="Live attach is available for OpenCode and Codex"
+    ):
         await supervisor.dispatch({"op": "terminal_attach", "ticket": ticket.id})
