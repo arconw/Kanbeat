@@ -106,6 +106,7 @@ class SessionGroups:
                 entry.pop("pid", None)
                 entry.pop("process_identity", None)
                 self.state.save()
+            self.inactive(entry)
             try:
                 host = await self.opencode_host()
             except (OpenCodeHostError, OSError) as error:
@@ -118,7 +119,6 @@ class SessionGroups:
                 session_id = metadata.session_id
                 entry["native_session"] = session_id
                 self.state.save()
-            self.inactive(entry)
             await self.terminals.restart(
                 entry["id"],
                 argv=host.viewer_argv(session_id),
