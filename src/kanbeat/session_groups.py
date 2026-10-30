@@ -223,7 +223,7 @@ class SessionGroups:
     @staticmethod
     async def codex_thread_exists(host: Any, session_id: str) -> bool:
         try:
-            await host.read_thread(session_id)
+            await host.observe_thread(session_id)
         except CodexRpcError as error:
             if thread_missing(error):
                 return False

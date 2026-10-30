@@ -17,6 +17,7 @@ from .native_settings import NativeSettings
 
 WAITING_FLAGS = frozenset({"waitingOnApproval", "waitingOnUserInput"})
 MAX_ANSWER = 1_000_000
+FAILURE_GRACE = 5.0
 
 
 def _turn(params: dict[str, Any]) -> dict[str, Any]:
@@ -106,6 +107,8 @@ class CodexRun:
             self.answer_from_turn(turn)
             status = str(turn.get("status") or "")
             if status == "completed":
+                self.failed = False
+                self.error = ""
                 self.activity_update("idle")
                 return
             self.failed = True
@@ -229,9 +232,23 @@ class CodexRun:
                         return Outcome(
                             False, "interrupted during launch", self.session_id, ""
                         )
+                    loop = asyncio.get_running_loop()
+                    failed_deadline: float | None = None
                     while not self.finished:
-                        notification = await self.subscription.get()
+                        try:
+                            notification = await self.subscription.get(0.25)
+                        except CodexTimeout:
+                            if (
+                                self.failed
+                                and failed_deadline is not None
+                                and loop.time() >= failed_deadline
+                            ):
+                                break
+                            await asyncio.sleep(0)
+                            continue
                         self.handle(notification)
+                        if self.failed and failed_deadline is None:
+                            failed_deadline = loop.time() + FAILURE_GRACE
                     if self.interrupted:
                         return Outcome(
                             False,
@@ -241,8 +258,7 @@ class CodexRun:
                         )
                     outcome = Outcome(
                         not self.failed and not self.stopping,
-                        self.error
-                        or ("completed" if not self.failed else "Codex turn failed"),
+                        self.error if self.failed else "completed",
                         self.session_id,
                         self.answer,
                     )

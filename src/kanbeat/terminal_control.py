@@ -109,7 +109,7 @@ async def terminal_request(
         else:
             try:
                 host = await supervisor.codex_host()
-                await host.read_thread(session)
+                await host.observe_thread(session)
             except CodexRpcError as error:
                 if thread_missing(error):
                     if supervisor.slot_active(ticket.id, slot):
