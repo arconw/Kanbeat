@@ -21,6 +21,7 @@ from typing import Any
 from .filesystem import Board, Ticket, ACTIVE
 from .native import NativeRun, Outcome, VERDICT, available, process_identity
 from .native_settings import NativeSettings, SettingsError, from_codex_thread
+from .claude_runtime import ClaudeRun, ClaudeRuntime
 from .codex_host import CodexAppServerHost, CodexHostError
 from .codex_runtime import CodexRun
 from .state import LocalState
@@ -48,16 +49,20 @@ class Supervisor:
         self.board = Board(project)
         self.board.ensure()
         self.runtime = LocalState(self.board)
-        self.hooks = TransitionHooks(self.runtime)
+        self.hooks = TransitionHooks(
+            self.runtime, lambda harness: self.native_settings(harness)
+        )
         self.terminals = Terminals(self.runtime)
+        self.state_dir = self.board.root / ".state"
+        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.claude = ClaudeRuntime(self.board.project, self.state_dir)
         self.session_groups = SessionGroups(
             self.runtime,
             self.terminals,
             lambda: self.opencode_host(),
             lambda: self.codex_host(),
+            self.claude,
         )
-        self.state_dir = self.board.root / ".state"
-        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.socket = socket_path(self.board.project)
         self.lock_path = self.state_dir / "supervisor.lock"
         self.lock_stream = None
@@ -155,6 +160,62 @@ class Supervisor:
             target[settings.harness] = values
             self.save()
 
+    async def sync_opencode_config(self) -> None:
+        entry = self.session_groups.config_entry("opencode")
+        if entry is None or not entry.get("native_session"):
+            return
+        if entry["id"] not in self.terminals.sessions or entry.get("status") not in (
+            "starting",
+            "running",
+        ):
+            return
+        host = self.opencode
+        if host is None or not host.running:
+            return
+        try:
+            status = await asyncio.wait_for(
+                host.session_status(entry["native_session"]), timeout=3
+            )
+        except (OpenCodeHostError, OSError, asyncio.TimeoutError) as error:
+            logging.getLogger(__name__).debug("OpenCode config read failed: %s", error)
+            return
+        activity = {"busy": "working", "retry": "waiting", "idle": "idle"}.get(status)
+        if entry.get("activity") != activity:
+            if activity:
+                entry["activity"] = activity
+            else:
+                entry.pop("activity", None)
+            self.save()
+
+    async def sync_claude_config(self) -> None:
+        entry = self.session_groups.config_entry("claude")
+        if entry is None or not entry.get("native_session"):
+            return
+        if entry["id"] not in self.terminals.sessions or entry.get("status") not in (
+            "starting",
+            "running",
+        ):
+            return
+        events_id = entry.get("events_id")
+        changed = False
+        settings = None
+        activity = None
+        if isinstance(events_id, str) and events_id:
+            settings, activity = self.claude.config_state(events_id)
+            values = settings.to_dict() if settings is not None else {}
+            target = self.runtime.data.setdefault("native_settings", {})
+            if values and target.get("claude") != values:
+                target["claude"] = values
+                changed = True
+        if entry.get("activity") != activity:
+            if activity:
+                entry["activity"] = activity
+            else:
+                entry.pop("activity", None)
+            changed = True
+        if changed:
+            self.save()
+
     async def sync_codex_config(self) -> None:
         if self.codex is None or not self.codex.running:
             return
@@ -243,6 +304,7 @@ class Supervisor:
         return metadata.model
 
     async def close_hosts(self) -> None:
+        await self.claude.close()
         async with self._host_lock:
             host, self.opencode = self.opencode, None
             if host is not None:
@@ -584,6 +646,18 @@ class Supervisor:
                                 ),
                                 on_activity=activity_changed,
                             )
+                        elif harness == "claude":
+                            native = ClaudeRun(
+                                self.claude,
+                                prompt_text,
+                                session,
+                                self.state_dir / "logs" / f"{ticket_id}-{worker}.log",
+                                settings=None if resumed else settings,
+                                on_session=lambda sid: self.record_session(
+                                    ticket_id, worker, sid
+                                ),
+                                on_activity=activity_changed,
+                            )
                         else:
                             run_settings = (
                                 {}
@@ -631,6 +705,7 @@ class Supervisor:
                             self.save()
                             continue
                         if result.ok:
+                            entry.pop("error", None)
                             if self.content_hash(current) != content_hash:
                                 # Do not accept an obsolete Developer completion or verdict.
                                 entry["status"] = "stale"
@@ -660,6 +735,7 @@ class Supervisor:
                                 entry["attempts"] = 0
                                 self.save()
                                 return
+                        entry["error"] = result.reason[:400]
                         entry["attempts"] = int(entry.get("attempts", 0)) + 1
                         entry["status"] = "recovering"
                         self.notice(
@@ -812,6 +888,29 @@ class Supervisor:
         self.save()
         self.notice("Board running")
 
+    def claude_sessions(self) -> set[str]:
+        sessions: set[str] = set()
+        for state in self.runtime.data.get("tickets", {}).values():
+            assignments = [state.get("developer") or {}]
+            assignments.extend(
+                row for row in state.get("reviewers", []) if isinstance(row, dict)
+            )
+            for assignment in assignments:
+                session = assignment.get("session")
+                if isinstance(session, str) and session:
+                    sessions.add(session)
+            for entry in (state.get("runtime") or {}).values():
+                if entry.get("harness") == "claude":
+                    session = entry.get("session")
+                    if isinstance(session, str) and session:
+                        sessions.add(session)
+        for entry in self.terminals.entries.values():
+            if entry.get("harness") == "claude":
+                session = entry.get("native_session")
+                if isinstance(session, str) and session:
+                    sessions.add(session)
+        return sessions
+
     async def recover_orphans(self) -> None:
         """On restart reconcile owned CLI processes whose transports cannot be recovered.
 
@@ -821,6 +920,14 @@ class Supervisor:
         previous = self.runtime.data.get("execution") == "running"
         if previous:
             self.runtime.data["execution"] = "stopped"
+        for session in self.claude_sessions():
+            try:
+                await self.claude.stop_session(session)
+            except (RuntimeError, OSError, asyncio.TimeoutError) as exc:
+                self.runtime.notice(
+                    f"claude: could not stop recorded background session: {exc}",
+                    "error",
+                )
         for kind, record in list(self.runtime.data.get("hosts", {}).items()):
             try:
                 runtime = RuntimeIdentity.from_dict(record)
@@ -937,6 +1044,8 @@ class Supervisor:
             # Detect moves/deletions of active tickets before assigning fresh work.
             await self.terminals.reconcile(tickets)
             await self.sync_codex_config()
+            await self.sync_opencode_config()
+            await self.sync_claude_config()
             await self.stop_stale_jobs(tickets)
             if errors:
                 for error in errors:

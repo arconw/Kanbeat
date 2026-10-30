@@ -171,7 +171,7 @@ class TicketView(BackdropModal[None]):
                         )
                 yield Button("+ Reviewer", id="add-reviewer")
                 yield Static(
-                    "OpenCode and Codex sessions reattach live. Other harnesses require Board Stop.",
+                    "OpenCode, Codex and Claude sessions reattach live. Pi requires Board Stop.",
                     classes="hint",
                 )
             yield Static(
@@ -305,7 +305,7 @@ class Assignment(BackdropModal[None]):
             yield Static("Custom Prompt", classes="field")
             yield TextArea(str(value.get("cp") or ""), id="cp")
             yield Static(
-                "Terminal uses saved slot settings and reattaches live OpenCode or Codex sessions; "
+                "Terminal uses saved slot settings and reattaches live OpenCode, Codex or Claude sessions; "
                 "other harnesses require Board Stop. Open starts a separate harness "
                 "configuration session and does not save these edits.",
                 classes="hint",
