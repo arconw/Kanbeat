@@ -56,6 +56,7 @@ class Supervisor:
         self.state_dir = self.board.root / ".state"
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.claude = ClaudeRuntime(self.board.project, self.state_dir)
+        self.claude.sweep_events()
         self.session_groups = SessionGroups(
             self.runtime,
             self.terminals,

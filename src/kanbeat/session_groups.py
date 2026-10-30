@@ -479,6 +479,9 @@ class SessionGroups:
                             await self.claude_runtime.stop_session(session_id)
                         except (ClaudeRuntimeError, OSError):
                             pass
+                    events_id = entry.get("events_id")
+                    if isinstance(events_id, str) and events_id:
+                        self.claude_runtime.remove_events(events_id)
                 session = self.terminals.sessions.pop(terminal_id, None)
                 if session is not None:
                     session.close()

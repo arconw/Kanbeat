@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import time
 import uuid
 from typing import Any, Callable
 
@@ -21,6 +22,7 @@ BACKGROUND_ID = re.compile(r"backgrounded\s*.\s*([0-9a-f]{8})")
 IDLE_GRACE = 5.0
 FAILURE_GRACE = 5.0
 STARTUP_GRACE = 30.0
+EVENT_MAX_AGE = 7 * 24 * 60 * 60
 MAX_ROWS = 500
 MAX_MESSAGE = 1_000_000
 
@@ -50,6 +52,27 @@ class ClaudeRuntime:
 
     def child_env(self) -> dict[str, str]:
         return external_environment(self.base_env)
+
+    def remove_events(self, events_id: str) -> None:
+        path = events_path(self.events_dir, events_id)
+        for candidate in (path, path.with_suffix(".settings.json")):
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
+
+    def sweep_events(self, max_age: float = EVENT_MAX_AGE) -> None:
+        try:
+            entries = list(self.events_dir.iterdir())
+        except OSError:
+            return
+        cutoff = time.time() - max_age
+        for path in entries:
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                continue
 
     def settings_args(self, events_id: str) -> list[str]:
         return claude_settings_args(
@@ -359,7 +382,7 @@ class ClaudeRun:
         args += self.runtime.settings_args(events_id)
         if not resumed and self.settings is not None:
             args += cli_args("claude", self.settings)
-        args.append(self.prompt)
+        args += ["--", self.prompt]
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8") as log:
             log.write("[Kanbeat] Claude background turn. Starting.\n")
@@ -524,3 +547,4 @@ class ClaudeRun:
                 return Outcome(True, "completed", self.session_id, self.answer)
             finally:
                 self.activity_update(None)
+                self.runtime.remove_events(events_id)

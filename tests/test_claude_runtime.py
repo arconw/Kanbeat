@@ -192,6 +192,9 @@ class FakeClaudeRuntime:
 
         return ClaudeRuntime.config_state(self, events_id)
 
+    def remove_events(self, events_id):
+        return None
+
     async def start_config(self, events_id):
         self.events_id = events_id
         self.rows = [{"status": "idle", "state": "working"}]
@@ -221,7 +224,7 @@ async def test_new_claude_run_uses_settings_and_waits_for_completion(tmp_path):
     assert sessions == [run.session_id]
     args = runtime.launches[0]
     assert "--session-id" not in args
-    assert args[-5:] == ["--model", "claude-x", "--effort", "high", "do work"]
+    assert args[-6:] == ["--model", "claude-x", "--effort", "high", "--", "do work"]
     assert activities[:3] == ["working", "idle", None]
 
 
@@ -381,6 +384,29 @@ async def test_recover_orphans_stops_recorded_claude_sessions(tmp_path):
     await supervisor.recover_orphans()
     assert set(runtime.stopped) == {"session-1", "session-2"}
     assert "thread-1" not in runtime.stopped
+
+
+def test_event_files_are_removed_and_old_files_are_swept(tmp_path):
+    from kanbeat.claude_runtime import ClaudeRuntime
+
+    runtime = ClaudeRuntime(tmp_path, tmp_path / "state")
+    runtime.events_dir.mkdir(parents=True)
+    old = runtime.events_dir / "old.jsonl"
+    old.write_text("{}")
+    old_sidecar = runtime.events_dir / "old.settings.json"
+    old_sidecar.write_text("{}")
+    keep = runtime.events_dir / "keep.jsonl"
+    keep.write_text("{}")
+    stamp = 1
+    import os
+
+    os.utime(old, (stamp, stamp))
+    os.utime(old_sidecar, (stamp, stamp))
+    runtime.sweep_events(max_age=60)
+    assert not old.exists() and not old_sidecar.exists()
+    assert keep.exists()
+    runtime.remove_events("keep")
+    assert not keep.exists()
 
 
 def test_config_state_maps_hook_activity(tmp_path):
