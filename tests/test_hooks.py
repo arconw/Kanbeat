@@ -140,6 +140,7 @@ async def test_full_queue_lifecycle_serializes_hooks(supervisor, monkeypatch):
     import kanbeat.supervisor as supervisor_module
 
     observed = []
+    supervisor.runtime.config["default_harness"] = "pi"
 
     class FakeRun:
         stopping = False

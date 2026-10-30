@@ -75,6 +75,8 @@ class TerminalView(BackdropModal[None]):
         self.scroll_position = None
         self.view_epoch = 0
         self.last_snapshot = {}
+        self.read_only = False
+        self.read_only_notified = False
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="full"):
@@ -88,6 +90,7 @@ class TerminalView(BackdropModal[None]):
             yield Static(
                 "Ctrl+\\ Detach · Wheel scroll · Shift+wheel output history · Detach keeps it running",
                 classes="terminal-hint",
+                id="terminal-hint",
             )
             yield TerminalDisplay(id="terminal-display")
 
@@ -150,6 +153,17 @@ class TerminalView(BackdropModal[None]):
     def apply_snapshot(self, snapshot: dict) -> None:
         self.revision = snapshot["revision"]
         self.last_snapshot = snapshot
+        read_only = bool(snapshot.get("read_only"))
+        if read_only != self.read_only:
+            self.read_only = read_only
+            self.read_only_notified = False
+            hint = (
+                "Live worker monitor: input is disabled until this turn ends. "
+                "Ctrl+\\ Detach · Shift+wheel output history"
+                if read_only
+                else "Ctrl+\\ Detach · Wheel scroll · Shift+wheel output history · Detach keeps it running"
+            )
+            self.query_one("#terminal-hint", Static).update(hint)
         if self.scroll_position is not None:
             self.scroll_position = (
                 snapshot["scroll_position"] if snapshot["historical"] else None
@@ -160,6 +174,8 @@ class TerminalView(BackdropModal[None]):
             title += f" / {snapshot['dropped_replies']} terminal replies dropped"
         if snapshot["historical"]:
             title += " / output history"
+        if snapshot.get("read_only"):
+            title += " / monitor"
         if title != self.heading:
             self.heading = title
             self.query_one("#terminal-heading", Static).update(title)
@@ -191,6 +207,14 @@ class TerminalView(BackdropModal[None]):
         self.app.notify(message, severity="error")
 
     async def send_input(self, values: dict) -> None:
+        if self.read_only:
+            if not self.read_only_notified:
+                self.read_only_notified = True
+                self.app.notify(
+                    "Live worker monitor is read-only until the turn ends",
+                    severity="warning",
+                )
+            return
         if self.scroll_position is not None and values.get("kind") != "wheel":
             await self.go_live()
         try:
@@ -223,7 +247,7 @@ class TerminalView(BackdropModal[None]):
         snapshot = self.last_snapshot
         if not snapshot:
             return
-        if not event.shift and self.scroll_position is None:
+        if not self.read_only and not event.shift and self.scroll_position is None:
             if snapshot.get("mouse_tracking") or snapshot.get("alternate_scroll"):
                 await self.send_input(
                     {

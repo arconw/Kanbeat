@@ -62,6 +62,7 @@ async def test_modified_ticket_is_redispatched_to_same_session(
     import kanbeat.supervisor as module
 
     supervisor = Supervisor(tmp_path)
+    supervisor.runtime.config["default_harness"] = "pi"
     ticket = supervisor.board.create("Build", "Before change", column="progress")
     state = supervisor.ticket_state(ticket.id)
     state["phase"] = "progress"
@@ -116,6 +117,7 @@ async def test_worker_activity_is_persisted_and_cleared(tmp_path: Path, monkeypa
     import kanbeat.supervisor as module
 
     supervisor = Supervisor(tmp_path)
+    supervisor.runtime.config["default_harness"] = "pi"
     ticket = supervisor.board.create("Activity", column="progress")
     state = supervisor.ticket_state(ticket.id)
     state["phase"] = "progress"
@@ -206,6 +208,7 @@ async def test_external_move_interrupts_old_worker(tmp_path: Path, monkeypatch):
     import kanbeat.supervisor as module
 
     supervisor = Supervisor(tmp_path)
+    supervisor.runtime.config["default_harness"] = "pi"
     ticket = supervisor.board.create("Implement", "Details", column="progress")
     state = supervisor.ticket_state(ticket.id)
     state["phase"] = "progress"
@@ -257,6 +260,7 @@ async def test_reviewer_failure_stops_parallel_workers(tmp_path: Path, monkeypat
     import kanbeat.supervisor as module
 
     supervisor = Supervisor(tmp_path)
+    supervisor.runtime.config["default_harness"] = "pi"
     ticket = supervisor.board.create("Review", "Please review", column="review")
     state = supervisor.ticket_state(ticket.id)
     state["phase"] = "review"

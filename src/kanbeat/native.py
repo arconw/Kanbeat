@@ -19,6 +19,7 @@ import subprocess
 from typing import Any, Callable
 
 from .launcher import external_environment
+from .native_settings import NativeSettings, SettingsError, cli_args, native_id
 
 HARNESS = {"codex": "codex", "claude": "claude", "opencode": "opencode", "pi": "pi"}
 VERDICT = re.compile(r"(?m)^KANBEAT_VERDICT:\s*(approve|changes_requested)\s*$")
@@ -30,33 +31,47 @@ def available(name: str) -> bool:
 
 
 def command(
-    name: str, prompt: str, session_id: str | None
+    name: str,
+    prompt: str,
+    session_id: str | None,
+    settings: NativeSettings | None = None,
 ) -> tuple[list[str], bytes | None]:
     """Native CLI argv; ticket contents are never interpolated into a shell."""
+    extra = cli_args(name, settings)
+    session_id = native_id(session_id)
     if name == "codex":
         if session_id:
             return [
                 "codex",
                 "exec",
                 "resume",
+                *extra,
                 session_id,
                 "-",
                 "--json",
             ], prompt.encode()
-        return ["codex", "exec", "--json", "-"], prompt.encode()
+        return ["codex", "exec", *extra, "--json", "-"], prompt.encode()
     if name == "claude":
-        argv = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
+        argv = [
+            "claude",
+            "-p",
+            prompt,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            *extra,
+        ]
         if session_id:
             argv += ["--resume", session_id]
         return argv, None
     if name == "opencode":
-        argv = ["opencode", "run", "--format", "json"]
+        argv = ["opencode", "run", "--format", "json", *extra]
         if session_id:
             argv += ["--session", session_id]
         argv.append(prompt)
         return argv, None
     if name == "pi":
-        argv = ["pi", "--mode", "json"]
+        argv = ["pi", "--mode", "json", *extra]
         if session_id:
             argv += ["--session", session_id]
         argv.append(prompt)
@@ -302,6 +317,7 @@ class NativeRun:
         ]
         | None = None,
         env: dict[str, str] | None = None,
+        settings: NativeSettings | None = None,
     ):
         self.harness = harness
         self.prompt = prompt
@@ -313,6 +329,7 @@ class NativeRun:
         self.on_activity = on_activity or (lambda _value: None)
         self.command_builder = command_builder
         self.env = env
+        self.settings = settings
         self.process: asyncio.subprocess.Process | None = None
         self.stopping = False
 
@@ -326,8 +343,20 @@ class NativeRun:
     async def execute(self) -> Outcome:
         if self.stopping:
             return Outcome(False, "interrupted before start", self.session_id, "")
-        builder = self.command_builder or command
-        args, stdin_payload = builder(self.harness, self.prompt, self.session_id)
+        builder = self.command_builder
+        try:
+            if builder is None:
+                args, stdin_payload = command(
+                    self.harness, self.prompt, self.session_id, self.settings
+                )
+            else:
+                args, stdin_payload = builder(
+                    self.harness, self.prompt, self.session_id
+                )
+        except SettingsError as exc:
+            return Outcome(
+                False, f"Invalid native settings: {exc}", self.session_id, ""
+            )
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         stream = EventStream(self.harness)
         error_bytes = bytearray()

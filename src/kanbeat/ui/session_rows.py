@@ -32,7 +32,7 @@ def worker_is_active(entry):
 def live_session(ticket, slot):
     state = ticket.get("state") or {}
     runtime = (state.get("runtime") or {}).get(slot) or {}
-    if runtime.get("harness") != "opencode":
+    if runtime.get("harness") not in ("opencode", "codex"):
         return None
     assignment = (
         state.get("developer")

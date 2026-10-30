@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Awaitable, Callable
 import uuid
 
+from .codex_host import CodexHostError, CodexRpcError, thread_missing
 from .native import available, process_identity
 from .opencode_host import OpenCodeHostError, OpenCodeHttpError
 from .state import LocalState
@@ -24,10 +25,12 @@ class SessionGroups:
         state: LocalState,
         terminals: Terminals,
         opencode_host: Callable[[], Awaitable[Any]] | None = None,
+        codex_host: Callable[[], Awaitable[Any]] | None = None,
     ):
         self.state = state
         self.terminals = terminals
         self.opencode_host = opencode_host
+        self.codex_host = codex_host
         self.config_lock = asyncio.Lock()
         self.groups = state.data.setdefault("custom", {}).setdefault("groups", {})
 
@@ -59,13 +62,13 @@ class SessionGroups:
         ):
             raise ValueError("Stop the session and resolve orphan recovery first")
 
-    def opencode_config_entry(self) -> dict[str, Any] | None:
+    def config_entry(self, harness: str) -> dict[str, Any] | None:
         matches = [
             entry
             for entry in self.terminals.entries.values()
             if entry.get("owner") == "custom"
             and entry.get("role") == "config"
-            and entry.get("harness") == "opencode"
+            and entry.get("harness") == harness
         ]
         return next(
             (
@@ -75,6 +78,9 @@ class SessionGroups:
             ),
             matches[-1] if matches else None,
         )
+
+    def opencode_config_entry(self) -> dict[str, Any] | None:
+        return self.config_entry("opencode")
 
     async def open_opencode_config(self) -> dict[str, Any]:
         async with self.config_lock:
@@ -141,6 +147,91 @@ class SessionGroups:
         )
         return {"terminal": terminal_id}
 
+    async def open_codex_config(self) -> dict[str, Any]:
+        async with self.config_lock:
+            return await self._open_codex_config()
+
+    async def _open_codex_config(self) -> dict[str, Any]:
+        if self.codex_host is None:
+            raise ValueError("Codex host provider is unavailable")
+        entry = self.config_entry("codex")
+        if entry is not None:
+            attached = entry["id"] in self.terminals.sessions
+            status = entry.get("status")
+            if attached and status == "stopping":
+                raise ValueError(
+                    "Terminal is still stopping; wait for it to exit before reopening"
+                )
+            if attached and status in ("starting", "running"):
+                return {"terminal": entry["id"]}
+            if not attached and status in ("starting", "running", "stopping"):
+                pid = entry.get("pid")
+                current = process_identity(int(pid)) if pid is not None else None
+                saved = entry.get("process_identity")
+                if current is not None and (not saved or current == saved):
+                    raise ValueError(
+                        "An orphaned session process is still running; "
+                        "resolve it before reopening"
+                    )
+                entry["status"] = "interrupted"
+                entry.pop("pid", None)
+                entry.pop("process_identity", None)
+                self.state.save()
+            self.inactive(entry)
+            try:
+                host = await self.codex_host()
+            except (CodexHostError, OSError) as error:
+                raise ValueError(f"Could not start Codex host: {error}") from error
+            session_id = entry.get("native_session")
+            if not session_id or not await self.codex_thread_exists(host, session_id):
+                metadata = await self.create_codex_thread(host)
+                session_id = metadata.thread_id
+                entry["native_session"] = session_id
+                self.state.save()
+            await self.terminals.restart(
+                entry["id"],
+                argv=host.tui_argv(thread_id=session_id),
+                env=host.child_env(),
+            )
+            return {"terminal": entry["id"]}
+        try:
+            host = await self.codex_host()
+        except (CodexHostError, OSError) as error:
+            raise ValueError(f"Could not start Codex host: {error}") from error
+        metadata = await self.create_codex_thread(host)
+        terminal_id = await self.terminals.create(
+            "codex",
+            owner="custom",
+            title="Configure codex",
+            role="config",
+            native_session=metadata.thread_id,
+            argv=host.tui_argv(thread_id=metadata.thread_id),
+            env=host.child_env(),
+        )
+        return {"terminal": terminal_id}
+
+    async def create_codex_thread(self, host: Any) -> Any:
+        try:
+            metadata = await host.start_thread(self.state.board.project)
+            await host.set_thread_name(metadata.thread_id, "Kanbeat config")
+            return metadata
+        except (CodexHostError, OSError) as error:
+            raise ValueError(
+                f"Could not create Codex config thread: {error}"
+            ) from error
+
+    @staticmethod
+    async def codex_thread_exists(host: Any, session_id: str) -> bool:
+        try:
+            await host.observe_thread(session_id)
+        except CodexRpcError as error:
+            if thread_missing(error):
+                return False
+            raise ValueError(f"Could not read Codex config thread: {error}") from error
+        except (CodexHostError, OSError) as error:
+            raise ValueError(f"Could not read Codex config thread: {error}") from error
+        return True
+
     async def create_opencode_session(self, host: Any) -> Any:
         try:
             return await host.create_session(directory=self.state.board.project)
@@ -202,6 +293,8 @@ class SessionGroups:
                 raise ValueError("Independent session harness unavailable: " + harness)
             if harness == "opencode" and self.opencode_host is not None:
                 return await self.open_opencode_config()
+            if harness == "codex" and self.codex_host is not None:
+                return await self.open_codex_config()
             matches = [
                 entry
                 for entry in self.terminals.entries.values()
