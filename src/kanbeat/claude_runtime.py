@@ -31,6 +31,21 @@ class ClaudeRuntimeError(RuntimeError):
     pass
 
 
+class ClaudeSessionMissing(ClaudeRuntimeError):
+    pass
+
+
+MISSING_SESSION = re.compile(
+    r"(?:no conversation found|session.{0,40}(?:not found|does not exist)"
+    r"|no such session)",
+    re.I,
+)
+
+
+def session_missing(text: Any) -> bool:
+    return isinstance(text, str) and bool(MISSING_SESSION.search(text))
+
+
 class ClaudeRuntime:
     def __init__(
         self,
@@ -284,36 +299,42 @@ class ClaudeRuntime:
         return session
 
     def config_state(self, events_id: str) -> tuple[NativeSettings | None, str | None]:
-        records, _offset = read_events(events_path(self.events_dir, events_id))
-        model = None
-        effort = None
-        activity = None
+        state = self._config_states.setdefault(
+            events_id,
+            {"offset": 0, "model": None, "effort": None, "activity": None},
+        )
+        records, offset = read_events(
+            events_path(self.events_dir, events_id), int(state["offset"])
+        )
+        state["offset"] = offset
         for record in records:
             event = record.get("event")
             if event == "Statusline":
-                model = record.get("model") or model
-                effort = record.get("effort") or effort
+                state["model"] = record.get("model") or state["model"]
+                state["effort"] = record.get("effort") or state["effort"]
             elif event == "SessionStart":
-                model = record.get("model") or model
-                activity = None
+                state["model"] = record.get("model") or state["model"]
+                state["activity"] = None
             elif event in ("Stop", "StopFailure"):
-                effort = record.get("effort") or effort
-                activity = "error" if event == "StopFailure" else "idle"
+                state["effort"] = record.get("effort") or state["effort"]
+                state["activity"] = "error" if event == "StopFailure" else "idle"
             elif record.get("activity") in ("working", "waiting", "error"):
-                activity = str(record["activity"])
+                state["activity"] = str(record["activity"])
             elif record.get("activity") == "tool":
-                activity = "working"
+                state["activity"] = "working"
             elif record.get("activity") in ("done", "started"):
-                activity = "idle" if record.get("activity") == "done" else None
+                state["activity"] = "idle" if record.get("activity") == "done" else None
             elif record.get("activity") == "stopped":
-                activity = None
+                state["activity"] = None
         settings = None
-        if model or effort:
+        if state["model"] or state["effort"]:
             try:
-                settings = NativeSettings("claude", model, None, effort)
+                settings = NativeSettings(
+                    "claude", state["model"], None, state["effort"]
+                )
             except SettingsError:
                 settings = None
-        return settings, activity
+        return settings, state["activity"]
 
     async def close(self) -> None:
         sessions = list(self.sessions)
@@ -397,7 +418,11 @@ class ClaudeRun:
                 reason = output.strip()[:400] or f"exit={code}"
                 log.write(reason + "\n")
                 return Outcome(
-                    False, "Claude launch failed: " + reason, self.session_id, ""
+                    False,
+                    "Claude launch failed: " + reason,
+                    self.session_id,
+                    "",
+                    resume_missing=resumed and session_missing(output),
                 )
             short = self.runtime.background_id(output)
             if short is None:
@@ -433,6 +458,7 @@ class ClaudeRun:
             offset = 0
             seen = False
             saw_activity = False
+            saw_process_activity = False
             session_ended = False
             last_stop: dict[str, Any] | None = None
             failure: dict[str, Any] | None = None
@@ -461,10 +487,9 @@ class ClaudeRun:
                             and saw_activity
                         ):
                             failure = {"error": "Claude session failed"}
-                        if row.get("status") in ("busy", "waiting") or row.get(
-                            "state"
-                        ) in ("working", "blocked"):
+                        if row.get("status") in ("busy", "waiting"):
                             saw_activity = True
+                            saw_process_activity = True
                     records, offset = read_events(
                         events_path(self.runtime.events_dir, events_id), offset
                     )
@@ -498,7 +523,7 @@ class ClaudeRun:
                     if status == "idle":
                         if last_stop is not None or failure is not None:
                             break
-                        if saw_activity:
+                        if saw_process_activity:
                             if idle_deadline is None:
                                 idle_deadline = loop.time() + IDLE_GRACE
                             if loop.time() >= idle_deadline:

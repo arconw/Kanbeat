@@ -99,10 +99,10 @@ def claude_settings_args(
     return ["--settings", settings_json(argv_prefix, events_dir, terminal_id)]
 
 
-def _text(value: Any) -> str | None:
+def _text(value: Any, *, tail: bool = False) -> str | None:
     if not isinstance(value, str):
         return None
-    return value[:MAX_MESSAGE_CHARS]
+    return value[-MAX_MESSAGE_CHARS:] if tail else value[:MAX_MESSAGE_CHARS]
 
 
 def _identifier(value: Any) -> str | None:
@@ -135,7 +135,7 @@ def normalize_hook(payload: Any) -> dict[str, Any] | None:
     if event == "Notification":
         record["notification_type"] = _identifier(payload.get("notification_type"))
     if event in ("Stop", "StopFailure"):
-        record["message"] = _text(payload.get("last_assistant_message"))
+        record["message"] = _text(payload.get("last_assistant_message"), tail=True)
         record["final"] = event == "Stop"
         record["stop_hook_active"] = payload.get("stop_hook_active") is True
         record["error"] = _text(payload.get("error"))

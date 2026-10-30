@@ -34,6 +34,19 @@ def test_normalizes_stop_without_transcript_or_prompt_fields():
     assert "transcript" not in json.dumps(record)
 
 
+def test_stop_message_keeps_the_tail_for_verdicts():
+    message = "x" * 40000 + "\nKANBEAT_VERDICT: approve"
+    record = normalize_hook(
+        {
+            "hook_event_name": "Stop",
+            "session_id": "session-1",
+            "last_assistant_message": message,
+        }
+    )
+    assert record["message"].endswith("KANBEAT_VERDICT: approve")
+    assert len(record["message"]) == 32000
+
+
 def test_normalizes_failure_and_activity_events():
     failure = normalize_hook(
         {

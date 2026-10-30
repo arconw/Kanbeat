@@ -5,7 +5,7 @@ import math
 from typing import Any, TYPE_CHECKING
 import uuid
 
-from .claude_runtime import ClaudeRuntimeError
+from .claude_runtime import ClaudeRuntimeError, ClaudeSessionMissing
 from .codex_host import CodexHostError, CodexRpcError, thread_missing
 from .host_process import HostError
 from .native import process_identity
@@ -138,6 +138,16 @@ async def terminal_request(
                 argv = await supervisor.claude.attach_argv(
                     session, "attach-" + uuid.uuid4().hex[:20]
                 )
+            except ClaudeSessionMissing as error:
+                if supervisor.slot_active(ticket.id, slot):
+                    raise ValueError(
+                        "The Claude session is still starting; try again"
+                    ) from None
+                assignment.pop("session", None)
+                supervisor.save()
+                raise ValueError(
+                    "The Claude session is no longer available; start the worker again"
+                ) from error
             except (ClaudeRuntimeError, OSError) as error:
                 raise ValueError(str(error)) from error
             env = supervisor.claude.child_env()

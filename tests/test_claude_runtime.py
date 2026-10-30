@@ -26,6 +26,7 @@ class FakeClaudeRuntime:
         self.mode = "ok"
         self.found = 0
         self.vanish_after = None
+        self.configs = 0
 
     def child_env(self):
         return {"PATH": "/usr/bin"}
@@ -86,6 +87,17 @@ class FakeClaudeRuntime:
             self.rows = [{"status": "idle", "state": "blocked"}]
         elif self.mode == "hang":
             self.rows = [{"status": "busy", "state": "working"}]
+        elif self.mode == "prompt-idle":
+            record_event(
+                "hook",
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": self.session,
+                },
+                self.events_dir,
+                self.events_id,
+            )
+            self.rows = [{"status": "idle", "state": "working"}]
         elif self.mode == "failed-row":
             self.rows = [
                 {"status": "busy", "state": "failed"},
@@ -197,6 +209,8 @@ class FakeClaudeRuntime:
 
     async def start_config(self, events_id):
         self.events_id = events_id
+        self.configs += 1
+        self.session = f"session-{self.configs}"
         self.rows = [{"status": "idle", "state": "working"}]
         return self.session
 
@@ -306,6 +320,22 @@ async def test_session_end_after_stop_is_success(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_prompt_hook_alone_does_not_trigger_the_short_idle_grace(
+    tmp_path, monkeypatch
+):
+    import kanbeat.claude_runtime as module
+
+    runtime = FakeClaudeRuntime(tmp_path)
+    runtime.mode = "prompt-idle"
+    monkeypatch.setattr(module, "IDLE_GRACE", 0.01)
+    monkeypatch.setattr(module, "STARTUP_GRACE", 0.05)
+    run = ClaudeRun(runtime, "work", None, tmp_path / "run.log")
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert not outcome.ok
+    assert "did not start" in outcome.reason
+
+
+@pytest.mark.asyncio
 async def test_failure_without_idle_breaks_after_grace(tmp_path, monkeypatch):
     import kanbeat.claude_runtime as module
 
@@ -407,6 +437,73 @@ def test_event_files_are_removed_and_old_files_are_swept(tmp_path):
     assert keep.exists()
     runtime.remove_events("keep")
     assert not keep.exists()
+
+
+def test_session_missing_detection():
+    from kanbeat.claude_runtime import ClaudeSessionMissing, session_missing
+
+    assert session_missing("No conversation found with session ID: abc")
+    assert session_missing("session abc does not exist")
+    assert not session_missing("session is already running")
+    assert issubclass(ClaudeSessionMissing, Exception)
+
+
+@pytest.mark.asyncio
+async def test_stale_claude_config_session_is_replaced(tmp_path, monkeypatch):
+    monkeypatch.setattr("kanbeat.session_groups.available", lambda name: True)
+    runtime = FakeClaudeRuntime(tmp_path)
+    supervisor = Supervisor(tmp_path)
+    supervisor.claude = runtime
+    supervisor.session_groups.claude_runtime = runtime
+    try:
+        first = await supervisor.dispatch(
+            {"op": "session_config_open", "harness": "claude"}
+        )
+        entry = supervisor.terminals.entries[first["terminal"]]
+        assert entry["native_session"] == "session-1"
+        await supervisor.terminals.stop()
+
+        from kanbeat.claude_runtime import ClaudeSessionMissing
+
+        calls = {"count": 0}
+        original = runtime.attach_argv
+
+        async def stale_once(session, events_id):
+            if calls["count"] == 0:
+                calls["count"] += 1
+                raise ClaudeSessionMissing("session no longer exists")
+            return await original(session, events_id)
+
+        runtime.attach_argv = stale_once
+        reopened = await supervisor.dispatch(
+            {"op": "session_config_open", "harness": "claude"}
+        )
+        assert reopened["terminal"] == first["terminal"]
+        assert entry["native_session"] == "session-2"
+        assert calls["count"] == 1
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_stale_claude_task_session_is_forgotten(tmp_path):
+    runtime = FakeClaudeRuntime(tmp_path)
+
+    async def stale(session, events_id):
+        from kanbeat.claude_runtime import ClaudeSessionMissing
+
+        raise ClaudeSessionMissing("session no longer exists")
+
+    runtime.attach_argv = stale
+    supervisor = Supervisor(tmp_path)
+    supervisor.claude = runtime
+    ticket = supervisor.board.create("Task", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["developer"] = {"harness": "claude", "session": "missing"}
+    state["runtime"]["developer"] = {"status": "running", "harness": "claude"}
+    with pytest.raises(ValueError, match="no longer available"):
+        await supervisor.dispatch({"op": "terminal_attach", "ticket": ticket.id})
+    assert "session" not in state["developer"]
 
 
 def test_config_state_maps_hook_activity(tmp_path):

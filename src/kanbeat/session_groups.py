@@ -4,7 +4,7 @@ import asyncio
 from typing import Any, Awaitable, Callable
 import uuid
 
-from .claude_runtime import ClaudeRuntimeError
+from .claude_runtime import ClaudeRuntimeError, ClaudeSessionMissing
 from .codex_host import CodexHostError, CodexRpcError, thread_missing
 from .native import available, process_identity
 from .opencode_host import OpenCodeHostError, OpenCodeHttpError
@@ -256,10 +256,24 @@ class SessionGroups:
                     entry["native_session"] = session_id
                     self.state.save()
                 argv = await runtime.attach_argv(session_id, events_id)
+            except ClaudeSessionMissing:
+                runtime.remove_events(events_id)
+                events_id = "config-" + uuid.uuid4().hex[:24]
+                entry["events_id"] = events_id
+                entry.pop("native_session", None)
+                try:
+                    session_id = await runtime.start_config(events_id)
+                    entry["native_session"] = session_id
+                    argv = await runtime.attach_argv(session_id, events_id)
+                except (ClaudeRuntimeError, OSError) as error:
+                    raise ValueError(
+                        f"Could not open Claude config session: {error}"
+                    ) from error
             except (ClaudeRuntimeError, OSError) as error:
                 raise ValueError(
                     f"Could not open Claude config session: {error}"
                 ) from error
+            self.state.save()
             await self.terminals.restart(
                 entry["id"], argv=argv, env=runtime.child_env()
             )
