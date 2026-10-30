@@ -159,7 +159,13 @@ class Supervisor:
         except (CodexHostError, OSError, asyncio.TimeoutError) as error:
             logging.getLogger(__name__).debug("Codex config read failed: %s", error)
             return
-        settings = from_codex_thread(metadata.to_dict())
+        try:
+            settings = from_codex_thread(metadata.to_dict())
+        except SettingsError as error:
+            logging.getLogger(__name__).debug(
+                "Codex config settings rejected: %s", error
+            )
+            return
         activity = self.codex_activity(metadata)
         changed = False
         if entry.get("activity") != activity:
@@ -170,11 +176,8 @@ class Supervisor:
             changed = True
         values = settings.to_dict()
         target = self.runtime.data.setdefault("native_settings", {})
-        if values:
-            if target.get("codex") != values:
-                target["codex"] = values
-                changed = True
-        elif target.pop("codex", None) is not None:
+        if values and target.get("codex") != values:
+            target["codex"] = values
             changed = True
         if changed:
             self.save()

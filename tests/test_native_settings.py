@@ -1,6 +1,8 @@
+import asyncio
+
 import pytest
 
-from kanbeat.native import command
+from kanbeat.native import NativeRun, command
 from kanbeat.native_settings import (
     NativeSettings,
     SettingsError,
@@ -131,6 +133,19 @@ def test_extracts_supported_fields_only():
         {"model": {"providerID": "p", "id": "m", "variant": "high"}}
     )
     assert opencode.to_dict() == {"model": "m", "provider": "p", "effort": "high"}
+
+
+def test_invalid_persisted_session_returns_failed_outcome(tmp_path):
+    run = NativeRun(
+        "claude",
+        "prompt",
+        "bad session id",
+        tmp_path,
+        tmp_path / "run.log",
+    )
+    outcome = asyncio.run(run.execute())
+    assert not outcome.ok
+    assert "Invalid native settings" in outcome.reason
 
 
 def test_settings_round_trip_rejects_unknown_keys():

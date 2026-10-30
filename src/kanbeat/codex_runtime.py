@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-import re
 from typing import Any, Callable
 
 from .codex_host import (
@@ -11,15 +10,11 @@ from .codex_host import (
     CodexNotification,
     CodexRpcError,
     CodexTimeout,
+    thread_missing,
 )
 from .native import Outcome
 from .native_settings import NativeSettings
 
-MISSING_SESSION = re.compile(
-    r"(?:thread|session|rollout).{0,90}"
-    r"(?:not found|does not exist|unknown|missing|no rollout|no such)",
-    re.I,
-)
 WAITING_FLAGS = frozenset({"waitingOnApproval", "waitingOnUserInput"})
 MAX_ANSWER = 1_000_000
 
@@ -196,7 +191,7 @@ class CodexRun:
                     try:
                         await self.host.observe_thread(self.session_id)
                     except CodexRpcError as error:
-                        if MISSING_SESSION.search(error.message):
+                        if thread_missing(error):
                             return Outcome(
                                 False,
                                 "Codex thread no longer exists",

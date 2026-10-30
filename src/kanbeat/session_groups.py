@@ -4,7 +4,7 @@ import asyncio
 from typing import Any, Awaitable, Callable
 import uuid
 
-from .codex_host import CodexHostError, CodexRpcError
+from .codex_host import CodexHostError, CodexRpcError, thread_missing
 from .native import available, process_identity
 from .opencode_host import OpenCodeHostError, OpenCodeHttpError
 from .state import LocalState
@@ -225,10 +225,7 @@ class SessionGroups:
         try:
             await host.read_thread(session_id)
         except CodexRpcError as error:
-            if (
-                "not found" in error.message.lower()
-                or "no rollout" in error.message.lower()
-            ):
+            if thread_missing(error):
                 return False
             raise ValueError(f"Could not read Codex config thread: {error}") from error
         except (CodexHostError, OSError) as error:

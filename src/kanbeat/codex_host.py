@@ -39,6 +39,11 @@ TOKEN_ENV = "KANBEAT_CODEX_REMOTE_TOKEN"
 WS_LISTENING = re.compile(rb"listening on: (ws://127\.0\.0\.1:([0-9]{1,5}))\s")
 WS_URL = re.compile(r"^ws://127\.0\.0\.1:([0-9]{1,5})$")
 STARTUP_TAIL_BYTES = 8192
+MISSING_THREAD = re.compile(
+    r"(?:thread|session|rollout).{0,90}"
+    r"(?:not found|does not exist|unknown|missing|no rollout|no such)",
+    re.I,
+)
 
 
 class CodexHostError(HostError):
@@ -58,6 +63,11 @@ class CodexRpcError(CodexHostError):
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+
+
+def thread_missing(error: BaseException | str) -> bool:
+    text = error.message if isinstance(error, CodexRpcError) else str(error)
+    return bool(MISSING_THREAD.search(text))
 
 
 def validate_thread_id(value: Any) -> str:

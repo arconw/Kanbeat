@@ -4,7 +4,7 @@ import asyncio
 import math
 from typing import Any, TYPE_CHECKING
 
-from .codex_host import CodexHostError, CodexRpcError
+from .codex_host import CodexHostError, CodexRpcError, thread_missing
 from .host_process import HostError
 from .native import process_identity
 from .opencode_host import OpenCodeHttpError
@@ -111,10 +111,12 @@ async def terminal_request(
                 host = await supervisor.codex_host()
                 await host.read_thread(session)
             except CodexRpcError as error:
-                if (
-                    "not found" in error.message.lower()
-                    or "no rollout" in error.message.lower()
-                ):
+                if thread_missing(error):
+                    if supervisor.slot_active(ticket.id, slot):
+                        raise ValueError(
+                            "The Codex thread is still starting; try again after "
+                            "the first turn begins"
+                        ) from None
                     assignment.pop("session", None)
                     supervisor.save()
                     raise ValueError(

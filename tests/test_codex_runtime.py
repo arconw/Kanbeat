@@ -283,6 +283,63 @@ async def test_codex_config_session_opens_and_updates_settings(codex_supervisor)
 
 
 @pytest.mark.asyncio
+async def test_invalid_config_metadata_does_not_erase_saved_settings(codex_supervisor):
+    supervisor, host = codex_supervisor
+    supervisor.runtime.data["native_settings"]["codex"] = {
+        "model": "saved-model",
+        "provider": "saved-provider",
+        "effort": "low",
+    }
+    supervisor.terminals.entries["cfg"] = {
+        "id": "cfg",
+        "owner": "custom",
+        "role": "config",
+        "harness": "codex",
+        "native_session": "01a18660-9ca4-71c0-ba25-81426f4ca65d",
+    }
+
+    async def invalid_metadata(session):
+        return SimpleNamespace(
+            status="idle",
+            active_flags=(),
+            to_dict=lambda: {
+                "model": "bad value",
+                "modelProvider": "openai",
+                "reasoningEffort": "none",
+            },
+        )
+
+    host.read_thread = invalid_metadata
+    await supervisor.sync_codex_config()
+    assert supervisor.runtime.data["native_settings"]["codex"] == {
+        "model": "saved-model",
+        "provider": "saved-provider",
+        "effort": "low",
+    }
+
+
+@pytest.mark.asyncio
+async def test_attach_missing_thread_does_not_drop_active_session(codex_supervisor):
+    supervisor, _host = codex_supervisor
+    ticket = supervisor.board.create("Task", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["developer"] = {
+        "harness": "codex",
+        "session": "01a18660-0000-7000-8000-000000000000",
+    }
+    state["runtime"]["developer"] = {"status": "running", "harness": "codex"}
+    job = asyncio.create_task(asyncio.sleep(10))
+    supervisor.jobs[supervisor.slot_key(ticket.id, "developer")] = job
+    try:
+        with pytest.raises(ValueError, match="still starting"):
+            await supervisor.dispatch({"op": "terminal_attach", "ticket": ticket.id})
+        assert state["developer"]["session"] == ("01a18660-0000-7000-8000-000000000000")
+    finally:
+        job.cancel()
+        await asyncio.gather(job, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_codex_worker_attaches_live_and_is_read_only_while_running(
     codex_supervisor,
 ):

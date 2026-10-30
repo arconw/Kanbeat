@@ -19,7 +19,7 @@ import subprocess
 from typing import Any, Callable
 
 from .launcher import external_environment
-from .native_settings import NativeSettings, cli_args, native_id
+from .native_settings import NativeSettings, SettingsError, cli_args, native_id
 
 HARNESS = {"codex": "codex", "claude": "claude", "opencode": "opencode", "pi": "pi"}
 VERDICT = re.compile(r"(?m)^KANBEAT_VERDICT:\s*(approve|changes_requested)\s*$")
@@ -344,12 +344,19 @@ class NativeRun:
         if self.stopping:
             return Outcome(False, "interrupted before start", self.session_id, "")
         builder = self.command_builder
-        if builder is None:
-            args, stdin_payload = command(
-                self.harness, self.prompt, self.session_id, self.settings
+        try:
+            if builder is None:
+                args, stdin_payload = command(
+                    self.harness, self.prompt, self.session_id, self.settings
+                )
+            else:
+                args, stdin_payload = builder(
+                    self.harness, self.prompt, self.session_id
+                )
+        except SettingsError as exc:
+            return Outcome(
+                False, f"Invalid native settings: {exc}", self.session_id, ""
             )
-        else:
-            args, stdin_payload = builder(self.harness, self.prompt, self.session_id)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         stream = EventStream(self.harness)
         error_bytes = bytearray()
