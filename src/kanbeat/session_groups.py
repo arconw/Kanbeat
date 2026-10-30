@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from typing import Any, Awaitable, Callable
 import uuid
 
 from .native import available, process_identity
+from .opencode_host import OpenCodeHostError, OpenCodeHttpError
 from .state import LocalState
 from .terminals import Terminals
 
@@ -17,9 +19,16 @@ def display_name(value: Any) -> str:
 
 
 class SessionGroups:
-    def __init__(self, state: LocalState, terminals: Terminals):
+    def __init__(
+        self,
+        state: LocalState,
+        terminals: Terminals,
+        opencode_host: Callable[[], Awaitable[Any]] | None = None,
+    ):
         self.state = state
         self.terminals = terminals
+        self.opencode_host = opencode_host
+        self.config_lock = asyncio.Lock()
         self.groups = state.data.setdefault("custom", {}).setdefault("groups", {})
 
     def group(self, group_id: str) -> str:
@@ -49,6 +58,112 @@ class SessionGroups:
             "recovery_blocked",
         ):
             raise ValueError("Stop the session and resolve orphan recovery first")
+
+    def opencode_config_entry(self) -> dict[str, Any] | None:
+        matches = [
+            entry
+            for entry in self.terminals.entries.values()
+            if entry.get("owner") == "custom"
+            and entry.get("role") == "config"
+            and entry.get("harness") == "opencode"
+        ]
+        return next(
+            (
+                row
+                for row in reversed(matches)
+                if row.get("status") in ("starting", "running", "stopping")
+            ),
+            matches[-1] if matches else None,
+        )
+
+    async def open_opencode_config(self) -> dict[str, Any]:
+        async with self.config_lock:
+            return await self._open_opencode_config()
+
+    async def _open_opencode_config(self) -> dict[str, Any]:
+        if self.opencode_host is None:
+            raise ValueError("OpenCode host provider is unavailable")
+        entry = self.opencode_config_entry()
+        if entry is not None:
+            attached = entry["id"] in self.terminals.sessions
+            status = entry.get("status")
+            if attached and status == "stopping":
+                raise ValueError(
+                    "Terminal is still stopping; wait for it to exit before reopening"
+                )
+            if attached and status in ("starting", "running"):
+                return {"terminal": entry["id"]}
+            if not attached and status in ("starting", "running", "stopping"):
+                pid = entry.get("pid")
+                current = process_identity(int(pid)) if pid is not None else None
+                saved = entry.get("process_identity")
+                if current is not None and (not saved or current == saved):
+                    raise ValueError(
+                        "An orphaned session process is still running; "
+                        "resolve it before reopening"
+                    )
+                entry["status"] = "interrupted"
+                entry.pop("pid", None)
+                entry.pop("process_identity", None)
+                self.state.save()
+            self.inactive(entry)
+            try:
+                host = await self.opencode_host()
+            except (OpenCodeHostError, OSError) as error:
+                raise ValueError(f"Could not start OpenCode host: {error}") from error
+            session_id = entry.get("native_session")
+            if not session_id or not await self.opencode_session_exists(
+                host, session_id
+            ):
+                metadata = await self.create_opencode_session(host)
+                session_id = metadata.session_id
+                entry["native_session"] = session_id
+                self.state.save()
+            await self.terminals.restart(
+                entry["id"],
+                argv=host.viewer_argv(session_id),
+                env=host.child_env(),
+            )
+            return {"terminal": entry["id"]}
+        try:
+            host = await self.opencode_host()
+        except (OpenCodeHostError, OSError) as error:
+            raise ValueError(f"Could not start OpenCode host: {error}") from error
+        metadata = await self.create_opencode_session(host)
+        terminal_id = await self.terminals.create(
+            "opencode",
+            owner="custom",
+            title="Configure opencode",
+            role="config",
+            native_session=metadata.session_id,
+            argv=host.viewer_argv(metadata.session_id),
+            env=host.child_env(),
+        )
+        return {"terminal": terminal_id}
+
+    async def create_opencode_session(self, host: Any) -> Any:
+        try:
+            return await host.create_session(directory=self.state.board.project)
+        except (OpenCodeHostError, OSError) as error:
+            raise ValueError(
+                f"Could not create OpenCode config session: {error}"
+            ) from error
+
+    @staticmethod
+    async def opencode_session_exists(host: Any, session_id: str) -> bool:
+        try:
+            await host.read_session(session_id)
+        except OpenCodeHttpError as error:
+            if error.status == 404:
+                return False
+            raise ValueError(
+                f"Could not read OpenCode config session: {error}"
+            ) from error
+        except (OpenCodeHostError, OSError) as error:
+            raise ValueError(
+                f"Could not read OpenCode config session: {error}"
+            ) from error
+        return True
 
     async def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         op = request.get("op")
@@ -85,6 +200,8 @@ class SessionGroups:
             )
             if not available(harness):
                 raise ValueError("Independent session harness unavailable: " + harness)
+            if harness == "opencode" and self.opencode_host is not None:
+                return await self.open_opencode_config()
             matches = [
                 entry
                 for entry in self.terminals.entries.values()

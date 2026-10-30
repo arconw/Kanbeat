@@ -7,7 +7,9 @@ import pytest
 from kanbeat.host_process import RuntimeIdentity
 from kanbeat.native import process_identity
 from kanbeat.opencode_host import (
+    OpenCodeHostError,
     OpenCodeHttpError,
+    OpenCodeModel,
     OpenCodeSessionMetadata,
 )
 from kanbeat.supervisor import Supervisor
@@ -36,12 +38,15 @@ class FakeHost:
         self.sessions = {}
         self.created = 0
         self.prompts = []
+        self.models = []
+        self.worker_models = []
 
     def child_env(self):
         return {"PATH": os.environ["PATH"]}
 
     def worker_argv(self, session_id, *, prompt=None, model=None):
         self.prompts.append(prompt)
+        self.worker_models.append(model)
         return [sys.executable, "-u", "-c", WORKER]
 
     def viewer_argv(self, session_id):
@@ -54,6 +59,7 @@ class FakeHost:
 
     async def create_session(self, *, directory=None, model=None):
         self.created += 1
+        self.models.append(model)
         session_id = "ses_test"
         self.sessions[session_id] = OpenCodeSessionMetadata(session_id, None, None)
         return self.sessions[session_id]
@@ -69,6 +75,7 @@ def runtime(tmp_path, monkeypatch):
 
     monkeypatch.setattr(supervisor, "opencode_host", fake_host)
     monkeypatch.setattr("kanbeat.supervisor.available", lambda name: True)
+    monkeypatch.setattr("kanbeat.session_groups.available", lambda name: True)
     return supervisor, host
 
 
@@ -90,6 +97,16 @@ async def test_opencode_worker_uses_shared_session_and_attaches(runtime):
     state["developer"]["harness"] = "opencode"
     state["developer"]["pending_handoff"] = "HANDOFF"
     supervisor.runtime.config["developer_prompt"] = "CUSTOM DEV"
+    supervisor.terminals.entries["cfg"] = {
+        "id": "cfg",
+        "owner": "custom",
+        "role": "config",
+        "harness": "opencode",
+        "native_session": "ses_config",
+    }
+    host.sessions["ses_config"] = OpenCodeSessionMetadata(
+        "ses_config", None, OpenCodeModel("p", "m", "high")
+    )
     supervisor.runtime.data["execution"] = "running"
     try:
         await supervisor.start_worker(ticket, "developer", state["developer"])
@@ -99,6 +116,8 @@ async def test_opencode_worker_uses_shared_session_and_attaches(runtime):
         assert "CUSTOM DEV" in host.prompts[0]
         assert "HANDOFF" in host.prompts[0]
         assert "pending_handoff" not in state["developer"]
+        assert host.models[0].variant == "high"
+        assert host.worker_models[0].variant == "high"
         assert state["runtime"]["developer"]["status"] == "completed"
         assert state["runtime"]["developer"]["harness"] == "opencode"
 
@@ -274,6 +293,40 @@ async def test_terminal_attach_recovers_stale_recovery_blocked_entry(runtime):
 
 
 @pytest.mark.asyncio
+async def test_resumed_opencode_session_keeps_its_model(runtime):
+    supervisor, host = runtime
+    ticket = supervisor.board.create("Task", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["phase"] = "progress"
+    state["iteration"] = 1
+    state["developer"] = {"harness": "opencode", "session": "ses_test"}
+    state["runtime"]["developer"] = {
+        "stage": "progress",
+        "iteration": 1,
+        "status": "running",
+    }
+    host.sessions["ses_test"] = OpenCodeSessionMetadata("ses_test", None, None)
+    supervisor.terminals.entries["cfg"] = {
+        "id": "cfg",
+        "owner": "custom",
+        "role": "config",
+        "harness": "opencode",
+        "native_session": "ses_config",
+    }
+    host.sessions["ses_config"] = OpenCodeSessionMetadata(
+        "ses_config", None, OpenCodeModel("p", "m", "high")
+    )
+    supervisor.runtime.data["execution"] = "running"
+    try:
+        await supervisor.start_worker(ticket, "developer", state["developer"])
+        await supervisor.jobs["001:developer"]
+        assert host.models == []
+        assert host.worker_models[0] is None
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
 async def test_terminal_attach_reports_missing_and_stale_sessions(runtime):
     supervisor, _host = runtime
     ticket = supervisor.board.create("Task", column="progress")
@@ -314,6 +367,92 @@ async def test_terminal_attach_converts_host_errors(runtime, monkeypatch):
     monkeypatch.setattr(supervisor, "opencode_host", working)
     with pytest.raises(ValueError, match="HTTP 500"):
         await supervisor.dispatch({"op": "terminal_attach", "ticket": ticket.id})
+
+
+@pytest.mark.asyncio
+async def test_opencode_config_session_uses_the_shared_host(runtime):
+    supervisor, host = runtime
+    first = await supervisor.dispatch(
+        {"op": "session_config_open", "harness": "opencode"}
+    )
+    entry = supervisor.terminals.entries[first["terminal"]]
+    assert entry["role"] == "config"
+    assert entry["native_session"] == "ses_test"
+    assert entry["status"] == "running"
+    again = await supervisor.dispatch(
+        {"op": "session_config_open", "harness": "opencode"}
+    )
+    assert again == first
+    assert len(host.sessions) == 1
+    await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_config_open_does_not_start_host_for_running_terminal(
+    runtime, monkeypatch
+):
+    supervisor, _host = runtime
+    entry = {
+        "id": "cfg",
+        "owner": "custom",
+        "role": "config",
+        "harness": "opencode",
+        "status": "running",
+        "native_session": "ses_test",
+    }
+    supervisor.terminals.entries["cfg"] = entry
+    supervisor.terminals.sessions["cfg"] = object()
+
+    async def broken():
+        raise OSError("host must not start")
+
+    monkeypatch.setattr(supervisor, "opencode_host", broken)
+    result = await supervisor.dispatch(
+        {"op": "session_config_open", "harness": "opencode"}
+    )
+    assert result == {"terminal": "cfg"}
+
+
+@pytest.mark.asyncio
+async def test_config_model_failure_does_not_block_worker(runtime):
+    supervisor, host = runtime
+    ticket = supervisor.board.create("Task", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["phase"] = "progress"
+    state["iteration"] = 1
+    state["developer"]["harness"] = "opencode"
+    supervisor.terminals.entries["cfg"] = {
+        "id": "cfg",
+        "owner": "custom",
+        "role": "config",
+        "harness": "opencode",
+        "native_session": "ses_config",
+    }
+
+    async def failing_read(session_id):
+        raise OpenCodeHostError("config unavailable")
+
+    host.read_session = failing_read
+    supervisor.runtime.data["execution"] = "running"
+    try:
+        await supervisor.start_worker(ticket, "developer", state["developer"])
+        await supervisor.jobs["001:developer"]
+        assert host.models[0] is None
+        assert state["runtime"]["developer"]["status"] == "completed"
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_config_session_create_failure_is_value_error(runtime):
+    supervisor, host = runtime
+
+    async def failing_create(*, directory=None, model=None):
+        raise OpenCodeHostError("create failed")
+
+    host.create_session = failing_create
+    with pytest.raises(ValueError, match="Could not create OpenCode config session"):
+        await supervisor.dispatch({"op": "session_config_open", "harness": "opencode"})
 
 
 @pytest.mark.asyncio

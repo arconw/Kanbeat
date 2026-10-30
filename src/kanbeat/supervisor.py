@@ -28,6 +28,7 @@ from .terminal_control import terminal_request
 from .launcher import app_command, external_environment, internal_environment
 from .host_process import HostError, RuntimeIdentity, stop_recorded
 from .opencode_host import (
+    OpenCodeHostError,
     OpenCodeHttpError,
     OpenCodePromptTooLarge,
     OpenCodeServeHost,
@@ -46,7 +47,9 @@ class Supervisor:
         self.runtime = LocalState(self.board)
         self.hooks = TransitionHooks(self.runtime)
         self.terminals = Terminals(self.runtime)
-        self.session_groups = SessionGroups(self.runtime, self.terminals)
+        self.session_groups = SessionGroups(
+            self.runtime, self.terminals, lambda: self.opencode_host()
+        )
         self.state_dir = self.board.root / ".state"
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.socket = socket_path(self.board.project)
@@ -91,6 +94,25 @@ class Supervisor:
             self.opencode = host
             self.record_host("opencode", identity)
             return host
+
+    async def opencode_model(self, host: Any) -> Any:
+        entry = self.session_groups.opencode_config_entry()
+        if entry is None or not entry.get("native_session"):
+            return None
+        try:
+            metadata = await host.read_session(entry["native_session"])
+        except OpenCodeHttpError as error:
+            if error.status != 404:
+                logging.getLogger(__name__).warning(
+                    "OpenCode config read failed: %s", error
+                )
+            return None
+        except (OpenCodeHostError, OSError, asyncio.TimeoutError) as error:
+            logging.getLogger(__name__).warning(
+                "OpenCode config read failed: %s", error
+            )
+            return None
+        return metadata.model
 
     async def close_hosts(self) -> None:
         async with self._host_lock:
@@ -392,11 +414,13 @@ class Supervisor:
                         prompt_text = self.prompt(
                             current, worker, resumed, updated=updated
                         )
+                        model = None
                         if shared is not None:
                             if not session:
+                                model = await self.opencode_model(shared)
                                 validate_prompt(prompt_text)
                                 metadata = await shared.create_session(
-                                    directory=self.board.project
+                                    directory=self.board.project, model=model
                                 )
                                 session = metadata.session_id
                                 self.record_session(ticket_id, worker, session)
@@ -404,7 +428,7 @@ class Supervisor:
 
                             def command_builder(_harness, prompt_text, _session):
                                 return shared.worker_argv(
-                                    session, prompt=prompt_text
+                                    session, prompt=prompt_text, model=model
                                 ), None
 
                         native = NativeRun(

@@ -174,6 +174,8 @@ Harness selectors in Settings, slot configuration and New session include an Ope
 
 OpenCode workers run against a project-local `opencode serve` on loopback. Their native session can be opened live from ticket and slot dialogs and Sessions Tasks while the board is running; the action reattaches that same shared session. The server uses a random per-supervisor password passed only in child environments. Codex, Claude and Pi workers remain one-shot and require Board Stop before opening a task terminal. The shared server is stopped on supervisor shutdown, and a recorded process identity is used for crash cleanup.
 
+For OpenCode, the configuration session and worker sessions share the same server. A model/variant selected on that configuration session is passed to newly started Developer and Reviewer worker sessions; resumed sessions keep their own model. Codex, Claude and Pi configuration sessions are still separate TUIs; their native settings are not captured or copied yet.
+
 The full lifecycle, stop rules, groups and persistence are documented in [terminals.md](terminals.md).
 
 ## Configuration
