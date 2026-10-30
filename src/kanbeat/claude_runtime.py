@@ -18,6 +18,9 @@ COMMAND_TIMEOUT = 30.0
 ATTACH_TIMEOUT = 30.0
 BACKGROUND_TIMEOUT = 60.0
 BACKGROUND_ID = re.compile(r"backgrounded\s*.\s*([0-9a-f]{8})")
+IDLE_GRACE = 5.0
+FAILURE_GRACE = 5.0
+STARTUP_GRACE = 30.0
 MAX_ROWS = 500
 MAX_MESSAGE = 1_000_000
 
@@ -398,12 +401,15 @@ class ClaudeRun:
                 await self.runtime.stop_session(self.session_id)
                 return Outcome(False, "interrupted by board Stop", self.session_id, "")
             loop = asyncio.get_running_loop()
-            startup_deadline = loop.time() + 30
+            startup_deadline = loop.time() + STARTUP_GRACE
             idle_deadline: float | None = None
             offset = 0
             seen = False
+            saw_activity = False
+            session_ended = False
             last_stop: dict[str, Any] | None = None
             failure: dict[str, Any] | None = None
+            failure_deadline: float | None = None
             row: dict[str, Any] | None = None
             try:
                 while True:
@@ -424,6 +430,10 @@ class ClaudeRun:
                         self.activity_update(self.runtime.activity(row))
                         if row.get("state") == "failed":
                             failure = {"error": "Claude session failed"}
+                        if row.get("status") in ("busy", "waiting") or row.get(
+                            "state"
+                        ) in ("working", "blocked"):
+                            saw_activity = True
                     records, offset = read_events(
                         events_path(self.runtime.events_dir, events_id), offset
                     )
@@ -431,26 +441,53 @@ class ClaudeRun:
                         event = record.get("event")
                         if record.get("session_id") not in (None, self.session_id):
                             continue
-                        if event == "Stop":
+                        if event in (
+                            "UserPromptSubmit",
+                            "PreToolUse",
+                            "PostToolUse",
+                            "Notification",
+                        ):
+                            saw_activity = True
+                        elif event == "Stop":
+                            saw_activity = True
                             last_stop = record
                             failure = None
+                            failure_deadline = None
                         elif event == "StopFailure":
+                            saw_activity = True
                             failure = record
                         elif event == "SessionEnd":
-                            failure = {"error": "Claude session ended"}
+                            saw_activity = True
+                            session_ended = True
+                            if last_stop is None:
+                                failure = {"error": "Claude session ended"}
+                    if last_stop is not None and session_ended:
+                        break
                     status = str((row or {}).get("status") or "")
                     if status == "idle":
-                        if idle_deadline is None:
-                            idle_deadline = loop.time() + 5
                         if last_stop is not None or failure is not None:
                             break
-                        if seen and loop.time() >= idle_deadline:
-                            failure = failure or {
-                                "error": "Claude reported idle without a completion event"
-                            }
+                        if saw_activity:
+                            if idle_deadline is None:
+                                idle_deadline = loop.time() + IDLE_GRACE
+                            if loop.time() >= idle_deadline:
+                                failure = {
+                                    "error": "Claude reported idle without a completion event"
+                                }
+                                break
+                        elif loop.time() >= startup_deadline:
+                            failure = {"error": "Claude turn did not start"}
                             break
                     else:
                         idle_deadline = None
+                    if failure is not None:
+                        if failure_deadline is None:
+                            failure_deadline = loop.time() + FAILURE_GRACE
+                        if (
+                            status not in ("busy", "waiting")
+                            or loop.time() >= failure_deadline
+                        ):
+                            break
                     if not seen and loop.time() >= startup_deadline:
                         failure = failure or {
                             "error": "Claude background session did not start"

@@ -84,6 +84,26 @@ class FakeClaudeRuntime:
             self.rows = [{"status": "idle", "state": "blocked"}]
         elif self.mode == "hang":
             self.rows = [{"status": "busy", "state": "working"}]
+        elif self.mode == "failed-row":
+            self.rows = [{"status": "busy", "state": "failed"}]
+        elif self.mode == "stop-end":
+            record_event(
+                "hook",
+                {
+                    "hook_event_name": "Stop",
+                    "session_id": self.session,
+                    "last_assistant_message": "done",
+                },
+                self.events_dir,
+                self.events_id,
+            )
+            record_event(
+                "hook",
+                {"hook_event_name": "SessionEnd", "session_id": self.session},
+                self.events_dir,
+                self.events_id,
+            )
+            self.rows = [{"status": "busy", "state": "working"}]
         return (0, "", "")
 
     async def launch_background(self, args, *, timeout=60):
@@ -212,6 +232,29 @@ async def test_resumed_claude_run_keeps_its_own_settings(tmp_path):
     assert "--resume" in runtime.launches[0]
     assert "--model" not in runtime.launches[0]
     assert "--effort" not in runtime.launches[0]
+
+
+@pytest.mark.asyncio
+async def test_session_end_after_stop_is_success(tmp_path):
+    runtime = FakeClaudeRuntime(tmp_path)
+    runtime.mode = "stop-end"
+    run = ClaudeRun(runtime, "work", None, tmp_path / "run.log")
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert outcome.ok
+    assert outcome.answer == "done"
+
+
+@pytest.mark.asyncio
+async def test_failure_without_idle_breaks_after_grace(tmp_path, monkeypatch):
+    import kanbeat.claude_runtime as module
+
+    runtime = FakeClaudeRuntime(tmp_path)
+    runtime.mode = "failed-row"
+    monkeypatch.setattr(module, "FAILURE_GRACE", 0.01)
+    run = ClaudeRun(runtime, "work", None, tmp_path / "run.log")
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert not outcome.ok
+    assert "failed" in outcome.reason.lower()
 
 
 @pytest.mark.asyncio
