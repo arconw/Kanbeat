@@ -120,7 +120,7 @@ async def test_terminal_wheel_reaches_native_app_and_fills_bottom(
         await pilot.pause()
         display = view.query_one(TerminalDisplay)
         assert display.region.bottom == 40
-        assert display.region.y == 4
+        assert display.region.y == 2
         assert session.entry["rows"] == display.size.height
         display.post_message(
             events.MouseScrollUp(display, 3, 2, 0, 0, 0, False, False, False)
@@ -386,6 +386,85 @@ async def test_terminal_view_stops_retrying_permanent_snapshot_errors(
         assert "DISCONNECTED" in str(
             view.query_one("#terminal-heading", Static).render()
         )
+
+
+@pytest.mark.asyncio
+async def test_terminal_view_detaches_quietly_when_native_process_exits(
+    terminal, monkeypatch
+):
+    supervisor, session = terminal
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    notices = []
+    monkeypatch.setattr(
+        app, "notify", lambda message, **kwargs: notices.append((message, kwargs))
+    )
+    view = TerminalView(session.id)
+    async with app.run_test(size=(100, 40)) as pilot:
+        app.push_screen(view)
+        await pilot.pause()
+        await session.stop()
+        await view.send_input({"kind": "key", "character": "a"})
+        for _ in range(200):
+            if app.screen is not view:
+                break
+            await asyncio.sleep(0.01)
+        assert app.screen is not view
+        assert not [n for n in notices if n[1].get("severity") == "error"]
+        assert any("detached" in message for message, _ in notices)
+
+
+@pytest.mark.asyncio
+async def test_terminal_view_detaches_after_stop_request(terminal, monkeypatch):
+    supervisor, session = terminal
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    view = TerminalView(session.id)
+    async with app.run_test(size=(100, 40)) as pilot:
+        app.push_screen(view)
+        await pilot.pause()
+        await view.rpc("terminal_stop", confirmed=True)
+        for _ in range(200):
+            if app.screen is not view:
+                break
+            await asyncio.sleep(0.01)
+        assert app.screen is not view
+        assert session.entry["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_dragging_in_the_terminal_selects_and_copies_only_that_text(
+    terminal, monkeypatch
+):
+    supervisor, session = terminal
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    copied = []
+
+    async def copy_selection(text):
+        copied.append(text)
+
+    monkeypatch.setattr(app, "copy_selection", copy_selection)
+    view = TerminalView(session.id)
+    async with app.run_test(size=(100, 40)) as pilot:
+        app.push_screen(view)
+        await pilot.pause(0.5)
+        display = view.query_one(TerminalDisplay)
+        await pilot.mouse_down(TerminalDisplay, offset=(1, 0))
+        await pilot.hover(TerminalDisplay, offset=(3, 0))
+        await pilot.mouse_up(TerminalDisplay, offset=(3, 0))
+        await pilot.pause()
+        assert copied == ["EAD"]
+        assert display.selected_span(0) == (1, 4)
+        await pilot.click(TerminalDisplay, offset=(10, 0))
+        await pilot.pause()
+        assert copied == ["EAD"]
+        assert display.selected_span(0) is None
+        await pilot.mouse_down(TerminalDisplay, offset=(2, 0))
+        await pilot.mouse_up(TerminalDisplay, offset=(4, 0))
+        await pilot.press("a")
+        await pilot.pause()
+        assert display.selected_span(0) is None
 
 
 @pytest.mark.asyncio

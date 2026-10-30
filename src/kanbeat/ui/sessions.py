@@ -4,15 +4,22 @@ from typing import Any
 from rich.text import Text
 from rich.markup import escape
 
-from textual import on, work
+from textual import events, on, work
 from textual.app import ComposeResult
+from textual.geometry import Region
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from .modal import BackdropModal
 from textual.widgets import Button, Collapsible, Input, Select, Static, TextArea
 
 from .options import HARNESS
-from .terminal import TerminalView
+from .terminal import TerminalPane
 from .session_rows import SessionRow, SessionSection, TaskSessions
+
+EMBED_MIN_WIDTH = 114
+
+
+def group_title(group, count):
+    return f"[{count}]: {group['name']}"
 
 
 def group_options(snapshot):
@@ -59,6 +66,8 @@ class GroupForm(BackdropModal[None]):
 
 
 class NewSession(BackdropModal[None]):
+    starting = False
+
     def compose(self) -> ComposeResult:
         with VerticalScroll(classes="sm"):
             yield Static("NEW INDEPENDENT SESSION", classes="section-title")
@@ -102,6 +111,10 @@ class NewSession(BackdropModal[None]):
                 self.query_one("#session-harness", Select).value
             )
         elif event.button.id == "session-start":
+            if self.starting:
+                return
+            self.starting = True
+            event.button.disabled = True
             try:
                 result = await self.app.rpc(
                     {
@@ -117,21 +130,85 @@ class NewSession(BackdropModal[None]):
                 )
                 app = self.app
                 await app.refresh_snapshot(force=True)
-                self.dismiss(None)
-                app.push_screen(TerminalView(result["terminal"]))
+                if self in app.screen_stack:
+                    self.dismiss(None)
+                app.open_session_terminal(result["terminal"])
             except (ValueError, RuntimeError, OSError) as exc:
                 self.app.notify(str(exc), severity="error")
 
 
-class SessionActions(BackdropModal[None]):
+class PopupMenu(BackdropModal[None]):
+    BINDINGS = [("escape", "close", "Close")]
+
+    def __init__(self, anchor: Region | None = None):
+        super().__init__()
+        self.anchor = anchor
+
+    def on_mount(self) -> None:
+        if self.anchor is not None:
+            self.call_after_refresh(self.place_near_anchor)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if not self.query_one(".menu").region.contains_point(event.screen_offset):
+            event.stop()
+            self.dismiss(None)
+
+    def place_near_anchor(self) -> None:
+        menu = self.query_one(".menu")
+        screen = self.app.size
+        x = min(self.anchor.right + 1, max(0, screen.width - menu.outer_size.width))
+        y = min(self.anchor.y, max(0, screen.height - menu.outer_size.height))
+        menu.styles.offset = (x, y)
+
+
+class GroupActions(PopupMenu):
+    def __init__(self, group_id: str, anchor: Region | None = None):
+        super().__init__(anchor)
+        self.group_id = group_id
+
+    def compose(self) -> ComposeResult:
+        groups = self.app.snapshot.get("custom", {}).get("groups", {})
+        with Vertical(classes="menu"):
+            yield Static(
+                groups.get(self.group_id, {}).get("name", "GROUP"),
+                classes="section-title",
+                markup=False,
+            )
+            yield Button("Rename", id="group-rename")
+            yield Button("Remove", id="group-remove", variant="error")
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        name = event.button.id
+        if name == "group-rename":
+            app = self.app
+            self.dismiss(None)
+            app.push_screen(GroupForm(self.group_id))
+        elif name == "group-remove":
+            self.confirm_removal()
+
+    @work
+    async def confirm_removal(self) -> None:
+        from .app import Confirm
+
+        if await self.app.push_screen_wait(Confirm("Remove this empty session group?")):
+            if await self.app.execute(
+                {"op": "group_delete", "group": self.group_id, "confirmed": True}
+            ):
+                self.dismiss(None)
+
+
+class SessionEdit(BackdropModal[None]):
     def __init__(self, entry: dict[str, Any]):
         super().__init__()
         self.entry = entry
 
     def compose(self) -> ComposeResult:
-        running = self.entry["status"] in ("starting", "running", "stopping")
         with Vertical(classes="sm"):
-            yield Static("INDEPENDENT SESSION", classes="section-title")
+            yield Static("EDIT SESSION", classes="section-title")
             yield Input(self.entry["title"], id="session-title")
             yield Select(
                 group_options(self.app.snapshot),
@@ -139,81 +216,110 @@ class SessionActions(BackdropModal[None]):
                 allow_blank=False,
                 id="session-group",
             )
-            yield Static(
-                "Restart resumes a known native ID; otherwise it starts fresh. Removing a record preserves vendor history and local logs.",
-                classes="hint",
+            yield Static("Native session ID (used to resume)", classes="field")
+            yield Input(
+                self.entry.get("native_session") or "",
+                placeholder="Empty: the next start creates a new session",
+                id="session-native-id",
             )
             with Horizontal(classes="modal-actions"):
                 yield Button("Cancel", id="cancel")
                 yield Button("Save", id="session-save", variant="primary")
-            with Horizontal(classes="modal-actions"):
-                yield Button("Start / Resume", id="session-restart", disabled=running)
-                yield Button(
-                    "Stop",
-                    id="session-stop",
-                    disabled=(
-                        not running
-                        or self.entry["status"] == "stopping"
-                        or not self.entry.get("attached")
-                    ),
-                )
-                yield Button(
-                    "Remove record",
-                    id="session-remove",
-                    disabled=running,
-                    variant="error",
-                )
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
-        name = event.button.id
-        if name == "cancel":
+        if event.button.id == "cancel":
             self.dismiss(None)
-        elif name == "session-save":
+        elif event.button.id == "session-save":
             if await self.app.execute(
                 {
                     "op": "session_update",
                     "terminal": self.entry["id"],
                     "title": self.query_one("#session-title", Input).value,
                     "group": self.query_one("#session-group", Select).value,
+                    "native_session": self.query_one(
+                        "#session-native-id", Input
+                    ).value.strip(),
                 }
             ):
                 self.dismiss(None)
-        elif name == "session-restart":
-            try:
-                result = await self.app.rpc(
-                    {"op": "session_restart", "terminal": self.entry["id"]}
-                )
-                app = self.app
-                await app.refresh_snapshot(force=True)
-                self.dismiss(None)
-                app.push_screen(TerminalView(result["terminal"]))
-            except (ValueError, RuntimeError, OSError) as exc:
-                self.app.notify(str(exc), severity="error")
-        elif name in ("session-stop", "session-remove"):
-            self.confirm_action(name)
 
-    @work
-    async def confirm_action(self, name: str) -> None:
-        from .app import Confirm
 
-        if await self.app.push_screen_wait(
-            Confirm(
-                "Stop this independent session?"
-                if name == "session-stop"
-                else "Remove this stopped session record?"
-            )
-        ):
-            op = "terminal_stop" if name == "session-stop" else "session_delete"
+class SessionActions(PopupMenu):
+    def __init__(self, entry: dict[str, Any], anchor: Region | None = None):
+        super().__init__(anchor)
+        self.entry = entry
+
+    def compose(self) -> ComposeResult:
+        status = self.entry["status"]
+        running = status in ("starting", "running")
+        with Vertical(classes="menu"):
+            yield Static(self.entry["title"], classes="section-title", markup=False)
+            yield Button("Edit", id="session-edit")
+            if running and self.entry.get("attached"):
+                yield Button("Stop", id="session-stop")
+            if status != "stopping":
+                yield Button("Delete", id="session-remove", variant="error")
+                if self.entry.get("native_session") and self.entry["harness"] in (
+                    "claude",
+                    "codex",
+                    "opencode",
+                    "pi",
+                ):
+                    yield Button(
+                        "Delete completely", id="session-remove-all", variant="error"
+                    )
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        name = event.button.id
+        if name == "session-edit":
+            app = self.app
+            self.dismiss(None)
+            app.push_screen(SessionEdit(self.entry))
+        elif name == "session-stop":
             if await self.app.execute(
-                {"op": op, "terminal": self.entry["id"], "confirmed": True}
+                {"op": "terminal_stop", "terminal": self.entry["id"], "confirmed": True}
             ):
                 self.dismiss(None)
+        elif name in ("session-remove", "session-remove-all"):
+            self.confirm_delete(name == "session-remove-all")
+
+    @work
+    async def confirm_delete(self, native: bool) -> None:
+        from .app import Confirm
+
+        harness = self.entry["harness"]
+        question = (
+            f"Delete this session completely, including its history in {harness}? "
+            "This cannot be undone."
+            if native
+            else f"Remove this session from the workspace? Its history in {harness} is kept."
+        )
+        app = self.app
+        if not await app.push_screen_wait(Confirm(question)):
+            return
+        terminal_id = self.entry["id"]
+        if self.entry["status"] in ("starting", "running") and not await app.execute(
+            {"op": "terminal_stop", "terminal": terminal_id, "confirmed": True}
+        ):
+            return
+        if await app.execute(
+            {
+                "op": "session_delete",
+                "terminal": terminal_id,
+                "confirmed": True,
+                "native": native,
+            }
+        ):
+            app.forget_embedded(terminal_id)
+            if self in app.screen_stack:
+                self.dismiss(None)
 
 
-class SessionsView(VerticalScroll):
+class SessionList(VerticalScroll):
     def __init__(self, snapshot: dict[str, Any]):
-        super().__init__(id="sessions-page")
+        super().__init__(id="sessions-list")
         self.snapshot = snapshot
 
     def entries(self, group_id):
@@ -226,8 +332,8 @@ class SessionsView(VerticalScroll):
     @staticmethod
     def groups(snapshot):
         return {
-            "": {"name": "Ungrouped"},
             **snapshot.get("custom", {}).get("groups", {}),
+            "": {"name": "Ungrouped"},
         }
 
     def group_section(self, group_id, group):
@@ -235,26 +341,15 @@ class SessionsView(VerticalScroll):
         entries = self.entries(group_id)
         section = SessionSection(
             key,
-            f"{group['name']} · {len(entries)}",
+            group_title(group, len(entries)),
             self.app.preferences.is_collapsed(key),
+            "group-actions-" + group_id if group_id else "",
         )
-        if group_id:
-            controls = Horizontal(classes="slot-row")
-            controls.compose_add_child(
-                Static(group["name"], classes="slot-name", markup=False)
-            )
-            controls.compose_add_child(Button("Rename", id="rename-group-" + group_id))
-            controls.compose_add_child(Button("Remove", id="remove-group-" + group_id))
-            section.compose_add_child(controls)
         for entry in entries:
             section.compose_add_child(SessionRow(entry))
         return section
 
     def compose(self) -> ComposeResult:
-        with Horizontal(classes="toolbar"):
-            yield Static("SESSIONS / NATIVE TERMINALS", classes="page-heading")
-            yield Button("New group", id="new-group")
-            yield Button("New session", id="new-session", variant="primary")
         with SessionSection(
             "tasks", "Tasks", self.app.preferences.is_collapsed("tasks", True)
         ):
@@ -266,10 +361,6 @@ class SessionsView(VerticalScroll):
                 )
         for group_id, group in self.groups(self.snapshot).items():
             yield self.group_section(group_id, group)
-        yield Static(
-            "Detach keeps sessions alive. Board Stop affects task terminals only. Independent session Stop always asks for confirmation.",
-            classes="hint",
-        )
 
     @on(Collapsible.Toggled)
     def remember_collapse(self, event: Collapsible.Toggled) -> None:
@@ -325,17 +416,17 @@ class SessionsView(VerticalScroll):
             section_id = "section-group-" + (group_id or "ungrouped")
             sections = list(self.query("#" + section_id))
             if not sections:
+                ungrouped = next(iter(self.query("#section-group-ungrouped")), None)
                 await self.mount(
-                    self.group_section(group_id, group), before=self.query_one(".hint")
+                    self.group_section(group_id, group),
+                    before=ungrouped if group_id else None,
                 )
                 continue
             section = sections[0]
             entries = self.entries(group_id)
-            title = escape(f"{group['name']} · {len(entries)}")
+            title = escape(group_title(group, len(entries)))
             if section.title != title:
                 section.title = title
-                if group_id:
-                    section.query_one(".slot-name", Static).update(group["name"])
             content = section.query_one("Contents")
             wanted = {entry["id"]: entry for entry in entries}
             rows = {row.entry["id"]: row for row in content.query(SessionRow)}
@@ -350,33 +441,67 @@ class SessionsView(VerticalScroll):
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         name = event.button.id or ""
-        if name == "new-group":
-            self.app.push_screen(GroupForm())
-        elif name == "new-session":
-            self.app.push_screen(NewSession())
-        elif name.startswith("rename-group-"):
-            self.app.push_screen(GroupForm(name[len("rename-group-") :]))
-        elif name.startswith("remove-group-"):
-            self.remove_group(name[len("remove-group-") :])
+        if name.startswith("group-actions-"):
+            self.app.push_screen(
+                GroupActions(name[len("group-actions-") :], event.button.region)
+            )
         elif name.startswith("open-session-"):
-            self.app.push_screen(TerminalView(name[len("open-session-") :]))
+            await self.app.resume_session(name[len("open-session-") :])
         elif name.startswith("session-actions-"):
             terminal_id = name[len("session-actions-") :]
             self.app.push_screen(
-                SessionActions(self.app.snapshot["terminals"][terminal_id])
+                SessionActions(
+                    self.app.snapshot["terminals"][terminal_id], event.button.region
+                )
             )
         else:
             return
         event.stop()
 
-    def remove_group(self, group_id: str) -> None:
-        self.app.run_worker(self.confirm_group_removal(group_id))
 
-    async def confirm_group_removal(self, group_id: str) -> None:
-        from .app import Confirm
+class SessionsView(Horizontal):
+    def __init__(self, snapshot: dict[str, Any]):
+        super().__init__(id="sessions-page")
+        self.snapshot = snapshot
 
-        app = self.app
-        if await app.push_screen_wait(Confirm("Remove this empty session group?")):
-            await app.execute(
-                {"op": "group_delete", "group": group_id, "confirmed": True}
-            )
+    def compose(self) -> ComposeResult:
+        with Vertical(id="sessions-side"):
+            yield SessionList(self.snapshot)
+            with Horizontal(id="sessions-footer"):
+                yield Button("New group", id="new-group")
+                yield Button("New session", id="new-session", variant="primary")
+        yield TerminalPane()
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "new-group":
+            self.app.push_screen(GroupForm())
+        elif event.button.id == "new-session":
+            self.app.push_screen(NewSession())
+        else:
+            return
+        event.stop()
+
+    def on_terminal_pane_closed(self, event: TerminalPane.Closed) -> None:
+        event.stop()
+        self.mark_active(None)
+
+    def mark_active(self, terminal_id: str | None) -> None:
+        for row in self.query(SessionRow):
+            row.set_class(row.entry["id"] == terminal_id, "active-session")
+
+    async def on_mount(self) -> None:
+        terminal_id = self.app.embedded_terminal
+        if terminal_id in self.snapshot.get("terminals", {}):
+            self.show_terminal(terminal_id)
+
+    @property
+    def can_embed(self) -> bool:
+        return self.size.width >= EMBED_MIN_WIDTH
+
+    def show_terminal(self, terminal_id: str) -> None:
+        self.query_one(TerminalPane).open_terminal(terminal_id)
+        self.mark_active(terminal_id)
+
+    async def update_snapshot(self, snapshot: dict[str, Any]) -> None:
+        self.snapshot = snapshot
+        await self.query_one(SessionList).update_snapshot(snapshot)

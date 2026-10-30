@@ -11,7 +11,7 @@ def test_new_board_has_plain_markdown_and_default_backlog(tmp_path: Path):
     ticket = board.create("Implement auth", "Validate tokens")
     assert ticket.id == "001"
     assert ticket.column == "backlog"
-    assert ticket.path.name.startswith("0-001-implement-auth")
+    assert ticket.path.name == "001-implement-auth.md"
     assert ticket.body.startswith("# Implement auth")
     assert "---" not in ticket.body
     assert (board.root / "INSTRUCTIONS.md").exists()
@@ -27,16 +27,30 @@ def test_status_is_directory_not_yaml(tmp_path: Path):
     assert not original.path.exists()
 
 
-def test_numeric_order_and_stable_id(tmp_path: Path):
+def test_tickets_are_listed_by_numeric_id_and_keep_their_filename_on_move(
+    tmp_path: Path,
+):
     board = Board(tmp_path)
     board.ensure()
-    a = board.create("First", column="todo")
-    b = board.create("Second", column="todo")
-    board.reorder(b.id, -1)
+    first = board.create("First", column="todo")
+    second = board.create("Second", column="todo")
+    board.create("Third", column="todo")
+    board.move(first.id, "review")
+    moved = board.move(first.id, "todo")
+    assert moved.path.name == first.path.name == "001-first.md"
     tickets, errors = board.scan()
     assert not errors
-    ordered = [t.id for t in tickets if t.column == "todo"]
-    assert ordered == [b.id, a.id]
+    assert [t.id for t in tickets if t.column == "todo"] == ["001", "002", "003"]
+    assert second.path.name == "002-second.md"
+
+
+def test_legacy_order_prefixed_filename_is_reported_as_invalid(tmp_path: Path):
+    board = Board(tmp_path)
+    board.ensure()
+    (board.root / "todo" / "20-001-old.md").write_text("# Old", encoding="utf-8")
+    tickets, errors = board.scan()
+    assert not tickets
+    assert errors == ["Invalid ticket filename: todo/20-001-old.md"]
 
 
 def test_archive_preserves_uniqueness(tmp_path: Path):
@@ -68,61 +82,6 @@ def test_all_tickets_ignore_state(tmp_path: Path):
     assert board.find(t.id).column == "todo"
 
 
-@pytest.mark.parametrize("fail_at", [1, 2])
-def test_interrupted_reorder_keeps_all_tickets_visible(tmp_path, monkeypatch, fail_at):
-    board = Board(tmp_path)
-    board.ensure()
-    tickets = [
-        board.create(title, column="todo") for title in ("First", "Second", "Third")
-    ]
-    original = {t.id: t.body for t in tickets}
-    rename = Path.rename
-    calls = 0
-
-    def failing_rename(source, destination):
-        nonlocal calls
-        calls += 1
-        if calls == fail_at:
-            raise OSError("Injected rename failure")
-        result = rename(source, destination)
-        visible, errors = board.scan()
-        assert not errors
-        assert {t.id: t.body for t in visible} == original
-        return result
-
-    monkeypatch.setattr(Path, "rename", failing_rename)
-    with pytest.raises(OSError, match="Injected"):
-        board.reorder(tickets[1].id, -1)
-    visible, errors = Board(tmp_path).scan()
-    assert not errors
-    assert {t.id: t.body for t in visible} == original
-
-
-def test_reorder_handles_equal_order_numbers(tmp_path):
-    board = Board(tmp_path)
-    board.ensure()
-    first = board.create("First", column="todo")
-    second = board.create("Second", column="todo")
-    second.path.rename(second.path.with_name("0-002-second.md"))
-    board.reorder(second.id, -1)
-    tickets, errors = board.scan()
-    assert not errors
-    assert [t.id for t in tickets] == [second.id, first.id]
-
-
-def test_legacy_interrupted_reorder_is_reported(tmp_path):
-    board = Board(tmp_path)
-    board.ensure()
-    ticket = board.create("First", column="todo")
-    stranded = ticket.path.with_name(".kanbeat-rename-001")
-    ticket.path.rename(stranded)
-    _, errors = board.scan()
-    assert any("Interrupted legacy reorder" in error for error in errors)
-    assert stranded.read_text() == ticket.body
-    with pytest.raises(ValueError, match="invalid tickets"):
-        board.create("Next")
-
-
 def test_deleted_highest_id_is_not_reused_after_state_loss(tmp_path):
     import shutil
 
@@ -138,7 +97,7 @@ def test_deleted_highest_id_is_not_reused_after_state_loss(tmp_path):
 def test_deleting_legacy_ticket_remembers_imported_ids(tmp_path):
     board = Board(tmp_path)
     board.ensure()
-    (board.root / "archive" / "0-999-imported.md").write_text("# Imported")
+    (board.root / "archive" / "999-imported.md").write_text("# Imported")
     board.remove_archived("999")
     assert board.create("Next").id == "1000"
 
@@ -182,42 +141,76 @@ def test_invalid_id_ledger_fails_closed(tmp_path):
     assert not board.scan()[0]
 
 
-def test_reorder_only_renames_swapped_tickets(tmp_path):
-    board = Board(tmp_path)
-    board.ensure()
-    tickets = [
-        board.create(title, column="todo") for title in ("First", "Second", "Third")
+def test_blocked_by_line_and_section_are_parsed_outside_code_fences():
+    from kanbeat.filesystem import blocker_ids
+
+    assert blocker_ids("# T\n\nBlocked by: #2, 003 and #0040\n") == [
+        "002",
+        "003",
+        "040",
     ]
-    last = tickets[-1].path.with_name("1000-003-third.md")
-    tickets[-1].path.rename(last)
-    board.reorder(tickets[1].id, -1)
-    assert last.exists()
-    assert [t.id for t in board.scan()[0]] == ["002", "001", "003"]
+    assert blocker_ids("# T\n- **Blocked by:** #002\n") == ["002"]
+    assert blocker_ids(
+        "# T\n## Blocked by\n- #002 Title 5\n- 3\n\n## Other\n- 77\n"
+    ) == [
+        "002",
+        "003",
+    ]
+    assert blocker_ids("# T\n```\nBlocked by: #9\n```\nFixed in 2024.\n") == []
 
 
-def test_external_move_during_reorder_does_not_lose_tickets(tmp_path, monkeypatch):
+def test_dependencies_derive_blocks_and_treat_done_and_archive_as_satisfied(
+    tmp_path: Path,
+):
+    from kanbeat.filesystem import dependencies
+
     board = Board(tmp_path)
     board.ensure()
-    first = board.create("First", column="todo")
-    second = board.create("Second", column="todo")
-    rename = Path.rename
-    moved = False
+    first = board.create("First", column="done")
+    archived = board.create("Archived", column="done")
+    board.move(archived.id, "archive")
+    open_one = board.create("Open", column="todo")
+    waiting = board.create(
+        "Waiting",
+        f"# Waiting\n\nBlocked by: #{first.id}, #{archived.id}, #{open_one.id}, #099\n",
+        column="todo",
+    )
+    links = dependencies(board.scan()[0])
+    assert [
+        (row["id"], row["satisfied"]) for row in links[waiting.id]["blocked_by"]
+    ] == [(first.id, True), (archived.id, True), (open_one.id, False), ("099", False)]
+    assert links[waiting.id]["blocked"]
+    assert [row["id"] for row in links[open_one.id]["blocks"]] == [waiting.id]
+    assert not links[open_one.id]["blocked"]
 
-    def move_during_rename(source, target):
-        nonlocal moved
-        result = rename(source, target)
-        if not moved:
-            moved = True
-            rename(first.path, board.root / "archive" / first.path.name)
-        return result
 
-    monkeypatch.setattr(Path, "rename", move_during_rename)
-    with pytest.raises(FileNotFoundError):
-        board.reorder(second.id, -1)
-    tickets, errors = board.scan()
-    assert not errors
-    assert {t.id: t.body for t in tickets} == {
-        first.id: first.body,
-        second.id: second.body,
-    }
-    assert board.find(first.id).column == "archive"
+def test_instructions_file_is_upgraded_only_when_it_is_a_known_old_default(
+    tmp_path: Path, monkeypatch
+):
+    import hashlib
+
+    from kanbeat import filesystem
+    from kanbeat.filesystem import INSTRUCTION
+
+    board = Board(tmp_path)
+    board.ensure()
+    path = board.root / "INSTRUCTIONS.md"
+    assert "Blocked by:" in path.read_text(encoding="utf-8")
+    assert "<order>" not in INSTRUCTION
+    old_default = "# Kanbeat ticket-writing guide\n\nan old default\n"
+    path.write_text(old_default, encoding="utf-8")
+    board.ensure()
+    assert (
+        path.read_text(encoding="utf-8")
+        == "# Kanbeat ticket-writing guide\n\nan old default\n"
+    )
+    monkeypatch.setattr(
+        filesystem,
+        "LEGACY_INSTRUCTION_HASHES",
+        frozenset({hashlib.sha256(old_default.encode()).hexdigest()}),
+    )
+    board.ensure()
+    assert path.read_text(encoding="utf-8") == INSTRUCTION
+    path.write_text("custom", encoding="utf-8")
+    board.ensure()
+    assert path.read_text(encoding="utf-8") == "custom"

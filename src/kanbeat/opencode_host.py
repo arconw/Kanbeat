@@ -400,6 +400,9 @@ class OpenCodeServeHost:
         payload = await self._call("GET", f"/session/{validate_session_id(session_id)}")
         return parse_session_metadata(payload)
 
+    async def delete_session(self, session_id: str) -> None:
+        await self._call("DELETE", f"/session/{validate_session_id(session_id)}")
+
     async def set_session_model(
         self, session_id: str, model: OpenCodeModel
     ) -> OpenCodeSessionMetadata:

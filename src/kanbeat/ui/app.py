@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -11,22 +13,22 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from .modal import BackdropModal
+from textual.geometry import Region
 from textual.widgets import Button, Input, Markdown, Select, Static, TextArea
 from textual.css.query import NoMatches
 
 from ..supervisor import request
-from .terminal import TerminalView
-from .sessions import SessionsView
+from .terminal import TerminalPane, TerminalView
+from .sessions import PopupMenu, SessionsView
 from .session_rows import live_session, worker_is_active, worker_status_label
 from .options import HARNESS
-from .board import BoardView
+from .board import BoardView, dependency_text, dependency_widgets
 from .preferences import ViewPreferences
 from .settings import Settings
 from .startup import StartupScreen
 
 COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed")
-ALL_COLUMNS = COLUMNS + ("archive",)
-COLUMN_OPTIONS = [(c.upper() if c != "review" else "REVIEW/QA", c) for c in ALL_COLUMNS]
+FREE_STEPS = {("backlog", "todo"), ("todo", "backlog")}
 
 
 class Confirm(BackdropModal[bool]):
@@ -62,7 +64,7 @@ class LogView(BackdropModal[None]):
                 yield Static(
                     f"SESSION OUTPUT · {self.ticket}/{self.slot}", classes="modal-name"
                 )
-                yield Button("× Close", id="close")
+                yield Button("×", id="close")
             with VerticalScroll(id="log-scroll"):
                 yield Static("Loading...", id="log-text")
             yield Button("Refresh", id="refresh")
@@ -120,7 +122,7 @@ class TicketView(BackdropModal[None]):
                     classes="modal-name",
                     id="ticket-heading",
                 )
-                yield Button("× Close", id="close")
+                yield Button("×", id="close")
             with VerticalScroll(classes="content"):
                 yield Static(
                     "FILE  "
@@ -130,6 +132,9 @@ class TicketView(BackdropModal[None]):
                     classes="hint",
                     id="ticket-location",
                 )
+                with Vertical(id="ticket-links") as links:
+                    yield from dependency_widgets(self.ticket)
+                links.display = bool(dependency_text(self.ticket))
                 yield Markdown(self.ticket["body"], id="ticket-markdown")
                 yield Static("HARNESS SLOTS", classes="section-title")
                 with Horizontal(classes="slot-row"):
@@ -199,6 +204,11 @@ class TicketView(BackdropModal[None]):
             self.query_one("#ticket-location", Static).update(
                 "FILE  " + latest["filename"] + "   •   " + latest["column"].upper()
             )
+        if dependency_text(latest) != dependency_text(self.ticket):
+            links = self.query_one("#ticket-links", Vertical)
+            await links.remove_children()
+            await links.mount_all(dependency_widgets(latest))
+            links.display = bool(dependency_text(latest))
         if latest["title"] != self.ticket["title"]:
             self.query_one("#ticket-heading", Static).update(
                 "TICKET " + latest["id"] + " · " + latest["title"]
@@ -238,6 +248,13 @@ class TicketView(BackdropModal[None]):
         name = event.button.id or ""
         if name == "close":
             self.dismiss(None)
+            return
+        if event.button.has_class("dependency"):
+            target = self.app.find_ticket(event.button.name or "")
+            if target is not None:
+                app = self.app
+                self.dismiss(None)
+                app.push_screen(TicketView(target))
             return
         if name == "dev-config":
             self.app.push_screen(Assignment(self.ticket, "developer"))
@@ -365,48 +382,32 @@ class Assignment(BackdropModal[None]):
                 self.dismiss(None)
 
 
-class TicketActions(BackdropModal[None]):
-    def __init__(self, ticket: dict[str, Any]):
-        super().__init__()
+class ColumnMenu(PopupMenu):
+    def __init__(self, ticket: dict[str, Any], anchor: Region | None = None):
+        super().__init__(anchor)
         self.ticket = ticket
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="sm"):
-            with Horizontal(classes="modal-header"):
-                yield Static(
-                    "TICKET ACTIONS · " + self.ticket["id"], classes="modal-name"
+        with Vertical(classes="menu"):
+            yield Static("#" + self.ticket["id"], classes="section-title")
+            for column in COLUMNS:
+                yield Button(
+                    "REVIEW/QA" if column == "review" else column.upper(),
+                    id="jump-" + column,
+                    disabled=column == self.ticket["column"],
                 )
-                yield Button("×", id="close")
-            yield Static("Move to column", classes="field")
-            yield Select(COLUMN_OPTIONS, value=self.ticket["column"], id="column")
-            with Horizontal(classes="modal-actions"):
-                yield Button("Move", id="move", variant="primary")
-                yield Button("↑ Order", id="up")
-                yield Button("↓ Order", id="down")
-                yield Button("Archive", id="archive", variant="error")
+            yield Button("ARCHIVE", id="jump-archive", variant="error")
 
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        name = event.button.id
-        if name == "close":
-            self.dismiss(None)
-            return
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        target = (event.button.id or "")[len("jump-") :]
         ticket_id = self.ticket["id"]
-        if name == "move":
-            cmd = {
-                "op": "move",
-                "ticket": ticket_id,
-                "column": self.query_one("#column", Select).value,
-            }
-        elif name == "archive":
-            cmd = {"op": "archive", "ticket": ticket_id}
+        app = self.app
+        self.dismiss(None)
+        if target == "archive":
+            app.confirm_archive(ticket_id)
         else:
-            cmd = {
-                "op": "reorder",
-                "ticket": ticket_id,
-                "direction": -1 if name == "up" else 1,
-            }
-        if await self.app.execute(cmd):
-            self.dismiss(None)
+            app.move_by_hand(ticket_id, target)
 
 
 class NewTicket(BackdropModal[None]):
@@ -460,12 +461,16 @@ class ArchiveView(VerticalScroll):
                 yield Button("Delete", id="delete-" + t["id"], variant="error")
 
 
+TABS = ("sessions", "board", "archive", "settings")
+
+
 class KanbeatApp(App[None]):
     TITLE = "Kanbeat"
     CSS_PATH = "styles.tcss"
+    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (136, "-wide")]
     BINDINGS = [
-        ("1", "tab('board')", "Board"),
-        ("2", "tab('sessions')", "Sessions"),
+        ("1", "tab('sessions')", "Sessions"),
+        ("2", "tab('board')", "Board"),
         ("3", "tab('archive')", "Archive"),
         ("4", "tab('settings')", "Settings"),
         ("ctrl+r", "refresh", "Refresh"),
@@ -476,7 +481,7 @@ class KanbeatApp(App[None]):
         super().__init__()
         self.project = project
         self.preferences = ViewPreferences(project)
-        self.tab = "board"
+        self.tab = TABS[0]
         self.snapshot: dict[str, Any] = {}
         self._signature = ""
         self._updating = False
@@ -485,14 +490,23 @@ class KanbeatApp(App[None]):
         self._seen_notice_id = 0
         self._initial_snapshot = True
         self._pulse_bright = False
+        self.embedded_terminal: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="root"):
             with Horizontal(id="nav"):
-                yield Static("◉ KANBEAT", id="logo")
-                for tab in ("board", "sessions", "archive", "settings"):
+                with Horizontal(id="brand"):
+                    yield Static("◉ KANBEAT", id="logo")
+                    yield Static("", id="terminal-heading")
+                with Horizontal(id="terminal-controls"):
+                    yield Button("Live", id="terminal-live", disabled=True)
+                    yield Button("Stop", id="terminal-stop", variant="error")
+                    yield Button("Detach", id="terminal-detach")
+                yield Static("", id="nav-spacer")
+                for tab in TABS:
                     yield Button(tab.title(), id="nav-" + tab, classes="nav-button")
                 yield Button("▶ PLAY", id="execution", variant="success")
+                yield Button("Quit", id="quit")
             yield Vertical(id="content")
             yield Static("Local supervisor · " + str(self.project), id="bottom")
 
@@ -524,6 +538,65 @@ class KanbeatApp(App[None]):
     async def rpc(self, message: dict[str, Any]) -> dict[str, Any]:
         return await request(self.project, message)
 
+    async def put_on_clipboard(self, text: str) -> None:
+        self.copy_to_clipboard(text)
+        tool = next((name for name in ("wl-copy", "xclip") if shutil.which(name)), None)
+        if tool is None:
+            return
+        command = [tool] + (["-selection", "clipboard"] if tool == "xclip" else [])
+        try:
+            await asyncio.to_thread(
+                subprocess.run,
+                command,
+                input=text.encode(),
+                timeout=3,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    async def copy_selection(self, text: str) -> None:
+        await self.put_on_clipboard(text)
+        self.notify(f"Copied selection, {len(text)} characters")
+
+    async def resume_session(self, terminal_id: str) -> None:
+        entry = self.snapshot.get("terminals", {}).get(terminal_id)
+        if entry is None or entry.get("status") == "stopping":
+            return
+        if not entry.get("attached") or entry.get("status") not in (
+            "starting",
+            "running",
+        ):
+            try:
+                result = await self.rpc(
+                    {"op": "session_restart", "terminal": terminal_id}
+                )
+            except (RuntimeError, ValueError, OSError) as exc:
+                self.notify(str(exc), severity="error", timeout=7)
+                return
+            terminal_id = result["terminal"]
+            await self.refresh_snapshot(force=True)
+        self.open_session_terminal(terminal_id)
+
+    def forget_embedded(self, terminal_id: str) -> None:
+        if self.embedded_terminal != terminal_id:
+            return
+        pane = next(iter(self.screen_stack[0].query(TerminalPane)), None)
+        if pane is not None:
+            pane.leave()
+
+    def open_session_terminal(self, terminal_id: str) -> None:
+        pages = (
+            self.screen_stack[0].query(SessionsView) if self.tab == "sessions" else []
+        )
+        page = next(iter(pages), None)
+        if page is not None and page.can_embed:
+            page.show_terminal(terminal_id)
+        else:
+            self.push_screen(TerminalView(terminal_id))
+
     async def open_task_terminal(self, ticket_id: str, slot: str) -> None:
         ticket = next(
             (row for row in self.snapshot.get("tickets", []) if row["id"] == ticket_id),
@@ -536,7 +609,7 @@ class KanbeatApp(App[None]):
         )
         try:
             result = await self.rpc({"op": op, "ticket": ticket_id, "slot": slot})
-            self.push_screen(TerminalView(result["terminal"]))
+            self.open_session_terminal(result["terminal"])
         except (RuntimeError, ValueError, OSError) as exc:
             self.notify(str(exc), severity="error", timeout=7)
 
@@ -644,7 +717,7 @@ class KanbeatApp(App[None]):
             target = next(iter(panel.query("#" + focused_id)), None)
             if target is not None and target is not previous_focus:
                 target.focus(scroll_visible=False)
-        for tab in ("board", "sessions", "archive", "settings"):
+        for tab in TABS:
             self.query_one("#nav-" + tab, Button).set_class(tab == self.tab, "selected")
 
     def action_tab(self, tab: str) -> None:
@@ -664,6 +737,12 @@ class KanbeatApp(App[None]):
         if name.startswith("nav-"):
             self.tab = name[4:]
             await self.render_page()
+        elif name.startswith("terminal-"):
+            pane = next(iter(self.screen_stack[0].query(TerminalPane)), None)
+            if pane is not None:
+                await pane.press_control(name)
+        elif name == "quit":
+            self.exit()
         elif name == "execution":
             if self.snapshot.get("execution") == "running":
                 await self.execute({"op": "stop"})
@@ -688,10 +767,13 @@ class KanbeatApp(App[None]):
             ticket = self.find_ticket(name[5:])
             if ticket:
                 self.push_screen(TicketView(ticket))
-        elif name.startswith("act-"):
-            ticket = self.find_ticket(name[4:])
+        elif name.startswith("menu-"):
+            ticket = self.find_ticket(name[5:])
             if ticket:
-                self.push_screen(TicketActions(ticket))
+                self.push_screen(ColumnMenu(ticket, event.button.region))
+        elif name.startswith(("left-", "right-")):
+            direction, ticket_id = name.split("-", 1)
+            self.step_ticket(ticket_id, -1 if direction == "left" else 1)
         elif name.startswith("restore-"):
             await self.execute(
                 {"op": "restore", "ticket": name[8:], "column": "backlog"}
@@ -719,6 +801,34 @@ class KanbeatApp(App[None]):
                 "prompt": self.query_one("#cfg-hook-prompt", TextArea).text,
             }
             await self.execute({"op": "save_config", "values": config})
+
+    @work
+    async def confirm_archive(self, ticket_id: str) -> None:
+        if await self.push_screen_wait(Confirm("Archive ticket #" + ticket_id + "?")):
+            await self.execute({"op": "archive", "ticket": ticket_id})
+
+    def step_ticket(self, ticket_id: str, direction: int) -> None:
+        ticket = self.find_ticket(ticket_id)
+        if ticket is None or ticket["column"] not in COLUMNS:
+            return
+        target = COLUMNS.index(ticket["column"]) + direction
+        if 0 <= target < len(COLUMNS):
+            self.move_by_hand(ticket_id, COLUMNS[target])
+
+    @work
+    async def move_by_hand(self, ticket_id: str, column: str) -> None:
+        ticket = self.find_ticket(ticket_id)
+        if ticket is None or ticket["column"] == column:
+            return
+        step = (ticket["column"], column)
+        if step not in FREE_STEPS and not await self.push_screen_wait(
+            Confirm(
+                f"Move #{ticket_id} from {step[0].upper()} to {step[1].upper()} "
+                "by hand? Kanbeat normally does this step itself."
+            )
+        ):
+            return
+        await self.execute({"op": "move", "ticket": ticket_id, "column": column})
 
     @work
     async def confirm_bulk_archive(self) -> None:

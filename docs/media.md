@@ -22,7 +22,7 @@ The GIFs in `docs/media/` are captured from the real Kanbeat TUI by [`tools/reco
 
 | File | Shows |
 | --- | --- |
-| `board.gif` | Creating tickets from the TUI and from `kanbeat new` in a second terminal, ticket actions, reordering, manual moves to Done. |
+| `board.gif` | Creating tickets from the TUI and from `kanbeat new` in a second terminal, ticket actions, manual moves to Done. |
 | `play-stop.gif` | Play and Stop, task terminals disabled while the board runs, a second client joining, the first client closing without stopping anything. |
 | `sessions.gif` | Session groups, a new independent session, the supervisor-owned terminal, detaching, Board Play/Stop not touching the session, a second client reopening it, confirmed stop and record removal. |
 

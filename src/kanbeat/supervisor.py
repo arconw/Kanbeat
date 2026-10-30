@@ -18,7 +18,7 @@ import signal
 import subprocess
 from typing import Any
 
-from .filesystem import Board, Ticket, ACTIVE
+from .filesystem import Board, Ticket, ACTIVE, dependencies, unblocked
 from .native import NativeRun, Outcome, VERDICT, available, process_identity
 from .native_settings import NativeSettings, SettingsError, from_codex_thread
 from .claude_runtime import ClaudeRun, ClaudeRuntime
@@ -75,6 +75,7 @@ class Supervisor:
         self.guard = asyncio.Lock()
         self.shutdown_requested = asyncio.Event()
         self._seen_queue = False
+        self._blocked_reported = False
         self._reported: set[str] = set()
         self._host_lock = asyncio.Lock()
         self._codex_lock = asyncio.Lock()
@@ -1112,101 +1113,119 @@ class Supervisor:
                 )
                 return
             active = [t for t in tickets if t.column in ACTIVE]
-            if len(active) > 1:
-                await self.stop("More than one active ticket; board stopped")
-                return
+            todo = [t for t in tickets if t.column == "todo"]
+            if len(active) < self.parallel_limit():
+                ready = unblocked(todo, tickets)
+                if ready:
+                    self._seen_queue = True
+                    self._blocked_reported = False
+                    self.move_ticket(ready[0].id, "progress")
+                    return
             if not active:
-                queue = [t for t in tickets if t.column == "todo"]
-                if not queue:
+                if not todo:
                     if self._seen_queue:
                         self.notice("All queued tasks completed")
                         self._seen_queue = False
-                    return
-                self._seen_queue = True
-                self.move_ticket(queue[0].id, "progress")
+                elif not self._blocked_reported:
+                    self._blocked_reported = True
+                    self.notice(
+                        "Todo tickets are waiting for unfinished dependencies",
+                        "warning",
+                    )
                 return
-            ticket = active[0]
             self._seen_queue = True
-            state = self.ticket_state(ticket.id)
-            if state.get("phase") != ticket.column:
-                # All jobs associated with the old phase must be stopped.
-                await self.stop_stale_jobs(tickets)
-                state["phase"] = ticket.column
-                state["iteration"] = int(state.get("iteration", 0)) + 1
-                state["runtime"] = {}
-                if ticket.column == "review":
-                    state["review_results"] = {}
-                self.save()
-            current_hash = self.content_hash(ticket)
-            runtime = state.setdefault("runtime", {})
-            if ticket.column == "review":
-                for slot, result in list(state.get("review_results", {}).items()):
-                    if result.get("task_hash") != current_hash or result.get(
-                        "iteration"
-                    ) != state.get("iteration"):
-                        del state["review_results"][slot]
-                        if runtime.get(slot, {}).get("status") == "completed":
-                            runtime[slot]["status"] = "stale"
-                        self.save()
-            elif runtime.get("developer", {}).get("status") == "completed":
-                if runtime["developer"].get("task_hash") != current_hash:
-                    runtime["developer"]["status"] = "stale"
-                    self.save()
-            if ticket.column == "review" and not state.get("reviewers"):
-                self.move_ticket(ticket.id, "done")
-                state["phase"] = "done"
-                self.save()
-                return
-            slots = self.workers(ticket)
-            for worker, assignment in slots:
-                if worker in state.get("review_results", {}):
-                    continue
-                try:
-                    await self.start_worker(ticket, worker, assignment)
-                except RuntimeError as exc:
-                    await self.stop(str(exc))
+            for ticket in active:
+                await self.advance_ticket(ticket)
+                if self.runtime.data["execution"] != "running":
                     return
-            if ticket.column == "progress":
-                if runtime.get("developer", {}).get("status") == "completed":
-                    if (
-                        runtime["developer"].get("task_hash") == current_hash
-                        and self.content_hash(self.board.find(ticket.id))
-                        == current_hash
-                    ):
-                        self.move_ticket(ticket.id, "review")
-                        state["phase"] = ""
-                        self.save()
-            else:
-                results = state.get("review_results", {})
-                reviewer_ids = {worker for worker, _assignment in slots}
-                if reviewer_ids and set(results) == reviewer_ids:
-                    if all(
-                        result.get("task_hash") == current_hash
-                        and result.get("iteration") == state.get("iteration")
-                        for result in results.values()
-                    ):
-                        # Re-read just before moving; an editor may have saved
-                        # the ticket after the scan at the start of this tick.
-                        fresh = self.board.find(ticket.id)
-                        if self.content_hash(fresh) != current_hash:
-                            return
-                        rejected = [
-                            v
-                            for v in results.values()
-                            if v.get("verdict") == "changes_requested"
-                        ]
-                        if rejected:
-                            state["feedback"] = "\n\n".join(
-                                v.get("feedback", "") for v in rejected
-                            )
-                            self.move_ticket(ticket.id, "progress")
-                        else:
-                            self.move_ticket(ticket.id, "done")
-                        state["phase"] = ""
-                        self.save()
+
+    def parallel_limit(self) -> int:
+        try:
+            return max(1, int(self.runtime.config["max_parallel"]))
+        except (KeyError, TypeError, ValueError):
+            return 1
+
+    async def advance_ticket(self, ticket: Ticket) -> None:
+        state = self.ticket_state(ticket.id)
+        if state.get("phase") != ticket.column:
+            # All jobs associated with the old phase must be stopped.
+            await self.stop_stale_jobs(self.board.scan()[0])
+            state["phase"] = ticket.column
+            state["iteration"] = int(state.get("iteration", 0)) + 1
+            state["runtime"] = {}
+            if ticket.column == "review":
+                state["review_results"] = {}
+            self.save()
+        current_hash = self.content_hash(ticket)
+        runtime = state.setdefault("runtime", {})
+        if ticket.column == "review":
+            for slot, result in list(state.get("review_results", {}).items()):
+                if result.get("task_hash") != current_hash or result.get(
+                    "iteration"
+                ) != state.get("iteration"):
+                    del state["review_results"][slot]
+                    if runtime.get(slot, {}).get("status") == "completed":
+                        runtime[slot]["status"] = "stale"
+                    self.save()
+        elif runtime.get("developer", {}).get("status") == "completed":
+            if runtime["developer"].get("task_hash") != current_hash:
+                runtime["developer"]["status"] = "stale"
+                self.save()
+        if ticket.column == "review" and not state.get("reviewers"):
+            self.move_ticket(ticket.id, "done")
+            state["phase"] = "done"
+            self.save()
+            return
+        slots = self.workers(ticket)
+        for worker, assignment in slots:
+            if worker in state.get("review_results", {}):
+                continue
+            try:
+                await self.start_worker(ticket, worker, assignment)
+            except RuntimeError as exc:
+                await self.stop(str(exc))
+                return
+        if ticket.column == "progress":
+            if runtime.get("developer", {}).get("status") == "completed":
+                if (
+                    runtime["developer"].get("task_hash") == current_hash
+                    and self.content_hash(self.board.find(ticket.id)) == current_hash
+                ):
+                    self.move_ticket(ticket.id, "review")
+                    state["phase"] = ""
+                    self.save()
+        else:
+            results = state.get("review_results", {})
+            reviewer_ids = {worker for worker, _assignment in slots}
+            if reviewer_ids and set(results) == reviewer_ids:
+                if all(
+                    result.get("task_hash") == current_hash
+                    and result.get("iteration") == state.get("iteration")
+                    for result in results.values()
+                ):
+                    # Re-read just before moving; an editor may have saved
+                    # the ticket after the scan at the start of this tick.
+                    fresh = self.board.find(ticket.id)
+                    if self.content_hash(fresh) != current_hash:
+                        return
+                    rejected = [
+                        v
+                        for v in results.values()
+                        if v.get("verdict") == "changes_requested"
+                    ]
+                    if rejected:
+                        state["feedback"] = "\n\n".join(
+                            v.get("feedback", "") for v in rejected
+                        )
+                        self.move_ticket(ticket.id, "progress")
+                    else:
+                        self.move_ticket(ticket.id, "done")
+                    state["phase"] = ""
+                    self.save()
 
     def snapshot(self) -> dict[str, Any]:
         tickets, errors = self.board.scan()
+        links = dependencies(tickets)
         return {
             "brand": "Kanbeat",
             "project": str(self.board.project),
@@ -1217,9 +1236,9 @@ class Supervisor:
                     "title": t.title,
                     "body": t.body,
                     "column": t.column,
-                    "order": t.order,
                     "filename": t.path.name,
                     "state": self.runtime.data["tickets"].get(t.id, {}),
+                    **links[t.id],
                 }
                 for t in tickets
             ],
@@ -1286,23 +1305,34 @@ class Supervisor:
                 str(request.get("body") or ""),
                 str(request.get("column") or "backlog"),
             )
-        elif op in ("move", "archive", "restore", "reorder", "delete"):
+        elif op in ("move", "archive", "restore", "delete"):
             ticket_id = str(request.get("ticket") or "")
             ticket = self.board.find(ticket_id)
             if ticket.column in ACTIVE and self.runtime.data["execution"] == "running":
                 raise ValueError(
                     "Stop the board before manually moving an active ticket"
                 )
-            if op != "reorder":
-                await self.terminals.stop_ticket(ticket_id)
+            await self.terminals.stop_ticket(ticket_id)
             if op == "move":
-                self.move_ticket(ticket_id, str(request["column"]))
+                column = str(request["column"])
+                if column == "progress":
+                    waiting = [
+                        row["id"]
+                        for row in dependencies(self.board.scan()[0])[ticket_id][
+                            "blocked_by"
+                        ]
+                        if not row["satisfied"]
+                    ]
+                    if waiting:
+                        raise ValueError(
+                            "Blocked by unfinished tickets: "
+                            + ", ".join("#" + ticket for ticket in waiting)
+                        )
+                self.move_ticket(ticket_id, column)
             elif op == "archive":
                 self.move_ticket(ticket_id, "archive")
             elif op == "restore":
                 self.move_ticket(ticket_id, str(request.get("column") or "backlog"))
-            elif op == "reorder":
-                self.board.reorder(ticket_id, int(request["direction"]))
             else:
                 self.board.remove_archived(ticket_id)
         elif op == "set_assignment":

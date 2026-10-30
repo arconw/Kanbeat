@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import re
+import shutil
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 import uuid
 
 from .claude_runtime import ClaudeRuntimeError, ClaudeSessionMissing
 from .codex_host import CodexHostError, CodexRpcError, thread_missing
 from .native import available, process_identity
-from .opencode_host import OpenCodeHostError, OpenCodeHttpError
+from .native_settings import cli_args
+from .opencode_host import OpenCodeHostError, OpenCodeHttpError, OpenCodeModel
 from .state import LocalState
-from .terminals import Terminals
+from .terminals import Terminals, framed_prompt
 
 
 def display_name(value: Any) -> str:
@@ -299,10 +304,16 @@ class SessionGroups:
         self.state.save()
         return {"terminal": terminal_id}
 
-    async def create_codex_thread(self, host: Any) -> Any:
+    async def create_codex_thread(
+        self, host: Any, name: str = "Kanbeat config", settings: Any = None
+    ) -> Any:
         try:
-            metadata = await host.start_thread(self.state.board.project)
-            await host.set_thread_name(metadata.thread_id, "Kanbeat config")
+            metadata = await host.start_thread(
+                self.state.board.project,
+                model=settings.model if settings else None,
+                model_provider=settings.provider if settings else None,
+            )
+            await host.set_thread_name(metadata.thread_id, name)
             return metadata
         except (CodexHostError, OSError) as error:
             raise ValueError(
@@ -321,9 +332,11 @@ class SessionGroups:
             raise ValueError(f"Could not read Codex config thread: {error}") from error
         return True
 
-    async def create_opencode_session(self, host: Any) -> Any:
+    async def create_opencode_session(self, host: Any, model: Any = None) -> Any:
         try:
-            return await host.create_session(directory=self.state.board.project)
+            return await host.create_session(
+                directory=self.state.board.project, model=model
+            )
         except (OpenCodeHostError, OSError) as error:
             raise ValueError(
                 f"Could not create OpenCode config session: {error}"
@@ -344,6 +357,188 @@ class SessionGroups:
                 f"Could not read OpenCode config session: {error}"
             ) from error
         return True
+
+    @staticmethod
+    def native_id(value: Any) -> str | None:
+        if value is None or value == "":
+            return None
+        if (
+            not isinstance(value, str)
+            or value.startswith("-")
+            or len(value) > 512
+            or any(char.isspace() for char in value)
+        ):
+            raise ValueError("Invalid native session identifier")
+        return value
+
+    async def native_launch(
+        self, entry: dict[str, Any]
+    ) -> tuple[list[str], dict[str, str] | None] | None:
+        harness = entry.get("harness")
+        if harness == "codex" and self.codex_host is not None:
+            return await self.launch_codex(entry)
+        if harness == "opencode" and self.opencode_host is not None:
+            return await self.launch_opencode(entry)
+        if harness == "claude":
+            return self.launch_claude(entry)
+        if harness == "pi":
+            return self.launch_pi(entry)
+        return None
+
+    def fresh_settings(self, harness: str) -> Any:
+        return self.terminals.stored_settings(
+            {"harness": harness, "native_session": None}
+        )
+
+    async def launch_codex(
+        self, entry: dict[str, Any]
+    ) -> tuple[list[str], dict[str, str] | None]:
+        try:
+            host = await self.codex_host()
+        except (CodexHostError, OSError) as error:
+            raise ValueError(f"Could not start Codex host: {error}") from error
+        session_id = entry.get("native_session")
+        created = False
+        settings = None
+        if not session_id or not await self.codex_thread_exists(host, session_id):
+            settings = self.fresh_settings("codex")
+            metadata = await self.create_codex_thread(
+                host, str(entry.get("title") or "Kanbeat session"), settings
+            )
+            session_id = metadata.thread_id
+            entry["native_session"] = session_id
+            created = True
+        prompt = framed_prompt(entry.get("prompt")) if created else ""
+        argv = host.tui_argv(thread_id=session_id, prompt=prompt or None)
+        if created and settings is not None and settings.effort:
+            position = argv.index("resume")
+            argv[position:position] = [
+                "-c",
+                f'model_reasoning_effort="{settings.effort}"',
+            ]
+        return argv, host.child_env()
+
+    async def launch_opencode(
+        self, entry: dict[str, Any]
+    ) -> tuple[list[str], dict[str, str] | None] | None:
+        try:
+            host = await self.opencode_host()
+        except (OpenCodeHostError, OSError) as error:
+            raise ValueError(f"Could not start OpenCode host: {error}") from error
+        session_id = entry.get("native_session")
+        if not session_id or not await self.opencode_session_exists(host, session_id):
+            if entry.get("prompt"):
+                return None
+            settings = self.fresh_settings("opencode")
+            model = (
+                OpenCodeModel(settings.provider, settings.model)
+                if settings is not None and settings.provider and settings.model
+                else None
+            )
+            metadata = await self.create_opencode_session(host, model)
+            session_id = metadata.session_id
+            entry["native_session"] = session_id
+        return host.viewer_argv(session_id), host.child_env()
+
+    def claude_projects_dir(self) -> Path:
+        env = (
+            self.claude_runtime.base_env
+            if self.claude_runtime is not None
+            else os.environ
+        )
+        config = Path(env.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+        return config.expanduser() / "projects"
+
+    def claude_session_started(self, session_id: str) -> bool:
+        return any(self.claude_projects_dir().glob(f"*/{session_id}.jsonl"))
+
+    def delete_claude_transcripts(self, session_id: str) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
+            raise ValueError("Invalid Claude session identifier")
+        projects = self.claude_projects_dir()
+        for transcript in projects.glob(f"*/{session_id}.jsonl"):
+            transcript.unlink(missing_ok=True)
+        for folder in projects.glob(f"*/{session_id}"):
+            if folder.is_dir():
+                shutil.rmtree(folder, ignore_errors=True)
+
+    @staticmethod
+    def pi_sessions_dir() -> Path:
+        configured = os.environ.get("PI_CODING_AGENT_SESSION_DIR")
+        return Path(
+            configured or Path.home() / ".pi" / "agent" / "sessions"
+        ).expanduser()
+
+    def pi_session_files(self, session_id: str) -> list[Path]:
+        return sorted(self.pi_sessions_dir().glob(f"*/*_{session_id}.jsonl"))
+
+    def launch_pi(
+        self, entry: dict[str, Any]
+    ) -> tuple[list[str], dict[str, str] | None] | None:
+        session_id = entry.get("native_session")
+        if session_id and not entry.get("native_assigned"):
+            return None
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            entry["native_session"] = session_id
+            entry["native_assigned"] = True
+        if self.pi_session_files(session_id):
+            return ["pi", "--session-id", session_id], None
+        prompt = framed_prompt(entry.get("prompt"))
+        argv = [
+            "pi",
+            *cli_args("pi", self.fresh_settings("pi"), interactive=True),
+            "--session-id",
+            session_id,
+        ]
+        return argv + ([prompt] if prompt else []), None
+
+    async def delete_native(self, entry: dict[str, Any]) -> None:
+        session_id = entry.get("native_session")
+        harness = entry.get("harness")
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("No native session is recorded; nothing to delete")
+        try:
+            if harness == "opencode" and self.opencode_host is not None:
+                await (await self.opencode_host()).delete_session(session_id)
+            elif harness == "codex" and self.codex_host is not None:
+                await (await self.codex_host()).delete_thread(session_id)
+            elif harness == "claude":
+                await asyncio.to_thread(self.delete_claude_transcripts, session_id)
+            elif harness == "pi":
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
+                    raise ValueError("Invalid Pi session identifier")
+                for path in self.pi_session_files(session_id):
+                    path.unlink(missing_ok=True)
+            else:
+                raise ValueError(f"Deleting {harness} sessions is not supported")
+        except OpenCodeHttpError as error:
+            if error.status != 404:
+                raise ValueError(f"Could not delete the OpenCode session: {error}")
+        except CodexRpcError as error:
+            if not thread_missing(error):
+                raise ValueError(f"Could not delete the Codex thread: {error}")
+        except (OpenCodeHostError, CodexHostError, OSError) as error:
+            raise ValueError(f"Could not delete the {harness} session: {error}")
+
+    def launch_claude(
+        self, entry: dict[str, Any]
+    ) -> tuple[list[str], dict[str, str] | None]:
+        session_id = entry.get("native_session")
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            entry["native_session"] = session_id
+            entry["native_assigned"] = True
+        if not entry.get("native_assigned") or self.claude_session_started(session_id):
+            return ["claude", "--resume", session_id], None
+        prompt = framed_prompt(entry.get("prompt"))
+        argv = [
+            "claude",
+            *cli_args("claude", self.fresh_settings("claude"), interactive=True),
+            "--session-id",
+            session_id,
+        ]
+        return argv + ([prompt] if prompt else []), None
 
     async def dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         op = request.get("op")
@@ -447,14 +642,28 @@ class SessionGroups:
                 raise ValueError("Session prompt must be text of at most 16000 bytes")
             if native_session is not None and not isinstance(native_session, str):
                 raise ValueError("Native session ID must be text")
+            launch = None
+            draft = {
+                "harness": harness,
+                "title": title,
+                "prompt": prompt,
+                "native_session": native_session,
+            }
+            if native_session is None:
+                launch = await self.native_launch(draft)
             terminal_id = await self.terminals.create(
                 harness,
                 owner="custom",
                 group=group_id,
                 title=title,
                 prompt=prompt,
-                native_session=native_session,
+                native_session=draft["native_session"],
+                argv=launch[0] if launch else None,
+                env=launch[1] if launch else None,
             )
+            if draft.get("native_assigned"):
+                self.terminals.entries[terminal_id]["native_assigned"] = True
+                self.state.save()
             return {"terminal": terminal_id}
         elif op in ("session_update", "session_restart", "session_delete"):
             terminal_id = str(request.get("terminal") or "")
@@ -462,6 +671,17 @@ class SessionGroups:
             if op == "session_update":
                 title = display_name(request.get("title"))
                 group_id = self.group(str(request.get("group") or ""))
+                native = self.native_id(request.get("native_session"))
+                if "native_session" in request and native != entry.get(
+                    "native_session"
+                ):
+                    self.inactive(entry)
+                    if entry.get("status") in ("starting", "running", "stopping"):
+                        raise ValueError(
+                            "Stop the session before changing its native ID"
+                        )
+                    entry["native_session"] = native
+                    entry.pop("native_assigned", None)
                 entry.update(title=title, group=group_id)
             elif op == "session_restart":
                 self.inactive(entry)
@@ -476,7 +696,13 @@ class SessionGroups:
                             "harness": entry.get("harness") or "",
                         }
                     )
-                await self.terminals.restart(terminal_id)
+                launch = await self.native_launch(entry)
+                await self.terminals.restart(
+                    terminal_id,
+                    argv=launch[0] if launch else None,
+                    env=launch[1] if launch else None,
+                )
+                self.state.save()
                 return {"terminal": terminal_id}
             else:
                 self.inactive(entry)
@@ -503,6 +729,8 @@ class SessionGroups:
                     events_id = entry.get("events_id")
                     if isinstance(events_id, str) and events_id:
                         self.claude_runtime.remove_events(events_id)
+                if request.get("native") is True:
+                    await self.delete_native(entry)
                 session = self.terminals.sessions.pop(terminal_id, None)
                 if session is not None:
                     session.close()

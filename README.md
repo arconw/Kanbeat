@@ -10,7 +10,7 @@ A filesystem-native Kanban board for AI coding agents. A ticket is a Markdown fi
 
 ## What it does
 
-- **Files are the board.** Tickets live in `.kanbeat/<column>/<order>-<id>-<slug>.md`. Moving a file moves the ticket, and you can edit tickets in any editor. No frontmatter, no hidden metadata.
+- **Files are the board.** Tickets live in `.kanbeat/<column>/<id>-<slug>.md`. Moving a file moves the ticket, and you can edit tickets in any editor. No frontmatter, no hidden metadata.
 - **One supervisor per project.** `kanbeat` starts or joins it. Closing a TUI never stops work, and several terminals can watch the same board.
 - **Play and Stop.** Play lets the supervisor dispatch the Todo queue to your coding CLI. Stop interrupts task workers and leaves every ticket where it is; independent sessions keep running.
 - **Developer, then Review/QA.** A developer turn moves a ticket to Review/QA, where zero or more reviewer slots with isolated contexts approve it or send it back with feedback.
@@ -51,10 +51,10 @@ Kanbeat is not published on PyPI or Homebrew, and no prebuilt installers have be
 
 ## Installation
 
-Install the `v0.8.0` release tag from GitHub into an isolated environment:
+Install the `v0.9.0` release tag from GitHub into an isolated environment:
 
 ```sh
-uv tool install git+https://github.com/arconw/Kanbeat.git@v0.8.0
+uv tool install git+https://github.com/arconw/Kanbeat.git@v0.9.0
 ```
 
 If the command is not on your PATH after installation, run `uv tool update-shell` and reopen your terminal.
@@ -62,14 +62,14 @@ If the command is not on your PATH after installation, run `uv tool update-shell
 Or, with pipx:
 
 ```sh
-pipx install git+https://github.com/arconw/Kanbeat.git@v0.8.0
+pipx install git+https://github.com/arconw/Kanbeat.git@v0.9.0
 ```
 
 Use `pipx ensurepath` if needed. Without uv or pipx, use a virtual environment:
 
 ```sh
 python -m venv ~/.venvs/kanbeat
-~/.venvs/kanbeat/bin/python -m pip install git+https://github.com/arconw/Kanbeat.git@v0.8.0
+~/.venvs/kanbeat/bin/python -m pip install git+https://github.com/arconw/Kanbeat.git@v0.9.0
 ~/.venvs/kanbeat/bin/kanbeat --help
 ```
 
