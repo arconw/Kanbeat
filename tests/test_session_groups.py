@@ -18,7 +18,9 @@ def supervisor(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("kanbeat.session_groups.available", lambda name: True)
     monkeypatch.setattr("kanbeat.supervisor.available", lambda name: True)
-    return Supervisor(tmp_path)
+    instance = Supervisor(tmp_path)
+    instance.runtime.config["default_harness"] = "pi"
+    return instance
 
 
 @pytest.mark.asyncio
@@ -96,7 +98,7 @@ async def test_harness_config_session_is_reused_and_restarted(supervisor):
             {"op": "session_config_open", "harness": ""}
         )
         default_entry = supervisor.terminals.entries[default["terminal"]]
-        assert default_entry["harness"] == "codex"
+        assert default_entry["harness"] == "pi"
         entry["status"] = "stopping"
         supervisor.save()
         with pytest.raises(ValueError, match="still stopping"):

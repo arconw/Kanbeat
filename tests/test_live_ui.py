@@ -504,6 +504,7 @@ async def test_open_harness_config_reattaches_the_same_terminal(tmp_path, monkey
     )
     monkeypatch.setattr("kanbeat.session_groups.available", lambda name: True)
     supervisor = Supervisor(tmp_path)
+    supervisor.runtime.config["default_harness"] = "pi"
     app = client(supervisor, monkeypatch)
     try:
         async with app.run_test(size=(100, 35)) as pilot:
@@ -515,7 +516,7 @@ async def test_open_harness_config_reattaches_the_same_terminal(tmp_path, monkey
             terminal_id = app.screen.terminal_id
             entry = supervisor.terminals.entries[terminal_id]
             assert entry["role"] == "config"
-            assert entry["harness"] == "codex"
+            assert entry["harness"] == "pi"
             await app.screen.action_detach()
             await pilot.pause(0.1)
             assert not isinstance(app.screen, TerminalView)
