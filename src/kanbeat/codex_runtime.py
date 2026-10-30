@@ -93,18 +93,13 @@ class CodexRun:
         method = notification.method
         params = notification.params
         if method == "turn/started":
-            turn_id = _turn_id(params)
-            if turn_id is not None and self.turn_id is None:
-                self.turn_id = turn_id
-            if turn_id == self.turn_id:
-                self.started = True
-                self.activity_update("working")
+            if _turn_id(params) != self.turn_id:
+                return
+            self.started = True
+            self.activity_update("working")
             return
         if method == "turn/completed":
-            turn_id = _turn_id(params)
-            if turn_id is not None and self.turn_id is None:
-                self.turn_id = turn_id
-            if turn_id != self.turn_id:
+            if _turn_id(params) != self.turn_id:
                 return
             turn = _turn(params)
             self.finished = True

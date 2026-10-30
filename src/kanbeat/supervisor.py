@@ -152,6 +152,11 @@ class Supervisor:
         entry = self.session_groups.config_entry("codex")
         if entry is None or not entry.get("native_session"):
             return
+        if entry["id"] not in self.terminals.sessions or entry.get("status") not in (
+            "starting",
+            "running",
+        ):
+            return
         try:
             metadata = await asyncio.wait_for(
                 self.codex.read_thread(entry["native_session"]), timeout=3

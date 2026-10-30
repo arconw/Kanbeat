@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kanbeat.codex_host import CodexNotification, CodexRpcError
+from kanbeat.codex_host import CodexNotification, CodexRpcError, thread_missing
 from kanbeat.codex_runtime import CodexRun
 from kanbeat.native_settings import NativeSettings
 from kanbeat.supervisor import Supervisor
@@ -166,6 +166,17 @@ def codex_supervisor(tmp_path, monkeypatch):
     return supervisor, host
 
 
+def test_thread_missing_requires_a_real_app_server_error():
+    thread = "01a18660-9ca4-71c0-ba25-81426f4ca65d"
+    assert thread_missing(CodexRpcError(-32600, "thread not loaded: " + thread))
+    assert thread_missing(
+        CodexRpcError(-32600, "no rollout found for thread id " + thread)
+    )
+    assert not thread_missing(CodexRpcError(-32600, "unknown model in session config"))
+    assert not thread_missing(CodexRpcError(-32600, "thread is missing a field"))
+    assert not thread_missing("session not found")
+
+
 @pytest.mark.asyncio
 async def test_new_codex_thread_uses_settings_and_reports_events(tmp_path):
     host = FakeCodexHost()
@@ -296,7 +307,9 @@ async def test_invalid_config_metadata_does_not_erase_saved_settings(codex_super
         "role": "config",
         "harness": "codex",
         "native_session": "01a18660-9ca4-71c0-ba25-81426f4ca65d",
+        "status": "running",
     }
+    supervisor.terminals.sessions["cfg"] = object()
 
     async def invalid_metadata(session):
         return SimpleNamespace(
@@ -337,6 +350,62 @@ async def test_attach_missing_thread_does_not_drop_active_session(codex_supervis
     finally:
         job.cancel()
         await asyncio.gather(job, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_codex_missing_inactive_thread_is_forgotten(codex_supervisor):
+    supervisor, _host = codex_supervisor
+    ticket = supervisor.board.create("Task", column="progress")
+    state = supervisor.ticket_state(ticket.id)
+    state["developer"] = {
+        "harness": "codex",
+        "session": "01a18660-0000-7000-8000-000000000000",
+    }
+    with pytest.raises(ValueError, match="no longer available"):
+        await supervisor.dispatch({"op": "terminal_attach", "ticket": ticket.id})
+    assert "session" not in state["developer"]
+
+
+@pytest.mark.asyncio
+async def test_codex_reviewer_slots_attach_independently(codex_supervisor):
+    supervisor, host = codex_supervisor
+    ticket = supervisor.board.create("Review", column="review")
+    state = supervisor.ticket_state(ticket.id)
+    state["reviewers"] = [
+        {
+            "id": "reviewer-1",
+            "harness": "codex",
+            "session": "01a18660-1111-7111-8111-111111111111",
+        },
+        {
+            "id": "reviewer-2",
+            "harness": "codex",
+            "session": "01a18660-2222-7222-8222-222222222222",
+        },
+    ]
+    for row in state["reviewers"]:
+        host.threads[row["session"]] = {
+            "id": row["session"],
+            "model": "gpt-x",
+            "modelProvider": "openai",
+            "reasoningEffort": "high",
+            "status": {"type": "idle"},
+            "cwd": str(supervisor.board.project),
+        }
+    try:
+        first = await supervisor.dispatch(
+            {"op": "terminal_attach", "ticket": ticket.id, "slot": "reviewer-1"}
+        )
+        second = await supervisor.dispatch(
+            {"op": "terminal_attach", "ticket": ticket.id, "slot": "reviewer-2"}
+        )
+        assert first["terminal"] != second["terminal"]
+        assert (
+            supervisor.terminals.entries[first["terminal"]]["native_session"]
+            != supervisor.terminals.entries[second["terminal"]]["native_session"]
+        )
+    finally:
+        await supervisor.terminals.stop()
 
 
 @pytest.mark.asyncio
