@@ -181,13 +181,13 @@ class Supervisor:
             logging.getLogger(__name__).debug("Codex config read failed: %s", error)
             return
         self._codex_sync_backoff = 0.0
+        settings = None
         try:
             settings = from_codex_thread(metadata.to_dict())
         except SettingsError as error:
             logging.getLogger(__name__).debug(
                 "Codex config settings rejected: %s", error
             )
-            return
         activity = self.codex_activity(metadata)
         changed = False
         if entry.get("activity") != activity:
@@ -196,11 +196,15 @@ class Supervisor:
             else:
                 entry.pop("activity", None)
             changed = True
-        values = settings.to_dict()
-        target = self.runtime.data.setdefault("native_settings", {})
-        if values and target.get("codex") != values:
-            target["codex"] = values
-            changed = True
+        if settings is not None:
+            values = settings.to_dict()
+            target = self.runtime.data.setdefault("native_settings", {})
+            if values:
+                if target.get("codex") != values:
+                    target["codex"] = values
+                    changed = True
+            elif target.pop("codex", None) is not None:
+                changed = True
         if changed:
             self.save()
 

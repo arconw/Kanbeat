@@ -447,6 +447,7 @@ async def test_invalid_config_metadata_does_not_erase_saved_settings(codex_super
         "provider": "saved-provider",
         "effort": "low",
     }
+    assert supervisor.terminals.entries["cfg"]["activity"] == "idle"
 
 
 @pytest.mark.asyncio
