@@ -226,11 +226,11 @@ def record_event(
     if record is None:
         return False
     path = events_path(events_dir, terminal_id)
+    state = None
     if kind == "statusline":
         state = path.with_suffix(".settings.json")
         if _settings_unchanged(state, record):
             return False
-        _write_state(state, {k: record[k] for k in ("session_id", "model", "effort")})
     record = {
         "v": RECORD_VERSION,
         "time": round(time.time(), 3),
@@ -238,7 +238,11 @@ def record_event(
         "terminal_id": terminal_id,
         **record,
     }
-    return append_record(path, record)
+    if not append_record(path, record):
+        return False
+    if state is not None:
+        _write_state(state, {k: record[k] for k in ("session_id", "model", "effort")})
+    return True
 
 
 def read_events(path: Path | str, offset: int = 0) -> tuple[list[dict[str, Any]], int]:

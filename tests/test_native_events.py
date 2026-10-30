@@ -94,6 +94,19 @@ def test_statusline_records_only_model_effort_and_session():
     assert normalize_statusline({"session_id": "s"}) is None
 
 
+def test_statusline_state_is_written_only_after_append(tmp_path: Path, monkeypatch):
+    import kanbeat.native_events as module
+
+    payload = {
+        "session_id": "session-1",
+        "model": {"id": "claude-x"},
+        "effort": {"level": "high"},
+    }
+    monkeypatch.setattr(module, "append_record", lambda path, record: False)
+    assert record_event("statusline", payload, tmp_path, "config") is False
+    assert not (tmp_path / "config.settings.json").exists()
+
+
 def test_statusline_deduplicates_and_events_survive_offsets(tmp_path: Path):
     payload = {
         "session_id": "session-1",
