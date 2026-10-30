@@ -287,6 +287,35 @@ async def test_resumed_claude_run_keeps_its_own_settings(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_stop_with_a_different_session_id_is_accepted(tmp_path, monkeypatch):
+    import kanbeat.claude_runtime as module
+
+    monkeypatch.setattr(module, "STARTUP_GRACE", 0.01)
+    runtime = FakeClaudeRuntime(tmp_path)
+    runtime.mode = "ok"
+
+    async def launch(args, *, timeout=60):
+        runtime.launches.append(list(args))
+        record_event(
+            "hook",
+            {
+                "hook_event_name": "Stop",
+                "session_id": "forked-session",
+                "last_assistant_message": "done",
+            },
+            runtime.events_dir,
+            runtime.events_id,
+        )
+        return 0, "backgrounded · abc12345\n"
+
+    runtime.launch_background = launch
+    run = ClaudeRun(runtime, "work", None, tmp_path / "run.log")
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert outcome.ok
+    assert outcome.answer == "done"
+
+
+@pytest.mark.asyncio
 async def test_stop_is_accepted_when_the_session_disappears(tmp_path, monkeypatch):
     import kanbeat.claude_runtime as module
 
@@ -428,6 +457,22 @@ async def test_resume_missing_session_is_classified(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "launch_background", missing)
     with pytest.raises(ClaudeSessionMissing):
         await runtime.resume_idle("session-1", "events")
+
+
+@pytest.mark.asyncio
+async def test_resume_fails_when_session_cannot_be_verified(tmp_path):
+    runtime = FakeClaudeRuntime(tmp_path)
+    runtime.rows = [{"status": "busy", "state": "working"}]
+
+    async def broken(session):
+        raise RuntimeError("agents unavailable")
+
+    runtime.find = broken
+    run = ClaudeRun(runtime, "continue", "session-1", tmp_path / "run.log")
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert not outcome.ok
+    assert "Could not verify" in outcome.reason
+    assert not runtime.launches
 
 
 @pytest.mark.asyncio

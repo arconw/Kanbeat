@@ -412,25 +412,36 @@ class ClaudeRun:
         events_id = "run-" + uuid.uuid4().hex[:24]
         args = ["--bg"]
         if resumed:
-            try:
-                row = await self.runtime.find(self.session_id)
-                if row is not None and (
-                    row.get("status") in ("busy", "waiting")
-                    or row.get("state") == "blocked"
-                ):
-                    try:
-                        stopped = await self.runtime.stop_session(self.session_id)
-                    except (ClaudeRuntimeError, OSError, asyncio.TimeoutError):
-                        stopped = False
-                    if not stopped:
+            row = None
+            for attempt in range(3):
+                try:
+                    row = await self.runtime.find(self.session_id)
+                    break
+                except (RuntimeError, OSError) as error:
+                    if attempt == 2:
                         return Outcome(
                             False,
-                            "Could not stop the running Claude session before resume",
+                            "Could not verify the Claude session before resume: "
+                            + str(error),
                             self.session_id,
                             "",
                         )
-            except (ClaudeRuntimeError, OSError):
-                pass
+                    await asyncio.sleep(self.runtime.poll_interval)
+            if row is not None and (
+                row.get("status") in ("busy", "waiting")
+                or row.get("state") == "blocked"
+            ):
+                try:
+                    stopped = await self.runtime.stop_session(self.session_id)
+                except (ClaudeRuntimeError, OSError, asyncio.TimeoutError):
+                    stopped = False
+                if not stopped:
+                    return Outcome(
+                        False,
+                        "Could not stop the running Claude session before resume",
+                        self.session_id,
+                        "",
+                    )
             args += ["--resume", self.session_id]
         args += self.runtime.settings_args(events_id)
         if not resumed and self.settings is not None:
@@ -527,8 +538,6 @@ class ClaudeRun:
                     )
                     for record in records:
                         event = record.get("event")
-                        if record.get("session_id") not in (None, self.session_id):
-                            continue
                         if event in (
                             "UserPromptSubmit",
                             "PreToolUse",
