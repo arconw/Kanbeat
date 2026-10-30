@@ -267,6 +267,9 @@ async def test_recover_orphans_stops_recorded_claude_sessions(tmp_path):
     ticket = supervisor.board.create("Task", column="progress")
     state = supervisor.ticket_state(ticket.id)
     state["developer"] = {"harness": "claude", "session": "session-1"}
+    state["reviewers"] = [
+        {"id": "reviewer-1", "harness": "codex", "session": "thread-1"}
+    ]
     supervisor.terminals.entries["cfg"] = {
         "id": "cfg",
         "owner": "custom",
@@ -276,6 +279,7 @@ async def test_recover_orphans_stops_recorded_claude_sessions(tmp_path):
     }
     await supervisor.recover_orphans()
     assert set(runtime.stopped) == {"session-1", "session-2"}
+    assert "thread-1" not in runtime.stopped
 
 
 def test_config_state_maps_hook_activity(tmp_path):

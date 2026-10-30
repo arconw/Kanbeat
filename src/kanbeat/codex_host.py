@@ -40,7 +40,7 @@ WS_LISTENING = re.compile(rb"listening on: (ws://127\.0\.0\.1:([0-9]{1,5}))\s")
 WS_URL = re.compile(r"^ws://127\.0\.0\.1:([0-9]{1,5})$")
 STARTUP_TAIL_BYTES = 8192
 MISSING_THREAD = re.compile(
-    r"^(?:thread not (?:found|loaded)(?:: [0-9a-f-]{36})?"
+    r"^(?:thread not found(?:: [0-9a-f-]{36})?"
     r"|no rollout found for thread id [0-9a-f-]{36})$",
     re.I,
 )

@@ -176,6 +176,17 @@ OpenCode, Codex and Claude workers run against a project-local shared runtime. O
 
 For OpenCode, Codex and Claude, the configuration session and worker sessions share the same runtime. A model, provider or effort selected on the configuration session is passed to newly started Developer and Reviewer worker sessions, transition hooks and fresh independent sessions; resumed sessions keep their own model. Native settings are project-level templates: there is no per-slot model, provider or effort override. Slot harness and custom prompt remain per-ticket. Codex does not copy sandbox or approval settings, and Claude does not copy permission mode, authentication or sandbox settings. Pi configuration sessions are still separate TUIs; their native settings are not captured or copied.
 
+Harness capabilities:
+
+| Harness | Configuration runtime | Live attach | Captured settings |
+| --- | --- | --- | --- |
+| Codex | Private owned `codex app-server`, named thread | Yes, same thread | Model, provider, reasoning effort from `thread/read` |
+| Claude | Owned `claude --bg` background session | Yes, same background session | Model and effort from the per-invocation statusline bridge |
+| OpenCode | Owned `opencode serve` and session | Yes, same server session | Model, provider and variant from the session API |
+| Pi | Plain native TUI and one-shot worker | No, Board Stop required | Not captured; select settings per invocation |
+
+These limits are intentional. Kanbeat does not treat a second `--resume` process as an attach, does not copy conversation history between slots, and does not silently replace a known native session.
+
 The full lifecycle, stop rules, groups and persistence are documented in [terminals.md](terminals.md).
 
 ## Configuration

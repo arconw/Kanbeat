@@ -896,8 +896,13 @@ class Supervisor:
                 row for row in state.get("reviewers", []) if isinstance(row, dict)
             )
             for assignment in assignments:
+                harness = str(
+                    assignment.get("harness")
+                    or self.runtime.config.get("default_harness")
+                    or ""
+                )
                 session = assignment.get("session")
-                if isinstance(session, str) and session:
+                if harness == "claude" and isinstance(session, str) and session:
                     sessions.add(session)
             for entry in (state.get("runtime") or {}).values():
                 if entry.get("harness") == "claude":
