@@ -347,7 +347,8 @@ def test_config_state_maps_hook_activity(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_claude_config_session_opens_and_captures_settings(tmp_path):
+async def test_claude_config_session_opens_and_captures_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr("kanbeat.session_groups.available", lambda name: True)
     runtime = FakeClaudeRuntime(tmp_path)
     supervisor = Supervisor(tmp_path)
     supervisor.claude = runtime
