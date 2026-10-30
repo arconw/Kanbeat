@@ -2,7 +2,7 @@
 
 A filesystem-native Kanban board for AI coding agents. A ticket is a Markdown file, its status is the directory it lives in, and one persistent local supervisor per project runs your own installed coding CLIs against the queue. Any number of terminal clients can attach to that supervisor.
 
-> **Early release, not production-ready.** The board, supervisor, structured worker flow, transition hooks, persistent terminals and session groups are implemented and covered by automated tests, but those tests use deterministic fake CLIs. End-to-end worker/event/resume compatibility with live vendor CLIs is not yet validated, and agents edit your working tree. Read [Limitations](#limitations) first.
+> **Early release, not production-ready.** The board, supervisor, structured worker flow, transition hooks, persistent terminals and session groups are implemented and covered by automated tests. Codex, Claude and OpenCode protocol paths were exercised against deterministic local fake APIs, but not against real remote models or every vendor CLI version, and agents edit your working tree. Read [Limitations](#limitations) first.
 
 ![Kanbeat board: creating tickets and moving them between columns](docs/media/board.gif)
 
@@ -14,8 +14,8 @@ A filesystem-native Kanban board for AI coding agents. A ticket is a Markdown fi
 - **One supervisor per project.** `kanbeat` starts or joins it. Closing a TUI never stops work, and several terminals can watch the same board.
 - **Play and Stop.** Play lets the supervisor dispatch the Todo queue to your coding CLI. Stop interrupts task workers and leaves every ticket where it is; independent sessions keep running.
 - **Developer, then Review/QA.** A developer turn moves a ticket to Review/QA, where zero or more reviewer slots with isolated contexts approve it or send it back with feedback.
-- **Bring your own CLI.** Codex CLI, Claude Code, OpenCode and Pi run through their native structured modes with your own login, permissions and sandbox. Kanbeat embeds no agent and never overrides those settings.
-- **Native terminals.** The supervisor owns interactive terminals for task slots (while the board is stopped) and for independent sessions you organise into groups. Detach and reattach from any client.
+- **Bring your own CLI.** Codex CLI, Claude Code, OpenCode and Pi run through their native modes with your own login, permissions and sandbox. Kanbeat embeds no agent and never overrides those settings. Model and effort choices from a project configuration session seed fresh Codex, Claude and OpenCode workers.
+- **Native terminals.** The supervisor owns interactive terminals and shared harness runtimes. OpenCode, Codex and Claude task slots can be attached live while the board runs; Pi tasks require Board Stop. Independent sessions are organised into groups and survive detaching.
 - **Transition hooks.** Optionally run a prompt in a fresh native session after each column change Kanbeat makes.
 - **Scriptable.** `kanbeat new`, `list`, `move`, `play` and `stop` work from the shell.
 
@@ -51,10 +51,10 @@ Kanbeat is not published on PyPI or Homebrew, and no prebuilt installers have be
 
 ## Installation
 
-Install the `v0.5.1` release tag from GitHub into an isolated environment:
+Install the `v0.8.0` release tag from GitHub into an isolated environment:
 
 ```sh
-uv tool install git+https://github.com/arconw/Kanbeat.git@v0.5.1
+uv tool install git+https://github.com/arconw/Kanbeat.git@v0.8.0
 ```
 
 If the command is not on your PATH after installation, run `uv tool update-shell` and reopen your terminal.
@@ -62,14 +62,14 @@ If the command is not on your PATH after installation, run `uv tool update-shell
 Or, with pipx:
 
 ```sh
-pipx install git+https://github.com/arconw/Kanbeat.git@v0.5.1
+pipx install git+https://github.com/arconw/Kanbeat.git@v0.8.0
 ```
 
 Use `pipx ensurepath` if needed. Without uv or pipx, use a virtual environment:
 
 ```sh
 python -m venv ~/.venvs/kanbeat
-~/.venvs/kanbeat/bin/python -m pip install git+https://github.com/arconw/Kanbeat.git@v0.5.1
+~/.venvs/kanbeat/bin/python -m pip install git+https://github.com/arconw/Kanbeat.git@v0.8.0
 ~/.venvs/kanbeat/bin/kanbeat --help
 ```
 
@@ -107,11 +107,12 @@ Commit `.kanbeat/` with your project so the board travels with it, and add `.kan
 
 - Early release. Behaviour, file layout and configuration may still change, and the old `.tasks` layout is not migrated.
 - Only Linux and macOS are supported. WSL is untested and native Windows does not work.
-- Not yet validated against live vendor CLIs. Event formats and session resume differ between CLI versions; check your CLI version before running unattended.
+- Live vendor protocols were exercised against local deterministic fake APIs, not against every real remote provider, login mode or CLI version. Event formats and session resume can change between vendor releases; check your installed CLI versions before running unattended.
+- Live task attach is available for OpenCode, Codex and Claude. Pi task terminals still require Board Stop, and Pi model/effort capture is not implemented.
 - Kanbeat does not manage Git: no worktrees, branches, resets or cleanups. Agents change your working tree directly.
 - One ticket is active at a time. Only reviewers run in parallel.
 - The TUI shows ticket Markdown read-only; edit the files externally.
-- Task terminals need a stopped board, and edits made in them are rechecked on Play rather than reported as completion.
+- Attached views are monitor-only while a structured worker turn is active, so Kanbeat never runs two writers against one native session. Pi task terminals need a stopped board.
 - Transition hooks are not exactly-once; make their actions safe to repeat.
 - Native terminals do not forward mouse reporting or clipboard requests.
 
