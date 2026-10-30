@@ -23,6 +23,9 @@ IDLE_GRACE = 5.0
 FAILURE_GRACE = 5.0
 STARTUP_GRACE = 30.0
 EVENT_MAX_AGE = 7 * 24 * 60 * 60
+STOP_CONFIRM_ATTEMPTS = 20
+STOP_CONFIRM_INTERVAL = 0.1
+MAX_PROMPT_BYTES = 96 * 1024
 MAX_ROWS = 500
 MAX_MESSAGE = 1_000_000
 
@@ -252,11 +255,25 @@ class ClaudeRuntime:
         except ClaudeRuntimeError:
             return False
         if code == 0:
-            for _ in range(20):
-                current = await self.find(session)
+            confirmed = False
+            for _ in range(STOP_CONFIRM_ATTEMPTS):
+                try:
+                    current = await self.find(session)
+                except (RuntimeError, OSError):
+                    return False
                 if current is None or current.get("state") == "stopped":
+                    confirmed = True
                     break
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(STOP_CONFIRM_INTERVAL)
+            if confirmed:
+                self.untrack(session)
+                return True
+            return False
+        try:
+            current = await self.find(session)
+        except (RuntimeError, OSError):
+            return False
+        if current is None or current.get("state") == "stopped":
             self.untrack(session)
             return True
         return False
@@ -408,6 +425,13 @@ class ClaudeRun:
     async def execute(self) -> Outcome:
         if self.stopping:
             return Outcome(False, "interrupted before start", self.session_id, "")
+        if len(self.prompt.encode()) > MAX_PROMPT_BYTES:
+            return Outcome(
+                False,
+                "Claude prompt is too large for a command-line invocation",
+                self.session_id,
+                "",
+            )
         resumed = bool(self.session_id)
         events_id = "run-" + uuid.uuid4().hex[:24]
         args = ["--bg"]

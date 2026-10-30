@@ -446,6 +446,29 @@ async def test_recover_orphans_stops_recorded_claude_sessions(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_unconfirmed_stop_keeps_session_and_fails(tmp_path, monkeypatch):
+    import kanbeat.claude_runtime as module
+
+    runtime = FakeClaudeRuntime(tmp_path)
+    runtime.rows = [{"status": "busy", "state": "working"}]
+    runtime.mode = "hang"
+    monkeypatch.setattr(module, "STOP_CONFIRM_INTERVAL", 0.001)
+    runtime.track("session-1")
+    assert await module.ClaudeRuntime.stop_session(runtime, "session-1") is False
+    assert "session-1" in runtime.tracked
+
+
+@pytest.mark.asyncio
+async def test_oversized_prompt_fails_before_launch(tmp_path):
+    runtime = FakeClaudeRuntime(tmp_path)
+    run = ClaudeRun(runtime, "x" * (96 * 1024 + 1), None, tmp_path / "run.log")
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert not outcome.ok
+    assert "too large" in outcome.reason
+    assert not runtime.launches
+
+
+@pytest.mark.asyncio
 async def test_resume_missing_session_is_classified(tmp_path, monkeypatch):
     from kanbeat.claude_runtime import ClaudeRuntime, ClaudeSessionMissing
 
