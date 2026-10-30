@@ -432,6 +432,42 @@ async def test_attach_missing_thread_does_not_drop_active_session(codex_supervis
 
 
 @pytest.mark.asyncio
+async def test_codex_config_activity_uses_thread_status(codex_supervisor):
+    supervisor, host = codex_supervisor
+    supervisor.terminals.entries["cfg"] = {
+        "id": "cfg",
+        "owner": "custom",
+        "role": "config",
+        "harness": "codex",
+        "native_session": "01a18660-9ca4-71c0-ba25-81426f4ca65d",
+        "status": "running",
+    }
+    supervisor.terminals.sessions["cfg"] = object()
+
+    async def status_reader(session):
+        return SimpleNamespace(
+            status="active",
+            active_flags=("waitingOnApproval",),
+            to_dict=lambda: {"model": "gpt-x", "modelProvider": "openai"},
+        )
+
+    host.read_thread = status_reader
+    await supervisor.sync_codex_config()
+    assert supervisor.terminals.entries["cfg"]["activity"] == "waiting"
+
+    async def idle_reader(session):
+        return SimpleNamespace(
+            status="idle",
+            active_flags=(),
+            to_dict=lambda: {"model": "gpt-x", "modelProvider": "openai"},
+        )
+
+    host.read_thread = idle_reader
+    await supervisor.sync_codex_config()
+    assert supervisor.terminals.entries["cfg"]["activity"] == "idle"
+
+
+@pytest.mark.asyncio
 async def test_codex_missing_inactive_thread_is_forgotten(codex_supervisor):
     supervisor, _host = codex_supervisor
     ticket = supervisor.board.create("Task", column="progress")
