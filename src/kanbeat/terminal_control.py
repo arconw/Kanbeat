@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import math
 from typing import Any, TYPE_CHECKING
+import uuid
 
+from .claude_runtime import ClaudeRuntimeError, ClaudeSessionMissing
 from .codex_host import CodexHostError, CodexRpcError, thread_missing
 from .host_process import HostError
 from .native import process_identity
@@ -83,15 +85,17 @@ async def terminal_request(
             or supervisor.runtime.config["default_harness"]
         )
         session = assignment.get("session")
-        if harness not in ("opencode", "codex"):
+        if harness not in ("opencode", "codex", "claude"):
             raise ValueError(
-                "Live attach is available for OpenCode and Codex sessions; "
+                "Live attach is available for OpenCode, Codex and Claude sessions; "
                 "stop the board to open this slot's task terminal"
             )
         if not isinstance(session, str) or not session:
             raise ValueError(
                 "The " + harness.title() + " session has not been reported yet"
             )
+        argv: list[str] | None = None
+        env: dict[str, str] | None = None
         if harness == "opencode":
             try:
                 host = await supervisor.opencode_host()
@@ -106,7 +110,9 @@ async def terminal_request(
                 raise ValueError(str(error)) from error
             except (HostError, OSError) as error:
                 raise ValueError(str(error)) from error
-        else:
+            argv = host.viewer_argv(session)
+            env = host.child_env()
+        elif harness == "codex":
             try:
                 host = await supervisor.codex_host()
                 await host.observe_thread(session)
@@ -125,6 +131,27 @@ async def terminal_request(
                 raise ValueError(str(error)) from error
             except (CodexHostError, HostError, OSError) as error:
                 raise ValueError(str(error)) from error
+            argv = host.viewer_argv(session)
+            env = host.child_env()
+        else:
+            try:
+                argv = await supervisor.claude.attach_argv(
+                    session, "attach-" + uuid.uuid4().hex[:20]
+                )
+            except ClaudeSessionMissing as error:
+                if supervisor.slot_active(ticket.id, slot):
+                    raise ValueError(
+                        "The Claude session is still starting; try again"
+                    ) from None
+                assignment.pop("session", None)
+                supervisor.save()
+                raise ValueError(
+                    "The Claude session is no longer available; start the worker again"
+                ) from error
+            except (ClaudeRuntimeError, OSError) as error:
+                raise ValueError(str(error)) from error
+            env = supervisor.claude.child_env()
+        assert argv is not None and env is not None
         for terminal_id, entry in supervisor.terminals.entries.items():
             if (
                 entry.get("owner") == "attach"
@@ -161,8 +188,8 @@ async def terminal_request(
                     supervisor.save()
                 await supervisor.terminals.restart(
                     terminal_id,
-                    argv=host.viewer_argv(session),
-                    env=host.child_env(),
+                    argv=argv,
+                    env=env,
                 )
                 return {"terminal": terminal_id}
         terminal_id = await supervisor.terminals.create(
@@ -172,8 +199,8 @@ async def terminal_request(
             owner="attach",
             native_session=session,
             title=f"#{ticket.id} / {slot} · live",
-            argv=host.viewer_argv(session),
-            env=host.child_env(),
+            argv=argv,
+            env=env,
         )
         return {"terminal": terminal_id}
     if op in (

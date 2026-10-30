@@ -44,6 +44,9 @@ class FakeHost:
     def child_env(self):
         return {"PATH": os.environ["PATH"]}
 
+    async def session_status(self, session_id):
+        return "idle"
+
     def worker_argv(self, session_id, *, prompt=None, model=None):
         self.prompts.append(prompt)
         self.worker_models.append(model)
@@ -139,6 +142,35 @@ async def test_opencode_worker_uses_shared_session_and_attaches(runtime):
             await supervisor.terminals.restart(attached["terminal"])
     finally:
         await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_opencode_config_activity_uses_session_status(runtime, monkeypatch):
+    supervisor, host = runtime
+    supervisor.terminals.entries["cfg"] = {
+        "id": "cfg",
+        "owner": "custom",
+        "role": "config",
+        "harness": "opencode",
+        "native_session": "ses_test",
+        "status": "running",
+    }
+    supervisor.terminals.sessions["cfg"] = object()
+    supervisor.opencode = host
+
+    async def busy(session_id):
+        return "busy"
+
+    monkeypatch.setattr(host, "session_status", busy)
+    await supervisor.sync_opencode_config()
+    assert supervisor.terminals.entries["cfg"]["activity"] == "working"
+
+    async def idle(session_id):
+        return "idle"
+
+    monkeypatch.setattr(host, "session_status", idle)
+    await supervisor.sync_opencode_config()
+    assert supervisor.terminals.entries["cfg"]["activity"] == "idle"
 
 
 @pytest.mark.asyncio
@@ -464,6 +496,6 @@ async def test_terminal_attach_rejects_unsupported_harness(runtime):
     state["developer"]["session"] = "native-1"
     state["runtime"]["developer"] = {"status": "running", "harness": "pi"}
     with pytest.raises(
-        ValueError, match="Live attach is available for OpenCode and Codex"
+        ValueError, match="Live attach is available for OpenCode, Codex and Claude"
     ):
         await supervisor.dispatch({"op": "terminal_attach", "ticket": ticket.id})

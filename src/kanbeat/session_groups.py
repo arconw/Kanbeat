@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Awaitable, Callable
 import uuid
 
+from .claude_runtime import ClaudeRuntimeError, ClaudeSessionMissing
 from .codex_host import CodexHostError, CodexRpcError, thread_missing
 from .native import available, process_identity
 from .opencode_host import OpenCodeHostError, OpenCodeHttpError
@@ -26,11 +27,13 @@ class SessionGroups:
         terminals: Terminals,
         opencode_host: Callable[[], Awaitable[Any]] | None = None,
         codex_host: Callable[[], Awaitable[Any]] | None = None,
+        claude_runtime: Any = None,
     ):
         self.state = state
         self.terminals = terminals
         self.opencode_host = opencode_host
         self.codex_host = codex_host
+        self.claude_runtime = claude_runtime
         self.config_lock = asyncio.Lock()
         self.groups = state.data.setdefault("custom", {}).setdefault("groups", {})
 
@@ -210,6 +213,92 @@ class SessionGroups:
         )
         return {"terminal": terminal_id}
 
+    async def open_claude_config(self) -> dict[str, Any]:
+        async with self.config_lock:
+            return await self._open_claude_config()
+
+    async def _open_claude_config(self) -> dict[str, Any]:
+        runtime = self.claude_runtime
+        if runtime is None:
+            raise ValueError("Claude runtime provider is unavailable")
+        entry = self.config_entry("claude")
+        if entry is not None:
+            attached = entry["id"] in self.terminals.sessions
+            status = entry.get("status")
+            if attached and status == "stopping":
+                raise ValueError(
+                    "Terminal is still stopping; wait for it to exit before reopening"
+                )
+            if attached and status in ("starting", "running"):
+                return {"terminal": entry["id"]}
+            if not attached and status in ("starting", "running", "stopping"):
+                pid = entry.get("pid")
+                current = process_identity(int(pid)) if pid is not None else None
+                saved = entry.get("process_identity")
+                if current is not None and (not saved or current == saved):
+                    raise ValueError(
+                        "An orphaned session process is still running; "
+                        "resolve it before reopening"
+                    )
+                entry["status"] = "interrupted"
+                entry.pop("pid", None)
+                entry.pop("process_identity", None)
+                self.state.save()
+            self.inactive(entry)
+            events_id = entry.get("events_id")
+            if not isinstance(events_id, str) or not events_id:
+                events_id = "config-" + uuid.uuid4().hex[:24]
+                entry["events_id"] = events_id
+            session_id = entry.get("native_session")
+            try:
+                if not session_id:
+                    session_id = await runtime.start_config(events_id)
+                    entry["native_session"] = session_id
+                    self.state.save()
+                argv = await runtime.attach_argv(session_id, events_id)
+            except ClaudeSessionMissing:
+                runtime.remove_events(events_id)
+                events_id = "config-" + uuid.uuid4().hex[:24]
+                entry["events_id"] = events_id
+                entry.pop("native_session", None)
+                try:
+                    session_id = await runtime.start_config(events_id)
+                    entry["native_session"] = session_id
+                    argv = await runtime.attach_argv(session_id, events_id)
+                except (ClaudeRuntimeError, OSError) as error:
+                    raise ValueError(
+                        f"Could not open Claude config session: {error}"
+                    ) from error
+            except (ClaudeRuntimeError, OSError) as error:
+                raise ValueError(
+                    f"Could not open Claude config session: {error}"
+                ) from error
+            self.state.save()
+            await self.terminals.restart(
+                entry["id"], argv=argv, env=runtime.child_env()
+            )
+            return {"terminal": entry["id"]}
+        events_id = "config-" + uuid.uuid4().hex[:24]
+        try:
+            session_id = await runtime.start_config(events_id)
+            argv = await runtime.attach_argv(session_id, events_id)
+        except (ClaudeRuntimeError, OSError) as error:
+            raise ValueError(
+                f"Could not open Claude config session: {error}"
+            ) from error
+        terminal_id = await self.terminals.create(
+            "claude",
+            owner="custom",
+            title="Configure claude",
+            role="config",
+            native_session=session_id,
+            argv=argv,
+            env=runtime.child_env(),
+        )
+        self.terminals.entries[terminal_id]["events_id"] = events_id
+        self.state.save()
+        return {"terminal": terminal_id}
+
     async def create_codex_thread(self, host: Any) -> Any:
         try:
             metadata = await host.start_thread(self.state.board.project)
@@ -295,6 +384,8 @@ class SessionGroups:
                 return await self.open_opencode_config()
             if harness == "codex" and self.codex_host is not None:
                 return await self.open_codex_config()
+            if harness == "claude" and self.claude_runtime is not None:
+                return await self.open_claude_config()
             matches = [
                 entry
                 for entry in self.terminals.entries.values()
@@ -378,12 +469,40 @@ class SessionGroups:
                     raise ValueError(
                         "Independent session harness unavailable: " + entry["harness"]
                     )
+                if entry.get("role") == "config":
+                    return await self.dispatch(
+                        {
+                            "op": "session_config_open",
+                            "harness": entry.get("harness") or "",
+                        }
+                    )
                 await self.terminals.restart(terminal_id)
                 return {"terminal": terminal_id}
             else:
                 self.inactive(entry)
                 if request.get("confirmed") is not True:
                     raise ValueError("Explicit session removal confirmation required")
+                if (
+                    entry.get("role") == "config"
+                    and entry.get("harness") == "claude"
+                    and self.claude_runtime is not None
+                ):
+                    session_id = entry.get("native_session")
+                    if isinstance(session_id, str) and session_id:
+                        try:
+                            stopped = await self.claude_runtime.stop_session(session_id)
+                        except (ClaudeRuntimeError, OSError) as error:
+                            raise ValueError(
+                                f"Could not stop Claude config session: {error}"
+                            ) from error
+                        if not stopped:
+                            raise ValueError(
+                                "Could not confirm that the Claude config session "
+                                "stopped; keep the record and retry"
+                            )
+                    events_id = entry.get("events_id")
+                    if isinstance(events_id, str) and events_id:
+                        self.claude_runtime.remove_events(events_id)
                 session = self.terminals.sessions.pop(terminal_id, None)
                 if session is not None:
                     session.close()

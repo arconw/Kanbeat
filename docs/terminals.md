@@ -7,10 +7,10 @@ terminal; the latest resize determines its shared dimensions.
 
 In Sessions, expand Tasks and select a Developer or Reviewer terminal, or use
 Terminal from the ticket details or its saved slot configuration. Unsaved slot
-edits must be saved before opening. OpenCode and Codex task slots attach to the
-same live shared runtime while the board is running. During an active structured
-turn that view is monitor-only: Kanbeat disables input so one native session never
-gets two writers. Claude and Pi structured workers remain one-shot and require
+edits must be saved before opening. OpenCode, Codex and Claude task slots attach
+to the same live shared runtime while the board is running. During an active
+structured turn that view is monitor-only: Kanbeat disables input so one native
+session never gets two writers. Pi structured workers remain one-shot and require
 Board Stop before opening their task terminal. Saved native session IDs resume
 only that ticket/role/slot; a missing session is never silently replaced while a
 known one exists. A fresh slot starts a fresh native CLI with its role

@@ -32,7 +32,7 @@ def worker_is_active(entry):
 def live_session(ticket, slot):
     state = ticket.get("state") or {}
     runtime = (state.get("runtime") or {}).get(slot) or {}
-    if runtime.get("harness") not in ("opencode", "codex"):
+    if runtime.get("harness") not in ("opencode", "codex", "claude"):
         return None
     assignment = (
         state.get("developer")
@@ -66,7 +66,12 @@ class SessionRow(Horizontal):
 
     @staticmethod
     def label(entry):
-        return f"{entry['title']} / {entry['harness']} / {lifecycle_label(entry)}"
+        status = (
+            worker_status_label(entry)
+            if entry.get("activity")
+            else lifecycle_label(entry)
+        )
+        return f"{entry['title']} / {entry['harness']} / {status}"
 
     def compose(self) -> ComposeResult:
         label = Static(self.label(self.entry), classes="slot-name", markup=False)

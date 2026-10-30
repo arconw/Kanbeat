@@ -700,3 +700,34 @@ async def test_wait_wakes_on_stop(supervisor):
     result = await asyncio.wait_for(waiting, 2)
     assert result["revision"] > revision
     assert session.entry["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_new_independent_session_uses_stored_native_settings(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    def fake_command(harness, session=None, prompt="", settings=None):
+        calls.append((harness, session, prompt, settings))
+        return [sys.executable, "-u", "-c", "import time; time.sleep(30)"]
+
+    monkeypatch.setattr("kanbeat.terminals.interactive_command", fake_command)
+    supervisor = Supervisor(tmp_path)
+    supervisor.runtime.data["native_settings"]["codex"] = {
+        "model": "gpt-x",
+        "provider": "openai",
+        "effort": "high",
+    }
+    try:
+        await supervisor.terminals.create("codex", owner="custom")
+        settings = calls[0][3]
+        assert settings.model == "gpt-x"
+        assert settings.provider == "openai"
+        assert settings.effort == "high"
+        await supervisor.terminals.create(
+            "codex", owner="custom", native_session="existing"
+        )
+        assert calls[1][3] is None
+    finally:
+        await supervisor.terminals.stop()

@@ -1,15 +1,21 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from .filesystem import Ticket
 from .native import NativeRun, available
+from .native_settings import NativeSettings
 from .state import LocalState
 
 
 class TransitionHooks:
-    def __init__(self, state: LocalState):
+    def __init__(
+        self,
+        state: LocalState,
+        settings_for: Callable[[str], NativeSettings | None] | None = None,
+    ):
         self.state = state
+        self.settings_for = settings_for or (lambda _harness: None)
         self.entries = state.data.setdefault("hooks", {})
 
     def enqueue(self, before: Ticket, after: Ticket) -> None:
@@ -59,6 +65,8 @@ class TransitionHooks:
                     "Do not change ticket status. External side effects must be idempotent.",
                 ]
             )
+            settings = self.settings_for(harness)
+            options = {"settings": settings} if settings is not None else {}
             run = NativeRun(
                 harness,
                 prompt,
@@ -68,6 +76,7 @@ class TransitionHooks:
                 on_process=lambda pid, identity: self.record_process(
                     entry, pid, identity
                 ),
+                **options,
             )
             runs[key] = run
             result = await run.execute()

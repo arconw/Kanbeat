@@ -66,6 +66,35 @@ async def test_hook_runs_once_with_isolated_session_and_current_path(
 
 
 @pytest.mark.asyncio
+async def test_hook_uses_captured_native_settings(supervisor, monkeypatch):
+    import kanbeat.hooks as module
+
+    captured = []
+
+    class FakeRun:
+        stopping = False
+
+        def __init__(self, harness, prompt, session, cwd, log, **kwargs):
+            captured.append(kwargs.get("settings"))
+
+        async def execute(self):
+            return Outcome(True, "completed", None, "Done")
+
+    supervisor.runtime.data["native_settings"]["claude"] = {
+        "model": "hook-model",
+        "effort": "high",
+    }
+    ticket = supervisor.board.create("Task")
+    supervisor.move_ticket(ticket.id, "todo")
+    supervisor.runtime.data["execution"] = "running"
+    monkeypatch.setattr(module, "NativeRun", FakeRun)
+    monkeypatch.setattr(module, "available", lambda name: True)
+    await supervisor.hooks.execute("1", supervisor.runs)
+    assert captured[0].model == "hook-model"
+    assert captured[0].effort == "high"
+
+
+@pytest.mark.asyncio
 async def test_missing_hook_harness_preserves_ticket(supervisor, monkeypatch):
     monkeypatch.setattr("kanbeat.hooks.available", lambda name: False)
     ticket = supervisor.board.create("Task")

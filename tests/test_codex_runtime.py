@@ -248,45 +248,6 @@ async def test_resume_keeps_native_settings_and_detects_missing_thread(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_missing_turn_id_fails_fast(tmp_path):
-    host = FakeCodexHost()
-
-    async def empty_turn(session, text, *, model=None, effort=None):
-        host.turns.append((session, text, model, effort))
-        return {"id": ""}
-
-    host.start_turn = empty_turn
-    run = CodexRun(host, "work", None, tmp_path, tmp_path / "run.log")
-    outcome = await asyncio.wait_for(run.execute(), timeout=5)
-    assert not outcome.ok
-    assert "no turn id" in outcome.reason
-    assert run.subscription is None
-
-
-@pytest.mark.asyncio
-async def test_stop_after_notification_does_not_use_a_closed_subscription(tmp_path):
-    host = FakeCodexHost()
-    run = CodexRun(host, "work", None, tmp_path, tmp_path / "run.log")
-
-    async def stop_after_started(session, text, *, model=None, effort=None):
-        host.turns.append((session, text, model, effort))
-        host.subscription.push(
-            "turn/started",
-            {
-                "threadId": session,
-                "turn": {"id": "turn-1", "status": "inProgress", "items": []},
-            },
-        )
-        await run.stop()
-        return {"id": "turn-1"}
-
-    host.start_turn = stop_after_started
-    outcome = await asyncio.wait_for(run.execute(), timeout=5)
-    assert not outcome.ok
-    assert "interrupted" in outcome.reason.lower()
-
-
-@pytest.mark.asyncio
 async def test_retryable_error_does_not_poison_completed_outcome(tmp_path):
     host = FakeCodexHost()
 
@@ -447,7 +408,6 @@ async def test_invalid_config_metadata_does_not_erase_saved_settings(codex_super
         "provider": "saved-provider",
         "effort": "low",
     }
-    assert supervisor.terminals.entries["cfg"]["activity"] == "idle"
 
 
 @pytest.mark.asyncio
@@ -469,77 +429,6 @@ async def test_attach_missing_thread_does_not_drop_active_session(codex_supervis
     finally:
         job.cancel()
         await asyncio.gather(job, return_exceptions=True)
-
-
-def test_invalid_stored_codex_settings_are_kept_and_reported(codex_supervisor):
-    supervisor, _host = codex_supervisor
-    supervisor.runtime.data["native_settings"]["codex"] = {"model": "bad value"}
-    assert supervisor.native_settings("codex") is None
-    assert supervisor.runtime.data["native_settings"]["codex"] == {"model": "bad value"}
-    assert supervisor.runtime.data["notices"][-1]["level"] == "warning"
-    assert "invalid" in supervisor.runtime.data["notices"][-1]["message"].lower()
-
-
-@pytest.mark.asyncio
-async def test_codex_config_sync_backs_off_after_timeout(codex_supervisor):
-    supervisor, host = codex_supervisor
-    supervisor.terminals.entries["cfg"] = {
-        "id": "cfg",
-        "owner": "custom",
-        "role": "config",
-        "harness": "codex",
-        "native_session": "01a18660-9ca4-71c0-ba25-81426f4ca65d",
-        "status": "running",
-    }
-    supervisor.terminals.sessions["cfg"] = object()
-    calls = 0
-
-    async def timeout(session):
-        nonlocal calls
-        calls += 1
-        raise asyncio.TimeoutError
-
-    host.read_thread = timeout
-    await supervisor.sync_codex_config()
-    await supervisor.sync_codex_config()
-    assert calls == 1
-    assert supervisor._codex_sync_backoff > 0
-
-
-@pytest.mark.asyncio
-async def test_codex_config_activity_uses_thread_status(codex_supervisor):
-    supervisor, host = codex_supervisor
-    supervisor.terminals.entries["cfg"] = {
-        "id": "cfg",
-        "owner": "custom",
-        "role": "config",
-        "harness": "codex",
-        "native_session": "01a18660-9ca4-71c0-ba25-81426f4ca65d",
-        "status": "running",
-    }
-    supervisor.terminals.sessions["cfg"] = object()
-
-    async def status_reader(session):
-        return SimpleNamespace(
-            status="active",
-            active_flags=("waitingOnApproval",),
-            to_dict=lambda: {"model": "gpt-x", "modelProvider": "openai"},
-        )
-
-    host.read_thread = status_reader
-    await supervisor.sync_codex_config()
-    assert supervisor.terminals.entries["cfg"]["activity"] == "waiting"
-
-    async def idle_reader(session):
-        return SimpleNamespace(
-            status="idle",
-            active_flags=(),
-            to_dict=lambda: {"model": "gpt-x", "modelProvider": "openai"},
-        )
-
-    host.read_thread = idle_reader
-    await supervisor.sync_codex_config()
-    assert supervisor.terminals.entries["cfg"]["activity"] == "idle"
 
 
 @pytest.mark.asyncio

@@ -73,24 +73,24 @@ async def test_groups_sessions_and_board_ownership(supervisor):
 
 @pytest.mark.asyncio
 async def test_harness_config_session_is_reused_and_restarted(supervisor):
-    first = (
-        await supervisor.dispatch({"op": "session_config_open", "harness": "claude"})
-    )["terminal"]
+    first = (await supervisor.dispatch({"op": "session_config_open", "harness": "pi"}))[
+        "terminal"
+    ]
     entry = supervisor.terminals.entries[first]
     assert entry["owner"] == "custom"
     assert entry["role"] == "config"
-    assert entry["harness"] == "claude"
-    assert entry["title"] == "Configure claude"
+    assert entry["harness"] == "pi"
+    assert entry["title"] == "Configure pi"
     try:
         again = await supervisor.dispatch(
-            {"op": "session_config_open", "harness": "claude"}
+            {"op": "session_config_open", "harness": "pi"}
         )
         assert again["terminal"] == first
         assert len(supervisor.terminals.sessions) == 1
         await supervisor.terminals.stop()
         assert entry["status"] == "stopped"
         reopened = await supervisor.dispatch(
-            {"op": "session_config_open", "harness": "claude"}
+            {"op": "session_config_open", "harness": "pi"}
         )
         assert reopened["terminal"] == first
         assert supervisor.terminals.get(first).entry["status"] == "running"
@@ -102,9 +102,7 @@ async def test_harness_config_session_is_reused_and_restarted(supervisor):
         entry["status"] = "stopping"
         supervisor.save()
         with pytest.raises(ValueError, match="still stopping"):
-            await supervisor.dispatch(
-                {"op": "session_config_open", "harness": "claude"}
-            )
+            await supervisor.dispatch({"op": "session_config_open", "harness": "pi"})
     finally:
         await supervisor.terminals.stop()
 

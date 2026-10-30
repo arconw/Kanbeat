@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from kanbeat.native import NativeRun, command
+from kanbeat.terminals import interactive_command
 from kanbeat.native_settings import (
     NativeSettings,
     SettingsError,
@@ -133,6 +134,39 @@ def test_extracts_supported_fields_only():
         {"model": {"providerID": "p", "id": "m", "variant": "high"}}
     )
     assert opencode.to_dict() == {"model": "m", "provider": "p", "effort": "high"}
+
+
+def test_interactive_commands_apply_settings_only_for_fresh_sessions():
+    codex = NativeSettings("codex", "gpt-x", "openai", "high")
+    assert interactive_command("codex", None, "", codex) == [
+        "codex",
+        "-c",
+        'model_provider="openai"',
+        "-m",
+        "gpt-x",
+        "-c",
+        'model_reasoning_effort="high"',
+    ]
+    assert interactive_command("codex", "thread", "hi", codex) == [
+        "codex",
+        "-c",
+        'model_provider="openai"',
+        "-m",
+        "gpt-x",
+        "-c",
+        'model_reasoning_effort="high"',
+        "resume",
+        "thread",
+        "Kanbeat interactive instructions:\nhi",
+    ]
+    claude = NativeSettings("claude", "claude-x", None, "high")
+    assert interactive_command("claude", None, "", claude) == [
+        "claude",
+        "--model",
+        "claude-x",
+        "--effort",
+        "high",
+    ]
 
 
 def test_invalid_persisted_session_returns_failed_outcome(tmp_path):

@@ -14,11 +14,15 @@ from .terminal_history import HistoryBoard
 
 from .launcher import internal_environment, pty_child_command
 from .native import terminate_process, process_identity
+from .native_settings import NativeSettings, SettingsError, cli_args
 from .state import LocalState
 
 
 def interactive_command(
-    harness: str, session: str | None = None, prompt: str = ""
+    harness: str,
+    session: str | None = None,
+    prompt: str = "",
+    settings: NativeSettings | None = None,
 ) -> list[str]:
     if session and (
         session.startswith("-")
@@ -28,27 +32,28 @@ def interactive_command(
         raise ValueError("Invalid native session identifier")
     if prompt:
         prompt = "Kanbeat interactive instructions:\n" + prompt
+    extra = cli_args(harness, settings, interactive=True)
     if harness == "codex":
         return (
-            ["codex", "resume", session] + ([prompt] if prompt else [])
+            ["codex", *extra, "resume", session] + ([prompt] if prompt else [])
             if session
-            else ["codex"] + ([prompt] if prompt else [])
+            else ["codex", *extra] + ([prompt] if prompt else [])
         )
     if harness == "claude":
         return (
-            ["claude"]
+            ["claude", *extra]
             + (["--resume", session] if session else [])
             + ([prompt] if prompt else [])
         )
     if harness == "opencode":
         return (
-            ["opencode"]
+            ["opencode", *extra]
             + (["--session", session] if session else [])
             + (["--prompt", prompt] if prompt else [])
         )
     if harness == "pi":
         return (
-            ["pi"]
+            ["pi", *extra]
             + (["--session", session] if session else [])
             + ([prompt] if prompt else [])
         )
@@ -283,8 +288,15 @@ class Terminals:
         role: str = "",
         argv: list[str] | None = None,
         env: dict[str, str] | None = None,
+        settings: NativeSettings | None = None,
     ) -> str:
-        default_argv = interactive_command(harness, native_session, prompt)
+        if native_session:
+            settings = None
+        elif settings is None:
+            settings = self.stored_settings(
+                {"harness": harness, "native_session": native_session}
+            )
+        default_argv = interactive_command(harness, native_session, prompt, settings)
         terminal_id = uuid.uuid4().hex
         entry = {
             "id": terminal_id,
@@ -303,6 +315,8 @@ class Terminals:
         }
         if role:
             entry["role"] = role
+        if settings is not None and not settings.empty:
+            entry["native_settings"] = settings.to_dict()
         self.entries[terminal_id] = entry
         await self.start_entry(entry, argv=argv or default_argv, env=env)
         return terminal_id
@@ -314,9 +328,14 @@ class Terminals:
         argv: list[str] | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
-        argv = argv or interactive_command(
-            entry["harness"], entry.get("native_session"), entry.get("prompt", "")
-        )
+        if argv is None:
+            settings = self.stored_settings(entry)
+            argv = interactive_command(
+                entry["harness"],
+                entry.get("native_session"),
+                entry.get("prompt", ""),
+                settings,
+            )
         entry["status"] = "starting"
         entry.pop("exit_code", None)
         entry.pop("dropped_replies", None)
@@ -330,6 +349,17 @@ class Terminals:
             self.sessions.pop(entry["id"], None)
             self.state.save()
             raise
+
+    def stored_settings(self, entry: dict[str, Any]) -> NativeSettings | None:
+        if entry.get("native_session"):
+            return None
+        try:
+            return NativeSettings.from_dict(
+                entry["harness"],
+                self.state.data.get("native_settings", {}).get(entry["harness"]),
+            )
+        except (SettingsError, KeyError):
+            return None
 
     async def restart(
         self,
