@@ -30,6 +30,7 @@ def client(supervisor, monkeypatch):
 async def test_startup_wordmark_precedes_first_board_snapshot(tmp_path, monkeypatch):
     supervisor = Supervisor(tmp_path)
     app = KanbeatApp(tmp_path)
+    app.tab = "board"
     screens = []
 
     async def rpc(message):
@@ -47,6 +48,7 @@ async def test_startup_wordmark_precedes_first_board_snapshot(tmp_path, monkeypa
 async def test_startup_recovers_after_initial_snapshot_failure(tmp_path, monkeypatch):
     supervisor = Supervisor(tmp_path)
     app = KanbeatApp(tmp_path)
+    app.tab = "board"
     calls = 0
 
     async def rpc(message):
@@ -74,6 +76,7 @@ async def test_startup_renders_board_through_supervisor_socket(tmp_path, monkeyp
     )
     try:
         app = KanbeatApp(tmp_path)
+        app.tab = "board"
         async with app.run_test(size=(100, 35)):
             assert not isinstance(app.screen, StartupScreen)
             assert isinstance(app.query_one(BoardView), BoardView)
@@ -153,18 +156,27 @@ async def test_invalid_harness_setting_has_visible_warning(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("size", [(80, 24), (130, 35)])
-async def test_board_columns_keep_compact_width_and_order(tmp_path, monkeypatch, size):
+@pytest.mark.parametrize("size", [(80, 24), (130, 35), (250, 35)])
+async def test_board_columns_fill_the_width_but_never_shrink_below_minimum(
+    tmp_path, monkeypatch, size
+):
     supervisor = Supervisor(tmp_path)
     supervisor.board.create("A task")
     app = client(supervisor, monkeypatch)
-    async with app.run_test(size=size):
+    app.tab = "board"
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
         lanes = list(app.query("#lanes .lane"))
         assert len(lanes) == 6
-        assert [lane.region.width for lane in lanes] == [20] * 6
-        assert [
-            after.region.x - before.region.x for before, after in zip(lanes, lanes[1:])
-        ] == [21] * 5
+        widths = [lane.virtual_region.width for lane in lanes]
+        assert min(widths) >= 30
+        assert max(widths) - min(widths) <= 1
+        board = app.query_one("#lanes")
+        if size[0] >= 250:
+            assert board.max_scroll_x == 0
+            assert min(widths) > 30
+        else:
+            assert board.max_scroll_x > 0
         actions = list(app.query("#board-page .toolbar Button"))
         assert all(
             before.region.right < after.region.x
@@ -179,6 +191,7 @@ async def test_runtime_refresh_preserves_card_focus_scroll_and_modal(
     supervisor = Supervisor(tmp_path)
     tickets = [supervisor.board.create(f"Task {number}") for number in range(12)]
     app = client(supervisor, monkeypatch)
+    app.tab = "board"
     async with app.run_test(size=(150, 45)) as pilot:
         page = app.query_one(BoardView)
         card = app.query_one("#card-" + tickets[0].id, TicketCard)
@@ -217,11 +230,12 @@ async def test_runtime_refresh_preserves_card_focus_scroll_and_modal(
 
 
 @pytest.mark.asyncio
-async def test_board_reconciles_moves_reorders_and_removals(tmp_path, monkeypatch):
+async def test_board_reconciles_moves_new_tickets_and_removals(tmp_path, monkeypatch):
     supervisor = Supervisor(tmp_path)
     first = supervisor.board.create("First")
     second = supervisor.board.create("Second")
     app = client(supervisor, monkeypatch)
+    app.tab = "board"
     async with app.run_test(size=(150, 50)) as pilot:
         page = app.query_one(BoardView)
         stable = app.query_one("#card-" + second.id)
@@ -237,12 +251,11 @@ async def test_board_reconciles_moves_reorders_and_removals(tmp_path, monkeypatc
         assert moved.parent.id == "lane-todo"
         assert app.focused is app.query_one("#view-" + first.id)
         third = supervisor.board.create("Third")
-        supervisor.board.reorder(third.id, -1)
         await app.refresh_snapshot()
         assert [
             card.ticket["id"]
             for card in app.query_one("#lane-backlog").query(TicketCard)
-        ] == [third.id, second.id]
+        ] == [second.id, third.id]
         supervisor.board.move(first.id, "archive")
         await app.refresh_snapshot()
         assert not list(app.query("#card-" + first.id))
@@ -274,7 +287,7 @@ async def test_groups_contain_sessions_and_keep_collapse_across_refresh_and_rest
         row = app.query_one("#session-row-demo", SessionRow)
         assert row in section.query(SessionRow)
         assert not section.collapsed
-        await pilot.click(f"#section-group-{group} > CollapsibleTitle")
+        await pilot.click(f"#section-group-{group} .section-head CollapsibleTitle")
         await pilot.pause()
         assert section.collapsed
         assert ViewPreferences(tmp_path).is_collapsed("group-" + group)
@@ -545,6 +558,7 @@ async def test_worker_pulse_tracks_activity_without_rebuilding_rows(
     }
     supervisor.runtime.data["execution"] = "running"
     app = client(supervisor, monkeypatch)
+    app.tab = "board"
     async with app.run_test(size=(120, 45)) as pilot:
         card = app.query_one("#card-" + ticket.id, TicketCard)
         card_status = card.query_one(".card-runtime", Static)
@@ -779,3 +793,223 @@ def test_concurrent_clients_preserve_other_group_choices(tmp_path):
         for client in range(2)
         for index in range(25)
     }
+
+
+@pytest.mark.asyncio
+async def test_board_and_ticket_view_show_dependencies_as_lists(tmp_path, monkeypatch):
+    from textual.widgets import Static
+
+    supervisor = Supervisor(tmp_path)
+    blocker = supervisor.board.create("Base work", column="todo")
+    waiting = supervisor.board.create(
+        "Follow up", f"# Follow up\n\nBlocked by: #{blocker.id}\n\nDo it.\n", "todo"
+    )
+    app = client(supervisor, monkeypatch)
+    app.tab = "board"
+    async with app.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        blocked_card = app.query_one("#card-" + waiting.id)
+        blocker_card = app.query_one("#card-" + blocker.id)
+        assert "blocked by #" + blocker.id in str(
+            blocked_card.query_one(".card-links", Static).render()
+        )
+        assert "blocks #" + waiting.id in str(
+            blocker_card.query_one(".card-links", Static).render()
+        )
+        assert "Blocked by" not in str(
+            blocked_card.query_one(".card-summary", Static).render()
+        )
+        view = TicketView(app.find_ticket(blocker.id))
+        app.push_screen(view)
+        await pilot.pause()
+        assert str(view.query_one(".dependency-heading", Static).render()) == "BLOCKS"
+        link = view.query_one(".dependency", Button)
+        assert str(link.label) == "#" + waiting.id + "  Follow up  [todo]"
+        heading = view.query_one("MarkdownH1")
+        assert heading.styles.content_align_horizontal == "left"
+        assert heading.styles.color.hex.lower() == "#f2c94c"
+        depth = len(app.screen_stack)
+        await pilot.click(link)
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, TicketView)
+        assert app.screen is not view
+        assert app.screen.ticket["id"] == waiting.id
+        assert len(app.screen_stack) == depth
+        back = app.screen.query_one(".dependency", Button)
+        assert str(back.label).startswith("#" + blocker.id)
+        assert str(app.screen.query_one(".dependency-heading", Static).render()) == (
+            "BLOCKED BY"
+        )
+        await pilot.click(back)
+        await pilot.pause(0.3)
+        assert app.screen.ticket["id"] == blocker.id
+        assert len(app.screen_stack) == depth
+
+
+@pytest.mark.asyncio
+async def test_board_cards_show_the_ticket_number(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Numbered work", column="todo")
+    app = client(supervisor, monkeypatch)
+    app.tab = "board"
+    async with app.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        title = app.query_one("#card-" + ticket.id).query_one(".card-title", Button)
+        assert str(title.label) == f"#{ticket.id} Numbered work"
+
+
+@pytest.mark.asyncio
+async def test_wrapped_card_title_starts_in_the_same_column_as_the_summary(
+    tmp_path, monkeypatch
+):
+    from textual.geometry import Region
+
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create(
+        "Обработать сетевые и файловые ошибки без traceback", "Описание задачи", "todo"
+    )
+    app = client(supervisor, monkeypatch)
+    app.tab = "board"
+    async with app.run_test(size=(80, 40)) as pilot:
+        await pilot.pause()
+        card = app.query_one("#card-" + ticket.id)
+        title = card.query_one(".card-title", Button)
+        assert title.region.height >= 2
+        lines = title.render_lines(
+            Region(0, 0, title.region.width, title.region.height)
+        )
+        starts = {
+            title.region.x + len(line.text) - len(line.text.lstrip()) for line in lines
+        }
+        summary = card.query_one(".card-summary", Static)
+        assert starts == {summary.content_region.x}
+
+
+@pytest.mark.asyncio
+async def test_card_strip_moves_tickets_between_neighbouring_columns(
+    tmp_path, monkeypatch
+):
+    from kanbeat.ui.app import Confirm
+
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Step me", column="backlog")
+    failed = supervisor.board.create("Edge", column="failed")
+    app = client(supervisor, monkeypatch)
+    app.tab = "board"
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        assert not list(app.query(".card-menu"))
+        assert [str(b.label) for b in app.query(f"#card-{ticket.id} .card-step")] == [
+            "=",
+            "<",
+            ">",
+        ]
+        assert app.query_one("#left-" + ticket.id, Button).disabled
+        assert not app.query_one("#right-" + ticket.id, Button).disabled
+        assert app.query_one("#right-" + failed.id, Button).disabled
+        assert not app.query_one("#left-" + failed.id, Button).disabled
+
+        await pilot.click("#right-" + ticket.id)
+        await pilot.pause(0.3)
+        assert not isinstance(app.screen, Confirm)
+        assert supervisor.board.find(ticket.id).column == "todo"
+        await pilot.click("#left-" + ticket.id)
+        await pilot.pause(0.3)
+        assert supervisor.board.find(ticket.id).column == "backlog"
+
+        await pilot.click("#right-" + ticket.id)
+        await pilot.pause(0.3)
+        await pilot.click("#right-" + ticket.id)
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, Confirm)
+        assert "TODO to PROGRESS" in str(app.screen.query_one(".modal-text").render())
+        await pilot.click("#cancel")
+        await pilot.pause(0.3)
+        assert supervisor.board.find(ticket.id).column == "todo"
+
+        await pilot.click("#right-" + ticket.id)
+        await pilot.pause(0.3)
+        await pilot.click("#yes")
+        await pilot.pause(0.3)
+        assert supervisor.board.find(ticket.id).column == "progress"
+
+
+@pytest.mark.asyncio
+async def test_card_menu_jumps_to_any_column_and_archives_last(tmp_path, monkeypatch):
+    from kanbeat.ui.app import ColumnMenu, Confirm
+
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Jump me", column="backlog")
+    app = client(supervisor, monkeypatch)
+    app.tab = "board"
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        await pilot.click("#menu-" + ticket.id)
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, ColumnMenu)
+        labels = [str(b.label) for b in app.screen.query("Button")]
+        assert labels == [
+            "BACKLOG",
+            "TODO",
+            "PROGRESS",
+            "REVIEW/QA",
+            "DONE",
+            "FAILED",
+            "ARCHIVE",
+        ]
+        assert app.screen.query_one("#jump-backlog", Button).disabled
+        await pilot.click("#jump-todo")
+        await pilot.pause(0.3)
+        assert not isinstance(app.screen, Confirm)
+        assert supervisor.board.find(ticket.id).column == "todo"
+
+        await pilot.click("#menu-" + ticket.id)
+        await pilot.pause(0.3)
+        await pilot.click("#jump-failed")
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, Confirm)
+        assert "TODO to FAILED" in str(app.screen.query_one(".modal-text").render())
+        await pilot.click("#cancel")
+        await pilot.pause(0.3)
+        assert supervisor.board.find(ticket.id).column == "todo"
+
+        await pilot.click("#menu-" + ticket.id)
+        await pilot.pause(0.3)
+        await pilot.click("#jump-archive")
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, Confirm)
+        await pilot.click("#cancel")
+        await pilot.pause(0.3)
+        assert supervisor.board.find(ticket.id).column == "todo"
+        await pilot.click("#menu-" + ticket.id)
+        await pilot.pause(0.3)
+        await pilot.click("#jump-archive")
+        await pilot.pause(0.3)
+        await pilot.click("#yes")
+        await pilot.pause(0.3)
+        assert supervisor.board.find(ticket.id).column == "archive"
+
+
+@pytest.mark.asyncio
+async def test_moving_a_blocked_ticket_to_progress_needs_an_explicit_confirmation(
+    tmp_path, monkeypatch
+):
+    from kanbeat.ui.app import Confirm
+
+    supervisor = Supervisor(tmp_path)
+    blocker = supervisor.board.create("Blocker", column="backlog")
+    waiting = supervisor.board.create(
+        "Waiting", f"# Waiting\n\nBlocked by: #{blocker.id}\n", column="todo"
+    )
+    app = client(supervisor, monkeypatch)
+    app.tab = "board"
+    async with app.run_test(size=(200, 50)) as pilot:
+        await pilot.pause()
+        await pilot.click("#right-" + waiting.id)
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, Confirm)
+        text = str(app.screen.query_one(".modal-text").render())
+        assert f"still blocked by #{blocker.id}" in text
+        await pilot.click("#yes")
+        await pilot.pause(0.3)
+        assert supervisor.board.find(waiting.id).column == "progress"

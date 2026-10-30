@@ -6,9 +6,10 @@ from copy import deepcopy
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widget import Widget
 from textual.widgets import Button, Static
 
-from ..filesystem import COLUMNS
+from ..filesystem import COLUMNS, is_blocker_line
 from .session_rows import worker_is_active
 
 
@@ -17,10 +18,58 @@ def summary(ticket: dict[str, Any]) -> str:
         (
             line.strip()[:100]
             for line in ticket["body"].splitlines()
-            if line.strip() and not line.startswith("#")
+            if line.strip() and not line.startswith("#") and not is_blocker_line(line)
         ),
         "No description",
     )
+
+
+def waiting_links(ticket: dict[str, Any], key: str) -> list[str]:
+    return ["#" + row["id"] for row in ticket.get(key, []) if not row.get("satisfied")]
+
+
+def link_summary(ticket: dict[str, Any]) -> str:
+    parts = []
+    blockers = waiting_links(ticket, "blocked_by")
+    if blockers:
+        parts.append("⛔ blocked by " + " ".join(blockers))
+    blocked = waiting_links(ticket, "blocks")
+    if blocked:
+        parts.append("→ blocks " + " ".join(blocked))
+    return "\n".join(parts)
+
+
+SECTIONS = (("BLOCKED BY", "blocked_by"), ("BLOCKS", "blocks"))
+
+
+def dependency_label(row: dict[str, Any]) -> str:
+    return f"#{row['id']}  {row['title'] or '(missing ticket)'}  [{row['column']}]"
+
+
+def dependency_text(ticket: dict[str, Any]) -> str:
+    return "\n\n".join(
+        "\n".join([heading, *map(dependency_label, ticket[key])])
+        for heading, key in SECTIONS
+        if ticket.get(key)
+    )
+
+
+def dependency_widgets(ticket: dict[str, Any]) -> list[Widget]:
+    widgets: list[Widget] = []
+    for heading, key in SECTIONS:
+        rows = ticket.get(key, [])
+        if rows:
+            widgets.append(Static(heading, classes="dependency-heading"))
+            widgets.extend(
+                Button(
+                    Text(dependency_label(row)),
+                    classes="dependency",
+                    name=row["id"],
+                    disabled=row["column"] == "missing",
+                )
+                for row in rows
+            )
+    return widgets
 
 
 def runtime_status(info: dict[str, Any]) -> str:
@@ -55,7 +104,12 @@ def slot_label(name: str) -> str:
 
 def card_title(ticket: dict[str, Any]) -> str:
     title = ticket["title"]
-    return title[:21] + "…" if len(title) > 22 else title
+    if len(title) > 34:
+        title = title[:33] + "…"
+    return f"#{ticket['id']} {title}"
+
+
+LANES = COLUMNS[:-1]
 
 
 class TicketCard(Vertical):
@@ -66,14 +120,30 @@ class TicketCard(Vertical):
         self.selected = selected
 
     def compose(self) -> ComposeResult:
-        with Horizontal(classes="card-head"):
+        position = LANES.index(self.ticket["column"])
+        with Horizontal(classes="card-bar"):
+            yield Button("=", id="menu-" + self.ticket["id"], classes="card-step")
             yield Button(
-                Text(card_title(self.ticket)),
-                id="view-" + self.ticket["id"],
-                classes="card-title",
+                "<",
+                id="left-" + self.ticket["id"],
+                classes="card-step",
+                disabled=position == 0,
             )
-            yield Button("⋯", id="act-" + self.ticket["id"], classes="card-menu")
+            yield Button(
+                ">",
+                id="right-" + self.ticket["id"],
+                classes="card-step",
+                disabled=position == len(LANES) - 1,
+            )
+        yield Button(
+            Text(card_title(self.ticket)),
+            id="view-" + self.ticket["id"],
+            classes="card-title",
+        )
         yield Static(summary(self.ticket), classes="card-summary", markup=False)
+        links = Static(link_summary(self.ticket), classes="card-links", markup=False)
+        links.display = bool(link_summary(self.ticket))
+        yield links
         status = runtime(self.ticket)
         indicator = Static("◌ " + status, classes="card-runtime", markup=False)
         indicator.display = bool(status)
@@ -94,10 +164,14 @@ class TicketCard(Vertical):
     def update_ticket(
         self, ticket: dict[str, Any], select_mode: bool, selected: bool
     ) -> None:
-        if ticket["title"] != self.ticket["title"]:
+        if card_title(ticket) != card_title(self.ticket):
             self.query_one(".card-title", Button).label = Text(card_title(ticket))
         if summary(ticket) != summary(self.ticket):
             self.query_one(".card-summary", Static).update(summary(ticket))
+        if link_summary(ticket) != link_summary(self.ticket):
+            links = self.query_one(".card-links", Static)
+            links.update(link_summary(ticket))
+            links.display = bool(link_summary(ticket))
         status = runtime(ticket)
         indicator = self.query_one(".card-runtime", Static)
         if status != runtime(self.ticket):
@@ -119,6 +193,9 @@ class TicketCard(Vertical):
             select_mode,
             selected,
         )
+
+
+LANE_MIN_WIDTH = 30
 
 
 class BoardView(Vertical):
@@ -147,7 +224,7 @@ class BoardView(Vertical):
             )
             yield Button("+ Ticket", id="new-ticket")
         with Horizontal(id="lanes"):
-            for column in COLUMNS[:-1]:
+            for column in LANES:
                 items = self.items(column)
                 with VerticalScroll(id="lane-" + column, classes="lane"):
                     yield Static(self.heading(column, len(items)), classes="lane-title")
@@ -156,13 +233,25 @@ class BoardView(Vertical):
                             ticket, self.select_mode, ticket["id"] in self.selection
                         )
 
+    def on_resize(self) -> None:
+        self.fit_lanes()
+
+    def fit_lanes(self) -> None:
+        lanes = self.query(".lane")
+        if not lanes:
+            return
+        room = self.query_one("#lanes").size.width
+        width = max(LANE_MIN_WIDTH, room // len(lanes) - 1)
+        for lane in lanes:
+            lane.styles.width = width
+
     async def update_snapshot(self, snapshot, select_mode: bool, selection: set[str]):
         if select_mode != self.select_mode:
             self.query_one("#select-mode", Button).label = "Select mode " + (
                 "ON" if select_mode else "OFF"
             )
             self.query_one("#bulk-archive", Button).disabled = not select_mode
-        counts = {column: len(self.items(column)) for column in COLUMNS[:-1]}
+        counts = {column: len(self.items(column)) for column in LANES}
         self.snapshot = snapshot
         self.select_mode, self.selection = select_mode, set(selection)
         wanted_columns = {
@@ -171,7 +260,7 @@ class BoardView(Vertical):
         for card in list(self.query(TicketCard)):
             if wanted_columns.get(card.ticket["id"]) != card.ticket["column"]:
                 await card.remove()
-        for column in COLUMNS[:-1]:
+        for column in LANES:
             lane = self.query_one("#lane-" + column, VerticalScroll)
             items = self.items(column)
             wanted = {ticket["id"]: ticket for ticket in items}

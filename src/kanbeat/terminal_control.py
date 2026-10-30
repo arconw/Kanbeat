@@ -60,12 +60,8 @@ async def terminal_request(
             column=ticket.column,
             slot=slot,
             native_session=session,
-            prompt=supervisor.prompt(ticket, slot, bool(session)),
             title=f"#{ticket.id} / {slot}",
         )
-        state.setdefault("runtime", {}).pop(slot, None)
-        state.setdefault("review_results", {}).pop(slot, None)
-        supervisor.save()
         return {"terminal": terminal_id}
     if op == "terminal_attach":
         ticket = supervisor.board.find(str(request["ticket"]))

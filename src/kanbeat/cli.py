@@ -89,9 +89,7 @@ def run() -> None:
         elif args.command == "list":
             board = Board(project)
             for ticket in board.scan()[0]:
-                print(
-                    f"{ticket.column:10} {ticket.order:5} {ticket.id:6} {ticket.title}"
-                )
+                print(f"{ticket.column:10} {ticket.id:6} {ticket.title}")
         elif args.command == "new":
             asyncio.run(
                 _send(

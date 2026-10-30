@@ -244,22 +244,19 @@ async def board_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
             )
             await one.click("#view-001")
             one.shot(
-                "A ticket is just a file: order-id-slug.md. The TUI shows it read-only.",
+                "A ticket is just a file: id-slug.md. The TUI shows it read-only.",
                 2.4,
             )
             await one.click("#close")
-            await one.click("#act-002")
-            await one.choose("#column", 1)
-            one.shot("Ticket actions: move the card to TODO by hand.", 1.6)
-            await one.click("#move")
+            one.shot(
+                "Each card has [=] [<] [>]: column menu, move left, move right.", 1.6
+            )
+            await one.click("#right-002")
             assert len(demo.tickets(project)["todo"]) == 2
             one.shot(
                 "Manual move: Backlog to Todo. The Markdown file moved to .kanbeat/todo/.",
                 2.2,
             )
-            await one.click("#act-002")
-            await one.click("#up")
-            one.shot("Order up: swaps the numeric prefixes of the two files.", 2.2)
             for column, caption in (
                 (
                     "progress",
@@ -274,9 +271,8 @@ async def board_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
                     "Manual move to Done. Play would let agents move tickets; this demo does not.",
                 ),
             ):
-                await one.click("#act-001")
-                await one.choose("#column", 1)
-                await one.click("#move")
+                await one.click("#right-001")
+                await one.click("#yes")
                 assert len(demo.tickets(project)[column]) == 1
                 one.shot(caption, 2.4)
     return recording

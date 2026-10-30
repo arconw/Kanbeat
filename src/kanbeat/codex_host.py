@@ -804,6 +804,9 @@ class CodexAppServerHost:
         )
         return parse_thread_metadata(result)
 
+    async def delete_thread(self, thread_id: str) -> None:
+        await self.request("thread/delete", {"threadId": validate_thread_id(thread_id)})
+
     async def loaded_thread_ids(self) -> list[str]:
         ids: list[str] = []
         cursor: str | None = None

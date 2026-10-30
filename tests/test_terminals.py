@@ -415,6 +415,7 @@ async def test_ticket_and_assignment_reopen_exact_live_task_ptys(
         key: supervisor.terminals.get(key).process.pid for key in (developer, reviewer)
     }
     app = KanbeatApp(supervisor.board.project)
+    app.tab = "board"
     monkeypatch.setattr(app, "rpc", supervisor.dispatch)
     try:
         async with app.run_test(size=(120, 40)) as pilot:
@@ -729,5 +730,32 @@ async def test_new_independent_session_uses_stored_native_settings(
             "codex", owner="custom", native_session="existing"
         )
         assert calls[1][3] is None
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_task_terminal_opens_a_bare_harness_without_the_task_prompt(
+    tmp_path, monkeypatch
+):
+    launches = []
+
+    def launch(*args):
+        launches.append(args)
+        return [sys.executable, "-u", "-c", SCRIPT]
+
+    monkeypatch.setattr("kanbeat.terminals.interactive_command", launch)
+    monkeypatch.setattr("kanbeat.supervisor.available", lambda name: True)
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Task")
+    state = supervisor.ticket_state(ticket.id)
+    state["runtime"] = {"developer": {"status": "running", "harness": "codex"}}
+    try:
+        await supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+        assert [args[2] for args in launches] == [""]
+        assert supervisor.ticket_state(ticket.id)["runtime"]["developer"] == {
+            "status": "running",
+            "harness": "codex",
+        }
     finally:
         await supervisor.terminals.stop()

@@ -18,6 +18,10 @@ from .native_settings import NativeSettings, SettingsError, cli_args
 from .state import LocalState
 
 
+def framed_prompt(prompt: str | None) -> str:
+    return "Kanbeat interactive instructions:\n" + prompt if prompt else ""
+
+
 def interactive_command(
     harness: str,
     session: str | None = None,
@@ -30,8 +34,7 @@ def interactive_command(
         or any(c.isspace() for c in session)
     ):
         raise ValueError("Invalid native session identifier")
-    if prompt:
-        prompt = "Kanbeat interactive instructions:\n" + prompt
+    prompt = framed_prompt(prompt)
     extra = cli_args(harness, settings, interactive=True)
     if harness == "codex":
         return (

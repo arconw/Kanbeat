@@ -44,7 +44,7 @@ details{padding:14px;border:1px solid var(--line);border-radius:10px;margin:11px
 </header>
 <section id="contract"><h2>01 / Non-negotiable product contract</h2>
 <div class="grid">
-<div class="card"><h3>Filesystem is the board</h3><p>Every ticket is a <code>.md</code> with title and description. The folder determines status. First filename number determines order; second determines permanent ID.</p></div>
+<div class="card"><h3>Filesystem is the board</h3><p>Every ticket is a <code>.md</code> with title and description. The folder determines status. The filename number is the permanent ID.</p></div>
 <div class="card"><h3>Supervisor is persistent</h3><p>One daemon per project owns dispatch and state. Clients attach over a private Unix socket and may close independently without stopping work.</p></div>
 <div class="card"><h3>CLIs are native</h3><p>Codex, Claude Code, OpenCode and Pi keep their own sandbox, permissions, model settings and session history. Kanbeat only starts, stops and observes them.</p></div></div>
 <p class="note">Out of scope: diff ownership, Git worktrees, auto commits, Git cleanup/reset, orchestration frameworks, automatic transcript exchange between roles, editing task body from the UI, safeguarding deliberate deletion of live runtime files.</p></section>
@@ -53,14 +53,14 @@ details{padding:14px;border:1px solid var(--line);border-radius:10px;margin:11px
 <tr><td>Frontend</td><td>Python Textual + TCSS</td><td>Responsive Kanban, buttons, dialogs, scroll, mouse clicks, keyboard navigation. No hover-dependent controls.</td></tr>
 <tr><td>Supervisor</td><td>Python asyncio</td><td>One owner of dispatch, retries, independent reviewer slots, Play/Stop, notifications.</td></tr>
 <tr><td>IPC</td><td>Local Unix socket / JSON lines</td><td>Several TUI clients view and mutate one supervisor's state. Live refresh initially uses polling; subscriptions are a future optimization.</td></tr>
-<tr><td>Tickets</td><td>Filesystem</td><td>Status directory, numeric order and ID filename, plain Markdown body.</td></tr>
+<tr><td>Tickets</td><td>Filesystem</td><td>Status directory, ID filename, plain Markdown body.</td></tr>
 <tr><td>Runtime</td><td><code>.kanbeat/.state/</code> JSON</td><td>Recoverable assignments, native session IDs, worker states and completion verdicts; Git ignored.</td></tr>
 <tr><td>Native workers</td><td>Installed CLIs</td><td>Structured turn events for automatic completion and native session resume. No permission bypass.</td></tr></table></section>
 <section id="visual"><h2>03 / UI design system</h2>
 <div class="terminal"><div class="term-head"><span class="term-title">◉ KANBEAT <span class="term-tabs"> / <b>Board</b> / Sessions / Archive / Settings</span></span><span class="term-controls">● Running &nbsp; [■ Stop]</span></div>
 <div class="lanes">
 <div class="lane"><div class="label">BACKLOG · 01</div><div class="ticket">Search UI<small>Planned, not picked up</small></div></div>
-<div class="lane"><div class="label">TODO · 02</div><div class="ticket">002 · Auth API<small>Validate access tokens</small><div class="tags"><span>Queued</span></div></div><div class="ticket">003 · Refresh flow<small>Next task in order</small></div></div>
+<div class="lane"><div class="label">TODO · 02</div><div class="ticket">002 · Auth API<small>Validate access tokens</small><div class="tags"><span>Queued</span></div></div><div class="ticket">003 · Refresh flow<small>Blocked by #002</small></div></div>
 <div class="lane"><div class="label">PROGRESS · 01</div><div class="ticket">001 · Database<small>◌ Developer: running</small><div class="tags"><span>Codex</span></div></div></div>
 <div class="lane"><div class="label">REVIEW/QA · 00</div></div>
 <div class="lane"><div class="label">DONE · 01</div><div class="ticket">004 · CI pipeline<small>✓ Approved</small></div></div>
@@ -76,10 +76,10 @@ details{padding:14px;border:1px solid var(--line);border-radius:10px;margin:11px
   INSTRUCTIONS.md                  # not auto-loaded by coding agents
   config.json                      # stable project settings
   backlog/
-    0-001-future-search.md
+    001-future-search.md
   todo/
-    0-002-implement-auth.md        # first number = order, 002 = stable ID
-    10-003-fix-login.md
+    002-implement-auth.md          # 002 = stable ID
+    003-fix-login.md
   progress/
   review/
   done/
@@ -97,7 +97,7 @@ Add JWT authentication to the API.
 ## Acceptance criteria
 - Validate tokens.
 - Reject expired credentials.</pre>
-<p>Tickets contain <strong>no YAML frontmatter</strong> or hidden control fields. Moving a file changes the status. Renaming the first segment changes its order. Sorting compares it numerically: 2 comes before 10. ID is unique across every board column and archive, and does not change with moves. Slug remains descriptive.</p>
+<p>Tickets contain <strong>no YAML frontmatter</strong> or hidden control fields. Moving a file changes the status. Tickets are listed by numeric ID: 2 comes before 10. ID is unique across every board column and archive, and does not change with moves. Slug remains descriptive.</p>
 <p class="note">An external agent may create or edit tickets only when the user separately asks it to and points it to <code>.kanbeat/INSTRUCTIONS.md</code>. The guide is not an implicit system prompt.</p>
 <p>If <code>.state</code> is absent, all ticket files retain their column statuses and the board starts in <strong>Stopped</strong> mode. Missing assignments resolve to the configured default harness when Play is pressed. Active deletion of the runtime directory is intentionally unsupported.</p></section>
 <section id="runtime"><h2>05 / One supervisor, multiple TUI clients</h2>
@@ -120,15 +120,15 @@ Add JWT authentication to the API.
 <p class="warning note">Native resume restores conversation context, not suspended CPU execution or partially executed shell tools. Continuing workers must inspect the current repository and avoid repeating completed side effects.</p></section>
 <section id="workers"><h2>07 / Execution lifecycle</h2>
 <div class="flow"><span>Backlog</span><i>→</i><span>Todo</span><i>→</i><span>Progress</span><i>→</i><span>Review/QA</span><i>→</i><span>Done</span></div>
-<p>Backlog is inert. Todo is processed top-to-bottom by order and ID. There can be only one active ticket at a time, but within Review/QA multiple reviewer workers run in parallel. Agents are given the <strong>current file path</strong> of the ticket, not a pasted copy of its Markdown. They must read that Markdown from disk and <strong>never edit, rename or move the ticket</strong>, nor write Kanbeat status or runtime metadata. Native structured turn completion triggers advancement only after confirming that the worker handled the current ticket content. A failed or interrupted turn is not a completed turn.</p>
+<p>Backlog is inert. Todo tickets start in ID order once every ticket they are blocked by is Done or archived; independent tickets run in parallel up to the configured limit, and within Review/QA multiple reviewer workers run in parallel. Agents are given the <strong>current file path</strong> of the ticket, not a pasted copy of its Markdown. They must read that Markdown from disk and <strong>never edit, rename or move the ticket</strong>, nor write Kanbeat status or runtime metadata. Native structured turn completion triggers advancement only after confirming that the worker handled the current ticket content. A failed or interrupted turn is not a completed turn.</p>
 <p><strong>Developer</strong> may write tests but does not execute them. <strong>Reviewers</strong> run relevant tests and prefer headless solutions. Review verdict is a structured final-line contract: <code>KANBEAT_VERDICT: approve</code> or <code>KANBEAT_VERDICT: changes_requested</code>. The marker is emitted by the reviewer as the final line of its response.</p>
-<div class="card"><h3>Live ticket edits · same-session re-read</h3><p>Ticket Markdown is user-editable outside Kanbeat, including while a worker is running. The supervisor records a <strong>SHA-256 content hash</strong> for each worker turn in <code>.kanbeat/.state/</code>. It does not rely on mtime, path or Git diff. A user editing the ticket does <strong>not</strong> interrupt or restart active harnesses.</p><p>When a turn ends, <em>before</em> applying its completion or review verdict, the supervisor resolves the ticket's current path from its stable ID and compares its current content hash with the version that worker received. If changed, the ticket stays in its current stage and the same native session gets an instruction to re-read the current file, account for new requirements and continue. No full Markdown is re-injected into the prompt.</p><pre>Read .kanbeat/progress/0-002-authentication.md and work on this task.
+<div class="card"><h3>Live ticket edits · same-session re-read</h3><p>Ticket Markdown is user-editable outside Kanbeat, including while a worker is running. The supervisor records a <strong>SHA-256 content hash</strong> for each worker turn in <code>.kanbeat/.state/</code>. It does not rely on mtime, path or Git diff. A user editing the ticket does <strong>not</strong> interrupt or restart active harnesses.</p><p>When a turn ends, <em>before</em> applying its completion or review verdict, the supervisor resolves the ticket's current path from its stable ID and compares its current content hash with the version that worker received. If changed, the ticket stays in its current stage and the same native session gets an instruction to re-read the current file, account for new requirements and continue. No full Markdown is re-injected into the prompt.</p><pre>Read .kanbeat/progress/002-authentication.md and work on this task.
 This Markdown is read-only to you. Never edit, rename or move it.
 
 # Later, after content changes and the current turn completes:
 Ticket #002 has changed. Re-read &lt;current-ticket-path&gt;,
 reconcile the updated requirements with existing work, and continue.
-Do not modify the ticket.</pre><p>Changing just the order prefix, slug or location does not count as a content edit; dynamically resolved paths prevent stale references. During Review/QA, verdicts tied to a superseded content hash cannot approve the revised ticket. Each affected Reviewer slot must produce an updated verdict for the current hash, still <strong>without</strong> receiving Developer or peer Reviewer transcripts.</p><p class="small"><strong>Implementation status:</strong> initial hash-and-re-read lifecycle implemented in supervisor. Compatibility and end-to-end execution remain unverified.</p></div>
+Do not modify the ticket.</pre><p>Changing just the slug or location does not count as a content edit; dynamically resolved paths prevent stale references. During Review/QA, verdicts tied to a superseded content hash cannot approve the revised ticket. Each affected Reviewer slot must produce an updated verdict for the current hash, still <strong>without</strong> receiving Developer or peer Reviewer transcripts.</p><p class="small"><strong>Implementation status:</strong> initial hash-and-re-read lifecycle implemented in supervisor. Compatibility and end-to-end execution remain unverified.</p></div>
 <p>At normal stage completion, supervisor moves the ticket file. When Reviewers disagree, a short review feedback summary may be given to Developer during the next iteration, but never the full Reviewer transcript. No special worktree handling or Git diff calculation.</p>
 <p>Custom between-stage hook: a configurable harness and prompt may run after ticket transitions, for optional GitHub issue closing and other automations. Hook failure is separate from ticket success and does not automatically revert ticket state. The supervisor queues hooks for its own column changes, runs them serially on Play before further board work, and starts a fresh native session for each event. A local ledger prevents automatic replay of settled or interrupted hooks; Stop also interrupts hook processes. File moves and ledger writes are not one atomic transaction, and external side effects are not guaranteed exactly once. See README for recovery limitations.</p></section>
 <section id="review"><h2>08 / Reviewer isolation and slot replacement</h2>
@@ -156,7 +156,7 @@ Do not modify the ticket.</pre><p>Changing just the order prefix, slug or locati
 <tr><td>Deliberate live-state deletion</td><td>Explicit non-goal. No special defenses.</td></tr></table></section>
 <section id="phases"><h2>12 / Implementation status and next slices</h2>
 <table class="table"><tr><th>Layer</th><th>Status</th><th>Next action</th></tr>
-<tr><td>Filesystem-native tickets</td><td>Initial implementation</td><td>Direct Markdown renames preserve visibility on interrupted reorder; persistent ID high-water mark prevents reuse. Multi-file reorder remains non-transactional.</td></tr>
+<tr><td>Filesystem-native tickets</td><td>Initial implementation</td><td>Direct Markdown renames keep tickets visible; persistent ID high-water mark prevents reuse.</td></tr>
 <tr><td>Single supervisor + IPC</td><td>Long-path sockets supported (#5)</td><td>Private hashed socket fallback, per-project ownership lock; event subscriptions remain a later optimization</td></tr>
 <tr><td>Play / Stop</td><td>Initial implementation</td><td>Per-CLI graceful-exit verification</td></tr>
 <tr><td>Structured native CLI execution</td><td>Initial implementation</td><td>Version-specific event/resume compatibility verification</td></tr>

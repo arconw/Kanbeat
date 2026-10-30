@@ -10,6 +10,7 @@ from .filesystem import atomic_json, Board
 
 DEFAULT_CONFIG = {
     "default_harness": "codex",
+    "max_parallel": 3,
     "global_cp": "",
     "developer_prompt": "Implement the task. You may write tests but do not run them.",
     "reviewer_prompt": "Review and test the implementation. Prefer headless tests if possible.",

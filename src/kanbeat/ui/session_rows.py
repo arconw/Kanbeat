@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from rich.markup import escape
+from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Collapsible, Static
@@ -59,9 +61,22 @@ def worker_status_label(entry):
     return status
 
 
+STATE_KINDS = {
+    "running": "ok",
+    "starting": "busy",
+    "stopping": "busy",
+    "recovering": "busy",
+    "interrupted": "warn",
+    "exited": "idle",
+    "stopped": "idle",
+    "failed": "error",
+    "recovery_blocked": "error",
+}
+
+
 class SessionRow(Horizontal):
     def __init__(self, entry):
-        super().__init__(id="session-row-" + entry["id"], classes="slot-row")
+        super().__init__(id="session-row-" + entry["id"], classes="session-row")
         self.entry = deepcopy(entry)
 
     @staticmethod
@@ -73,26 +88,56 @@ class SessionRow(Horizontal):
         )
         return f"{entry['title']} / {entry['harness']} / {status}"
 
+    @staticmethod
+    def title(entry):
+        return f"{entry['title']} / {entry['harness']}"
+
+    @staticmethod
+    def state_kind(entry):
+        if entry.get("activity") == "error":
+            return "error"
+        return STATE_KINDS.get(str(entry.get("status")), "idle")
+
+    @staticmethod
+    def openable(entry):
+        return entry.get("status") != "stopping"
+
     def compose(self) -> ComposeResult:
-        label = Static(self.label(self.entry), classes="slot-name", markup=False)
-        label.tooltip = self.label(self.entry)
-        yield label
-        yield Button(
-            "Open",
+        opener = Button(
+            Text(self.title(self.entry)),
             id="open-session-" + self.entry["id"],
-            disabled=not self.entry.get("attached")
-            or self.entry.get("status") == "stopping",
+            classes="card-title",
+            disabled=not self.openable(self.entry),
         )
-        yield Button("Actions", id="session-actions-" + self.entry["id"])
+        opener.tooltip = self.label(self.entry)
+        yield opener
+        with Vertical(classes="session-side"):
+            yield Button(
+                "⋯", id="session-actions-" + self.entry["id"], classes="card-menu"
+            )
+            state = Static(
+                "■",
+                id="session-state-" + self.entry["id"],
+                classes="session-state state-" + self.state_kind(self.entry),
+            )
+            state.tooltip = lifecycle_label(self.entry)
+            yield state
+
+    async def on_click(self, event: events.Click) -> None:
+        event.stop()
+        if self.openable(self.entry):
+            await self.app.resume_session(self.entry["id"])
 
     def update_entry(self, entry):
-        if self.label(entry) != self.label(self.entry):
-            label = self.query_one(Static)
-            label.update(self.label(entry))
-            label.tooltip = self.label(entry)
-        self.query_one("#open-session-" + entry["id"], Button).disabled = (
-            not entry.get("attached") or entry.get("status") == "stopping"
-        )
+        opener = self.query_one("#open-session-" + entry["id"], Button)
+        if self.title(entry) != self.title(self.entry):
+            opener.label = Text(self.title(entry))
+        opener.tooltip = self.label(entry)
+        opener.disabled = not self.openable(entry)
+        state = self.query_one("#session-state-" + entry["id"], Static)
+        for kind in set(STATE_KINDS.values()):
+            state.set_class(kind == self.state_kind(entry), "state-" + kind)
+        state.tooltip = lifecycle_label(entry)
         self.entry = deepcopy(entry)
 
 
@@ -203,7 +248,16 @@ class TaskSessions(Vertical):
 
 
 class SessionSection(Collapsible):
-    def __init__(self, key: str, title: str, collapsed: bool):
+    def __init__(self, key: str, title: str, collapsed: bool, menu_id: str = ""):
         super().__init__(
             title=escape(title), collapsed=collapsed, id="section-" + key, name=key
         )
+        self.menu_id = menu_id
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="section-head"):
+            yield self._title
+            if self.menu_id:
+                yield Button("...", id=self.menu_id, classes="group-menu")
+        with self.Contents():
+            yield from self._contents_list

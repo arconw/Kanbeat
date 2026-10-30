@@ -23,10 +23,10 @@ Kanbeat is an early release. Everything below describes the implemented behavior
 - `Play` resumes dispatch. `Stop` interrupts board-owned CLI processes and terminates them, saving native session IDs when the CLI reports them. The supervisor stays alive.
 - Stop does not change ticket columns. Play attempts native resume for unfinished slots; the CLI may need to recheck which changes were already made.
 - The supervisor starts **stopped** if the state directory is absent, or when recovering from supervisor restart.
-- The first numeric filename segment is order, the second is a unique stable ticket ID.
+- The numeric filename prefix is the unique stable ticket ID.
 - Tickets are plain Markdown with **no frontmatter**, transcript or runtime metadata.
-- Status = directory. Order = first filename number. ID = second number. `archive/` is out of scope.
-- Sequential tickets; 0..N parallel reviewers on **one active ticket only**. Separate reviewer slots have isolated contexts.
+- Status = directory. ID = filename number. `archive/` is out of scope.
+- Independent tickets run in parallel (up to `max_parallel`); a ticket blocked by an unfinished ticket waits in Todo. Each ticket has 0..N parallel reviewers with isolated contexts.
 - Default harness unavailable: global Stop with notification. Missing assigned harness: use default, fresh session. Missing native session: fresh session in same role.
 - No special handling for intentional deletion of active runtime files.
 - Native CLI flags never override user permissions, sandbox or authentication settings.
@@ -66,10 +66,10 @@ Background snapshots update existing board cards and session rows in place. Runt
 ├── config.json                # project defaults, Git-trackable
 ├── ids.json                   # persistent ticket ID high-water mark, Git-trackable
 ├── backlog/
-│   └── 0-001-future-search.md
+│   └── 001-future-search.md
 ├── todo/
-│   ├── 0-002-authentication.md
-│   └── 10-003-token-refresh.md
+│   ├── 002-authentication.md
+│   └── 003-token-refresh.md
 ├── progress/
 ├── review/
 ├── done/
@@ -83,7 +83,7 @@ Background snapshots update existing board cards and session rows in place. Runt
     └── logs/                  # native CLI output, not task content
 ```
 
-The file `0-002-authentication.md` contains only:
+The file `002-authentication.md` contains only:
 
 ```md
 # Implement authentication
@@ -98,7 +98,7 @@ Add token validation to the API.
 
 Creating `.kanbeat` automatically creates `INSTRUCTIONS.md` for a separately instructed agent to author tickets. It is **not** injected into coding agents automatically.
 
-The first number is **numeric sort order**. The second, e.g. `002`, is the ticket ID and must be unique across all column and archive directories. The slug is readable; changing order and status never changes ID. No metadata is added to Markdown by Kanbeat.
+The number, e.g. `002`, is the ticket ID and must be unique across all column and archive directories. The slug is readable; changing status never changes the ID or the filename. Files not named `<id>-<slug>.md` are reported as invalid filenames. No metadata is added to Markdown by Kanbeat.
 
 `ids.json` reserves monotonically increasing IDs before ticket creation. Keep it
 with the board in Git: deleting archived tickets or disposable `.state` must not
@@ -107,12 +107,7 @@ tickets too. Failed creates can leave gaps, which are intentional. External tick
 authors must still choose unused IDs; history deleted outside Kanbeat before the
 ID ledger exists cannot be reconstructed automatically.
 
-Reordering normally renames only the two exchanged tickets; equal-order ties may
-require normalizing the column's numeric prefixes. Every individual rename keeps
-the `.md` suffix, ID and body. An interruption may leave a partial order change,
-but tickets remain visible. Leftover `.kanbeat-rename-*` files from older versions
-are reported as errors for manual filename restoration; they are never silently
-ignored or rewritten.
+Tickets in a column are listed by numeric ID. What starts when is decided by dependencies (see below).
 
 If `.state` is absent at startup, board status still comes from directories and execution starts **stopped**. Without assignments, configured defaults are used after the user presses Play. Deleting `.state` while the system is actively running is not a supported operation.
 
@@ -130,14 +125,30 @@ Each normal developer turn is executed through the native CLI's structured non-i
 
 A Reviewer receives the **path to the current canonical ticket Markdown file**, its own role/global/slot CP and workflow instructions. The Reviewer reads the ticket directly from disk, independently inspects the working tree, and must not edit, rename or move the ticket. It is never automatically given the Developer transcript, terminal history, CP, or other Reviewers' transcripts. A replacement **within the same reviewer slot** can receive that same slot's bounded prior output as untrusted context when harness is changed. Different reviewer slots never exchange histories.
 
-Only one ticket may be in Progress or Review/QA for the dispatcher to start work. If there are multiple, the supervisor suspends dispatch and reports an error. `failed/` is a manual-recovery column.
+Several tickets can be in Progress or Review/QA at once, up to `max_parallel` in `config.json` (default 3). `failed/` is a manual-recovery column.
+
+### Dependencies
+
+A ticket declares what it waits for with a line in its own Markdown, right after the title:
+
+```md
+Blocked by: #002, #003
+```
+
+In the inline form every ID needs the `#` prefix, so free text such as `Blocked by: the 2 auth tickets` creates no blocker. A `## Blocked by` section with one ticket ID per list item (the `#` is optional there) is read as well; lines inside code fences are ignored. The "blocks" side is derived and shown in the TUI, never written to files.
+
+- A ticket in Todo starts only when every blocker is in `done/` or `archive/`. Otherwise it stays in Todo until the blockers finish, so a batch of tickets dropped into Todo works through itself in dependency order.
+- Unblocked tickets start in ascending ID order, in parallel, up to `max_parallel`. In a chain of four tickets only the first is started.
+- A blocker that is missing, in Backlog, Failed, Progress or Review does not release the ticket. Cycles never start.
+- Moving a blocked ticket to Progress from the TUI is refused.
+
 
 ## Live ticket updates and agent prompts
 
 **Pass the ticket path, not a copy of its Markdown contents.** On a fresh Developer or Reviewer turn, the supervisor resolves the current ticket path from its stable ID and sends a short instruction, for example:
 
 ```text
-Read .kanbeat/progress/0-002-authentication.md and complete the task described
+Read .kanbeat/progress/002-authentication.md and complete the task described
 there. This ticket is read-only for you: never edit, rename or move it.
 Kanbeat alone manages ticket lifecycle and runtime.
 ```
@@ -147,12 +158,12 @@ The same rule applies in Review/QA, using its current `.kanbeat/review/...` path
 For every active worker turn, the supervisor stores a **SHA-256 hash of the ticket's Markdown contents** alongside the worker's runtime data in `.kanbeat/.state/`. After the turn ends, **before accepting completion, a Developer stage transition, or a Reviewer verdict**, it reads the current ticket by stable ID and compares content hashes. When the body changed:
 
 - Do **not** interrupt a running turn, restart the harness, or discard its native session.
-- Resolve the **current file path** again from the ticket ID (filename, order, slug and status directory can have changed).
+- Resolve the **current file path** again from the ticket ID (filename slug and status directory can have changed).
 - Send a follow-up in the **same native worker session**: `Ticket #002 has changed. Re-read <current-ticket-path>, reconcile the updated requirements with your existing work, and continue. Do not modify the ticket.`
 - Keep the ticket on the current stage until a subsequent successful turn has processed the latest content. Update the stored hash for that turn.
 - In Review/QA, previously recorded verdicts for an older ticket revision **cannot approve the updated task**. Each affected Reviewer slot must re-read it and deliver a verdict for the current revision before moving to Done. Preserve Reviewer-to-Reviewer and Developer-to-Reviewer transcript isolation.
 
-A filename-only rename or reorder that leaves the Markdown contents unchanged **does not** trigger a new agent turn. A stage change made by the supervisor changes the path, not the underlying requirements. Hashes detect **content changes**, not timestamps, filenames, or Git diffs.
+A filename-only rename that leaves the Markdown contents unchanged **does not** trigger a new agent turn. A stage change made by the supervisor changes the path, not the underlying requirements. Hashes detect **content changes**, not timestamps, filenames, or Git diffs.
 
 **Implemented in the supervisor:** per-turn content hashes, native same-session re-read on change, stale Reviewer verdict invalidation, and re-resolving the canonical ticket path by stable ID. This implementation has not yet been validated against live vendor CLI processes.
 
@@ -216,7 +227,7 @@ Configure an optional native harness and prompt in Settings or `config.json`:
 
 An empty prompt disables hooks; an empty harness selects the project default at
 queue time. Every column change made through Kanbeat (including manual moves,
-archive/restore and failure transitions) queues one hook. Creating, reordering,
+archive/restore and failure transitions) queues one hook. Creating,
 deleting or externally moving a file does not queue a hook. Pending hooks run
 serially on Play, before the next board turn. Each starts a fresh native session
 with the transition event ID and current canonical ticket path, without worker

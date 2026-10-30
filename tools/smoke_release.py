@@ -204,6 +204,8 @@ class Smoke:
             return seen
 
         try:
+            wait_for(lambda: b"KANBEAT" in drain(), "TUI starts on the Sessions page")
+            os.write(master, b"2")
             wait_for(
                 lambda: b"Smoke" in drain(),
                 "TUI renders the board with its stylesheet",

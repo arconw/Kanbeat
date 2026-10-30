@@ -36,7 +36,7 @@ async def test_hook_runs_once_with_isolated_session_and_current_path(
     supervisor.ticket_state(ticket.id)["developer"]["session"] = "developer-session"
     supervisor.move_ticket(ticket.id, "todo")
     moved = supervisor.board.find(ticket.id)
-    moved.path.rename(moved.path.with_name("20-001-renamed.md"))
+    moved.path.rename(moved.path.with_name("001-renamed.md"))
     captured = []
 
     class FakeRun:
@@ -55,7 +55,7 @@ async def test_hook_runs_once_with_isolated_session_and_current_path(
     await supervisor.jobs["hook:1"]
     assert captured[0][0] == "claude"
     assert captured[0][2] is None
-    assert ".kanbeat/todo/20-001-renamed.md" in captured[0][1]
+    assert ".kanbeat/todo/001-renamed.md" in captured[0][1]
     assert "Private body" not in captured[0][1]
     assert "developer-session" not in captured[0][1]
     assert supervisor.hooks.entries["1"]["status"] == "completed"
@@ -170,6 +170,7 @@ async def test_full_queue_lifecycle_serializes_hooks(supervisor, monkeypatch):
 
     observed = []
     supervisor.runtime.config["default_harness"] = "pi"
+    supervisor.runtime.config["max_parallel"] = 1
 
     class FakeRun:
         stopping = False
