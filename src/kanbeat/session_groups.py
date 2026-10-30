@@ -490,9 +490,16 @@ class SessionGroups:
                     session_id = entry.get("native_session")
                     if isinstance(session_id, str) and session_id:
                         try:
-                            await self.claude_runtime.stop_session(session_id)
-                        except (ClaudeRuntimeError, OSError):
-                            pass
+                            stopped = await self.claude_runtime.stop_session(session_id)
+                        except (ClaudeRuntimeError, OSError) as error:
+                            raise ValueError(
+                                f"Could not stop Claude config session: {error}"
+                            ) from error
+                        if not stopped:
+                            raise ValueError(
+                                "Could not confirm that the Claude config session "
+                                "stopped; keep the record and retry"
+                            )
                     events_id = entry.get("events_id")
                     if isinstance(events_id, str) and events_id:
                         self.claude_runtime.remove_events(events_id)

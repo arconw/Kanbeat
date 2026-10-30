@@ -358,6 +358,13 @@ class ClaudeRuntime:
                 state["effort"] = record.get("effort") or state["effort"]
                 state["activity"] = "error" if event == "StopFailure" else "idle"
             elif record.get("activity") in ("working", "waiting", "error"):
+                if event == "Notification" and record.get("activity") == "waiting":
+                    kind = str(record.get("notification_type") or "").lower()
+                    if not any(
+                        word in kind
+                        for word in ("permission", "elicitation", "question")
+                    ):
+                        continue
                 state["activity"] = str(record["activity"])
             elif record.get("activity") == "tool":
                 state["activity"] = "working"
@@ -451,10 +458,7 @@ class ClaudeRun:
                             "",
                         )
                     await asyncio.sleep(self.runtime.poll_interval)
-            if row is not None and (
-                row.get("status") in ("busy", "waiting")
-                or row.get("state") == "blocked"
-            ):
+            if row is not None and row.get("state") != "stopped":
                 try:
                     stopped = await self.runtime.stop_session(self.session_id)
                 except (ClaudeRuntimeError, OSError, asyncio.TimeoutError):

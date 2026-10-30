@@ -483,6 +483,24 @@ async def test_resume_missing_session_is_classified(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_idle_live_session_is_stopped_before_resume(tmp_path):
+    runtime = FakeClaudeRuntime(tmp_path)
+    runtime.rows = [{"status": "idle", "state": "working"}]
+    run = ClaudeRun(runtime, "continue", "session-1", tmp_path / "run.log")
+    original_stop = runtime.stop_session
+    stopped = []
+
+    async def observe(session):
+        stopped.append(session)
+        return await original_stop(session)
+
+    runtime.stop_session = observe
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert outcome.ok
+    assert stopped == ["session-1"]
+
+
+@pytest.mark.asyncio
 async def test_resume_fails_when_session_cannot_be_verified(tmp_path):
     runtime = FakeClaudeRuntime(tmp_path)
     runtime.rows = [{"status": "busy", "state": "working"}]
@@ -512,6 +530,43 @@ async def test_resume_fails_when_running_session_cannot_be_stopped(tmp_path):
     assert not outcome.ok
     assert "Could not stop" in outcome.reason
     assert not runtime.launches
+
+
+def test_idle_prompt_notification_does_not_override_idle(tmp_path):
+    runtime = FakeClaudeRuntime(tmp_path)
+    events_id = "notify"
+    record_event(
+        "hook",
+        {"hook_event_name": "Stop", "session_id": "s", "last_assistant_message": "x"},
+        runtime.events_dir,
+        events_id,
+    )
+    _settings, activity = runtime.config_state(events_id)
+    assert activity == "idle"
+    record_event(
+        "hook",
+        {
+            "hook_event_name": "Notification",
+            "session_id": "s",
+            "notification_type": "idle_prompt",
+        },
+        runtime.events_dir,
+        events_id,
+    )
+    _settings, activity = runtime.config_state(events_id)
+    assert activity == "idle"
+    record_event(
+        "hook",
+        {
+            "hook_event_name": "Notification",
+            "session_id": "s",
+            "notification_type": "permission_prompt",
+        },
+        runtime.events_dir,
+        events_id,
+    )
+    _settings, activity = runtime.config_state(events_id)
+    assert activity == "waiting"
 
 
 def test_config_state_resets_after_file_truncation(tmp_path):
@@ -569,6 +624,37 @@ def test_session_missing_detection():
     assert session_missing("session abc does not exist")
     assert not session_missing("session is already running")
     assert issubclass(ClaudeSessionMissing, Exception)
+
+
+@pytest.mark.asyncio
+async def test_config_delete_refuses_unconfirmed_stop(tmp_path, monkeypatch):
+    monkeypatch.setattr("kanbeat.session_groups.available", lambda name: True)
+    runtime = FakeClaudeRuntime(tmp_path)
+    supervisor = Supervisor(tmp_path)
+    supervisor.claude = runtime
+    supervisor.session_groups.claude_runtime = runtime
+    try:
+        result = await supervisor.dispatch(
+            {"op": "session_config_open", "harness": "claude"}
+        )
+        terminal_id = result["terminal"]
+        await supervisor.terminals.stop()
+
+        async def refuse(session):
+            return False
+
+        runtime.stop_session = refuse
+        with pytest.raises(ValueError, match="Could not confirm"):
+            await supervisor.dispatch(
+                {
+                    "op": "session_delete",
+                    "terminal": terminal_id,
+                    "confirmed": True,
+                }
+            )
+        assert terminal_id in supervisor.terminals.entries
+    finally:
+        await supervisor.terminals.stop()
 
 
 @pytest.mark.asyncio
@@ -633,16 +719,22 @@ def test_config_state_maps_hook_activity(tmp_path):
     runtime = FakeClaudeRuntime(tmp_path)
     events_id = "activity"
     expected = [
-        ("UserPromptSubmit", "working"),
-        ("Notification", "waiting"),
-        ("PreToolUse", "working"),
-        ("Stop", "idle"),
-        ("StopFailure", "error"),
+        ({"hook_event_name": "UserPromptSubmit"}, "working"),
+        (
+            {
+                "hook_event_name": "Notification",
+                "notification_type": "permission_prompt",
+            },
+            "waiting",
+        ),
+        ({"hook_event_name": "PreToolUse"}, "working"),
+        ({"hook_event_name": "Stop"}, "idle"),
+        ({"hook_event_name": "StopFailure"}, "error"),
     ]
-    for event, activity in expected:
+    for payload, activity in expected:
         record_event(
             "hook",
-            {"hook_event_name": event, "session_id": "session-1"},
+            {"session_id": "session-1", **payload},
             runtime.events_dir,
             events_id,
         )
