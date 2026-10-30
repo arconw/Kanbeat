@@ -431,6 +431,41 @@ async def test_attach_missing_thread_does_not_drop_active_session(codex_supervis
         await asyncio.gather(job, return_exceptions=True)
 
 
+def test_invalid_stored_codex_settings_are_kept_and_reported(codex_supervisor):
+    supervisor, _host = codex_supervisor
+    supervisor.runtime.data["native_settings"]["codex"] = {"model": "bad value"}
+    assert supervisor.native_settings("codex") is None
+    assert supervisor.runtime.data["native_settings"]["codex"] == {"model": "bad value"}
+    assert supervisor.runtime.data["notices"][-1]["level"] == "warning"
+    assert "invalid" in supervisor.runtime.data["notices"][-1]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_codex_config_sync_backs_off_after_timeout(codex_supervisor):
+    supervisor, host = codex_supervisor
+    supervisor.terminals.entries["cfg"] = {
+        "id": "cfg",
+        "owner": "custom",
+        "role": "config",
+        "harness": "codex",
+        "native_session": "01a18660-9ca4-71c0-ba25-81426f4ca65d",
+        "status": "running",
+    }
+    supervisor.terminals.sessions["cfg"] = object()
+    calls = 0
+
+    async def timeout(session):
+        nonlocal calls
+        calls += 1
+        raise asyncio.TimeoutError
+
+    host.read_thread = timeout
+    await supervisor.sync_codex_config()
+    await supervisor.sync_codex_config()
+    assert calls == 1
+    assert supervisor._codex_sync_backoff > 0
+
+
 @pytest.mark.asyncio
 async def test_codex_config_activity_uses_thread_status(codex_supervisor):
     supervisor, host = codex_supervisor

@@ -72,6 +72,9 @@ class Supervisor:
         self._reported: set[str] = set()
         self._host_lock = asyncio.Lock()
         self._codex_lock = asyncio.Lock()
+        self._codex_sync_backoff = 0.0
+        self._opencode_sync_backoff = 0.0
+        self._settings_errors: set[str] = set()
         self.opencode: OpenCodeServeHost | None = None
         self.codex: CodexAppServerHost | None = None
         self.runtime.data.setdefault("hosts", {})
@@ -129,10 +132,16 @@ class Supervisor:
         raw = self.runtime.data.get("native_settings", {}).get(harness)
         try:
             settings = NativeSettings.from_dict(harness, raw)
-        except SettingsError:
-            self.runtime.data.setdefault("native_settings", {}).pop(harness, None)
-            self.save()
+        except SettingsError as error:
+            if harness not in self._settings_errors:
+                self._settings_errors.add(harness)
+                self.notice(
+                    f"Stored {harness} native settings are invalid: {error}. "
+                    "They will not be applied until corrected.",
+                    "warning",
+                )
             return None
+        self._settings_errors.discard(harness)
         return settings if not settings.empty else None
 
     def save_native_settings(self, settings: NativeSettings) -> None:
@@ -157,13 +166,21 @@ class Supervisor:
             "running",
         ):
             return
+        loop = asyncio.get_running_loop()
+        if loop.time() < self._codex_sync_backoff:
+            return
         try:
             metadata = await asyncio.wait_for(
                 self.codex.read_thread(entry["native_session"]), timeout=3
             )
-        except (CodexHostError, OSError, asyncio.TimeoutError) as error:
+        except asyncio.TimeoutError as error:
+            self._codex_sync_backoff = loop.time() + 15
             logging.getLogger(__name__).debug("Codex config read failed: %s", error)
             return
+        except (CodexHostError, OSError) as error:
+            logging.getLogger(__name__).debug("Codex config read failed: %s", error)
+            return
+        self._codex_sync_backoff = 0.0
         try:
             settings = from_codex_thread(metadata.to_dict())
         except SettingsError as error:
