@@ -20,6 +20,7 @@ class FakeClaudeRuntime:
         self.stopped = []
         self.tracked = set()
         self.events_id = None
+        self._config_states = {}
         self.session = "session-1"
         self.rows = []
         self.mode = "ok"
@@ -85,7 +86,25 @@ class FakeClaudeRuntime:
         elif self.mode == "hang":
             self.rows = [{"status": "busy", "state": "working"}]
         elif self.mode == "failed-row":
-            self.rows = [{"status": "busy", "state": "failed"}]
+            self.rows = [
+                {"status": "busy", "state": "failed"},
+                {"status": "idle", "state": "failed"},
+            ]
+        elif self.mode == "failed-stop":
+            record_event(
+                "hook",
+                {
+                    "hook_event_name": "Stop",
+                    "session_id": self.session,
+                    "last_assistant_message": "done",
+                },
+                self.events_dir,
+                self.events_id,
+            )
+            self.rows = [
+                {"status": "busy", "state": "failed"},
+                {"status": "idle", "state": "failed"},
+            ]
         elif self.mode == "stop-end":
             record_event(
                 "hook",
@@ -232,6 +251,16 @@ async def test_resumed_claude_run_keeps_its_own_settings(tmp_path):
     assert "--resume" in runtime.launches[0]
     assert "--model" not in runtime.launches[0]
     assert "--effort" not in runtime.launches[0]
+
+
+@pytest.mark.asyncio
+async def test_previous_failed_state_does_not_override_a_stop(tmp_path):
+    runtime = FakeClaudeRuntime(tmp_path)
+    runtime.mode = "failed-stop"
+    run = ClaudeRun(runtime, "work", None, tmp_path / "run.log")
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert outcome.ok
+    assert outcome.answer == "done"
 
 
 @pytest.mark.asyncio

@@ -46,6 +46,7 @@ class ClaudeRuntime:
         self.executable = executable
         self.poll_interval = poll_interval
         self.sessions: set[str] = set()
+        self._config_states: dict[str, dict[str, Any]] = {}
 
     def child_env(self) -> dict[str, str]:
         return external_environment(self.base_env)
@@ -428,7 +429,11 @@ class ClaudeRun:
                     if row is not None:
                         seen = True
                         self.activity_update(self.runtime.activity(row))
-                        if row.get("state") == "failed":
+                        if (
+                            row.get("state") == "failed"
+                            and last_stop is None
+                            and saw_activity
+                        ):
                             failure = {"error": "Claude session failed"}
                         if row.get("status") in ("busy", "waiting") or row.get(
                             "state"
