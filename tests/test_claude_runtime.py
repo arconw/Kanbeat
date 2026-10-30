@@ -25,6 +25,7 @@ class FakeClaudeRuntime:
         self.rows = []
         self.mode = "ok"
         self.found = 0
+        self.vanish_after = None
 
     def child_env(self):
         return {"PATH": "/usr/bin"}
@@ -105,6 +106,19 @@ class FakeClaudeRuntime:
                 {"status": "busy", "state": "failed"},
                 {"status": "idle", "state": "failed"},
             ]
+        elif self.mode == "stop-vanish":
+            record_event(
+                "hook",
+                {
+                    "hook_event_name": "Stop",
+                    "session_id": self.session,
+                    "last_assistant_message": "done",
+                },
+                self.events_dir,
+                self.events_id,
+            )
+            self.rows = [{"status": "busy", "state": "working"}]
+            self.vanish_after = 1
         elif self.mode == "stop-end":
             record_event(
                 "hook",
@@ -143,6 +157,8 @@ class FakeClaudeRuntime:
 
     async def find(self, session):
         if not self.rows:
+            return None
+        if self.vanish_after is not None and self.found >= self.vanish_after:
             return None
         self.found += 1
         index = min(self.found - 1, len(self.rows) - 1)
@@ -251,6 +267,19 @@ async def test_resumed_claude_run_keeps_its_own_settings(tmp_path):
     assert "--resume" in runtime.launches[0]
     assert "--model" not in runtime.launches[0]
     assert "--effort" not in runtime.launches[0]
+
+
+@pytest.mark.asyncio
+async def test_stop_is_accepted_when_the_session_disappears(tmp_path, monkeypatch):
+    import kanbeat.claude_runtime as module
+
+    runtime = FakeClaudeRuntime(tmp_path)
+    runtime.mode = "stop-vanish"
+    monkeypatch.setattr(module, "STARTUP_GRACE", 0.01)
+    run = ClaudeRun(runtime, "work", None, tmp_path / "run.log")
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert outcome.ok
+    assert outcome.answer == "done"
 
 
 @pytest.mark.asyncio

@@ -399,7 +399,10 @@ class ClaudeRun:
             self.runtime.track(self.session_id)
             assert self.session_id is not None
             if self.stopping:
-                await self.runtime.stop_session(self.session_id)
+                try:
+                    await self.runtime.stop_session(self.session_id)
+                except (ClaudeRuntimeError, OSError, asyncio.TimeoutError):
+                    pass
                 return Outcome(False, "interrupted by board Stop", self.session_id, "")
             loop = asyncio.get_running_loop()
             startup_deadline = loop.time() + STARTUP_GRACE
@@ -494,12 +497,14 @@ class ClaudeRun:
                         ):
                             break
                     if not seen and loop.time() >= startup_deadline:
-                        failure = failure or {
-                            "error": "Claude background session did not start"
-                        }
+                        if last_stop is None:
+                            failure = failure or {
+                                "error": "Claude background session did not start"
+                            }
                         break
                     if seen and row is None and loop.time() >= startup_deadline:
-                        failure = failure or {"error": "Claude session disappeared"}
+                        if last_stop is None:
+                            failure = failure or {"error": "Claude session disappeared"}
                         break
                     await asyncio.sleep(self.runtime.poll_interval)
                 if failure is not None:
