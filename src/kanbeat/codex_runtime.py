@@ -212,7 +212,8 @@ class CodexRun:
                     return Outcome(
                         False, "interrupted before turn", self.session_id, ""
                     )
-                self.subscription = self.host.subscribe(self.session_id)
+                subscription = self.host.subscribe(self.session_id)
+                self.subscription = subscription
                 try:
                     turn = await self.host.start_turn(
                         self.session_id,
@@ -225,8 +226,14 @@ class CodexRun:
                         else None,
                     )
                     response_id = str(turn.get("id") or "")
-                    if response_id and self.turn_id is None:
-                        self.turn_id = response_id
+                    if not response_id:
+                        return Outcome(
+                            False,
+                            "Codex turn/start returned no turn id",
+                            self.session_id,
+                            "",
+                        )
+                    self.turn_id = response_id
                     if self.stopping:
                         await self.stop()
                         return Outcome(
@@ -236,7 +243,7 @@ class CodexRun:
                     failed_deadline: float | None = None
                     while not self.finished:
                         try:
-                            notification = await self.subscription.get(0.25)
+                            notification = await subscription.get(0.25)
                         except CodexTimeout:
                             if (
                                 self.failed
@@ -268,9 +275,9 @@ class CodexRun:
                         log.flush()
                     return outcome
                 finally:
-                    subscription, self.subscription = self.subscription, None
-                    if subscription is not None:
-                        subscription.close()
+                    if self.subscription is subscription:
+                        self.subscription = None
+                    subscription.close()
             except CodexDisconnected as error:
                 if self.stopping:
                     return Outcome(

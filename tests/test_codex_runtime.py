@@ -248,6 +248,45 @@ async def test_resume_keeps_native_settings_and_detects_missing_thread(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_missing_turn_id_fails_fast(tmp_path):
+    host = FakeCodexHost()
+
+    async def empty_turn(session, text, *, model=None, effort=None):
+        host.turns.append((session, text, model, effort))
+        return {"id": ""}
+
+    host.start_turn = empty_turn
+    run = CodexRun(host, "work", None, tmp_path, tmp_path / "run.log")
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert not outcome.ok
+    assert "no turn id" in outcome.reason
+    assert run.subscription is None
+
+
+@pytest.mark.asyncio
+async def test_stop_after_notification_does_not_use_a_closed_subscription(tmp_path):
+    host = FakeCodexHost()
+    run = CodexRun(host, "work", None, tmp_path, tmp_path / "run.log")
+
+    async def stop_after_started(session, text, *, model=None, effort=None):
+        host.turns.append((session, text, model, effort))
+        host.subscription.push(
+            "turn/started",
+            {
+                "threadId": session,
+                "turn": {"id": "turn-1", "status": "inProgress", "items": []},
+            },
+        )
+        await run.stop()
+        return {"id": "turn-1"}
+
+    host.start_turn = stop_after_started
+    outcome = await asyncio.wait_for(run.execute(), timeout=5)
+    assert not outcome.ok
+    assert "interrupted" in outcome.reason.lower()
+
+
+@pytest.mark.asyncio
 async def test_retryable_error_does_not_poison_completed_outcome(tmp_path):
     host = FakeCodexHost()
 
