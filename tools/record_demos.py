@@ -15,6 +15,7 @@ import time
 from demo_frames import PATH_PLACEHOLDER, FrameRenderer, font_file, save_gif
 
 TERMINAL_SIZE = (128, 30)
+BOARD_SIZE = (196, 32)
 MARKER = ".kanbeat-demo-workdir"
 HARNESS_NAMES = ("codex", "claude", "opencode", "pi")
 STAND_IN = """#!/bin/sh
@@ -212,7 +213,8 @@ async def board_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
     project = demo.project("board-demo")
     recording = Recording("board", renderer, project)
     async with demo.supervisor(project):
-        async with Client("Terminal 1 · TUI", project, recording) as one:
+        async with Client("Terminal 1 · TUI", project, recording, BOARD_SIZE) as one:
+            await one.click("#nav-board")
             one.shot(
                 "Empty project. The supervisor runs in the background; the board is stopped.",
                 2.2,
@@ -242,25 +244,43 @@ async def board_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
                 'Terminal 2: kanbeat new "Write API docs" ... --column backlog. The open TUI picks it up.',
                 2.4,
             )
-            await one.click("#view-001")
-            one.shot(
-                "A ticket is just a file: id-slug.md. The TUI shows it read-only.",
-                2.4,
+            demo.cli(
+                project,
+                "new",
+                "Publish the docs site",
+                "--description",
+                "Blocked by: #002",
+                "--column",
+                "backlog",
             )
+            await one.settle(2.0)
+            one.shot(
+                "Dependencies live in the Markdown: a line 'Blocked by: #002'. The cards show who blocks whom.",
+                3.0,
+            )
+            await one.click("#view-003")
+            one.shot(
+                "The open ticket lists BLOCKED BY (and BLOCKS) like an issue tracker.",
+                2.6,
+            )
+            await one.click(".dependency")
+            one.shot("Each entry is a link: it opens the blocking ticket.", 2.4)
             await one.click("#close")
+            await one.click("#menu-002")
             one.shot(
-                "Each card has [=] [<] [>]: column menu, move left, move right.", 1.6
+                "Each card has [=] [<] [>]: a column menu (Archive last), move left, move right.",
+                2.6,
             )
-            await one.click("#right-002")
+            await one.click("#jump-todo")
             assert len(demo.tickets(project)["todo"]) == 2
             one.shot(
-                "Manual move: Backlog to Todo. The Markdown file moved to .kanbeat/todo/.",
-                2.2,
+                "Backlog to Todo moves the Markdown file at once. Todo tickets start when their blockers are Done.",
+                3.0,
             )
             for column, caption in (
                 (
                     "progress",
-                    "Manual move to Progress. The board is stopped, so no agent runs.",
+                    "Any other manual move asks first. The board is stopped, so no agent runs.",
                 ),
                 (
                     "review",
@@ -272,6 +292,8 @@ async def board_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
                 ),
             ):
                 await one.click("#right-001")
+                if column == "progress":
+                    one.shot(caption, 2.4)
                 await one.click("#yes")
                 assert len(demo.tickets(project)[column]) == 1
                 one.shot(caption, 2.4)
@@ -297,6 +319,7 @@ async def play_stop_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
         )
         one = Client("Terminal 1 · TUI", project, recording)
         await one.__aenter__()
+        await one.click("#nav-board")
         one.shot("Board stopped. Todo is empty, so Play will not start any agent.", 2.2)
         await one.click("#execution", 1.8)
         assert (await snapshot(project))["execution"] == "running"
@@ -309,6 +332,7 @@ async def play_stop_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
         one.shot("While the board runs, task terminals are disabled.", 2.4)
         two = Client("Terminal 2 · TUI", project, recording)
         await two.__aenter__()
+        await two.click("#nav-board")
         two.shot(
             "A second TUI joins the same supervisor and already shows the running board.",
             2.4,
@@ -336,16 +360,21 @@ async def play_stop_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
     return recording
 
 
+def terminal_titled(state: dict, title: str) -> str:
+    return next(
+        key for key, entry in state["terminals"].items() if entry["title"] == title
+    )
+
+
 async def sessions_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
     project = demo.project("sessions-demo")
     recording = Recording("sessions", renderer, project)
     size = (128, 46)
     async with demo.supervisor(project):
         async with Client("Terminal 1 · TUI", project, recording, size) as one:
-            await one.click("#nav-sessions")
             one.shot(
-                "Sessions: independent native terminals, organised in your own groups.",
-                2.2,
+                "Sessions is the first tab: groups and sessions on the left, the terminal on the right.",
+                2.6,
             )
             await one.click("#new-group")
             await one.click("#group-name")
@@ -361,47 +390,72 @@ async def sessions_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
                 "Docs",
                 "Research",
             ]
+            research = next(k for k, v in groups.items() if v["name"] == "Research")
             one.shot(
                 "Two groups created. Group names are local organisation only.", 2.0
             )
-            await one.click("#new-session")
-            await one.click("#session-title")
-            await one.type("Notes shell")
-            await one.choose("#session-group", 1)
+            for title, steps in (("Notes shell", 1), ("Scratch pad", 2)):
+                await one.click("#new-session")
+                await one.click("#session-title")
+                await one.type(title)
+                await one.choose("#session-group", steps)
+                one.app.screen.query_one("#session-harness").value = "claude"
+                await one.settle(0.3)
+                if title == "Notes shell":
+                    one.shot(
+                        "New session: name, group and native harness. The harness here is a stand-in script, not a model.",
+                        3.0,
+                    )
+                await one.click("#session-start", 1.5)
+                if title == "Notes shell":
+                    one.shot(
+                        "Opened beside the list. Live, Stop and Detach are in the top bar; the title sits next to the logo.",
+                        2.8,
+                    )
+                    await one.type("hello from terminal 1")
+                    await one.press("enter", settle=0.8)
+                    one.shot(
+                        "Keys travel through the supervisor to the PTY and the screen comes back.",
+                        2.6,
+                    )
+                else:
+                    one.shot(
+                        "A second session. The first one keeps running in the background.",
+                        2.6,
+                    )
+            state = await snapshot(project)
+            notes = terminal_titled(state, "Notes shell")
+            assert {entry["status"] for entry in state["terminals"].values()} == {
+                "running"
+            }
+            await one.click(f"#session-row-{notes}")
+            await one.settle(0.8)
             one.shot(
-                "New session: name, group and native harness. The harness here is a stand-in script, not a model.",
-                3.0,
+                "Click any session to switch to it. The row shows a status square and its own menu.",
+                2.8,
             )
-            await one.click("#session-start", 1.5)
+            await one.click(f"#group-actions-{research}")
             one.shot(
-                "Opened: a PTY owned by the supervisor. Stop and Detach are in the header.",
-                2.4,
+                "Group menu: rename or remove. An outside click or Esc closes it.", 2.4
             )
-            await one.type("hello from terminal 1")
-            await one.press("enter", settle=0.8)
-            one.shot(
-                "Keys travel through the supervisor to the PTY and the screen comes back.",
-                2.6,
-            )
+            await one.press("escape")
             await one.press("ctrl+backslash")
             terminals = (await snapshot(project))["terminals"]
-            assert [entry["status"] for entry in terminals.values()] == ["running"]
+            assert {entry["status"] for entry in terminals.values()} == {"running"}
             one.shot(
-                "Detach (Ctrl+\\): the session stays running under its group.", 2.6
+                "Detach (Ctrl+\\): both sessions stay running under their groups.", 2.6
             )
             await one.click("#execution")
             await one.click("#execution")
             terminals = (await snapshot(project))["terminals"]
-            assert [entry["status"] for entry in terminals.values()] == ["running"]
+            assert {entry["status"] for entry in terminals.values()} == {"running"}
             one.shot("Board Play then Stop: independent sessions are not touched.", 2.6)
             async with Client("Terminal 2 · TUI", project, recording, size) as two:
-                await two.click("#nav-sessions")
                 two.shot(
-                    "Another TUI on the same supervisor sees the same group and session.",
+                    "Another TUI on the same supervisor sees the same groups and sessions.",
                     2.4,
                 )
-                terminal_id = next(iter(terminals))
-                await two.click(f"#open-session-{terminal_id}", 1.2)
+                await two.click(f"#open-session-{notes}", 1.2)
                 two.shot(
                     "Open: the earlier output is still on the shared terminal screen.",
                     2.6,
@@ -409,29 +463,34 @@ async def sessions_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
                 await two.type("hello from terminal 2")
                 await two.press("enter", settle=0.8)
                 two.shot("Terminal 2 types into the same process.", 2.4)
-                await two.press("ctrl+backslash")
-                await two.click(f"#session-actions-{terminal_id}")
+                await two.click("#terminal-stop", 1.2)
+                terminals = (await snapshot(project))["terminals"]
+                assert terminals[notes]["status"] == "stopped"
                 two.shot(
-                    "Actions: rename, move between groups, stop, restart or remove the record.",
-                    2.6,
+                    "Stop in the top bar interrupts the agent at once, with no confirmation. The session stays listed.",
+                    3.0,
+                )
+                await two.click(f"#session-row-{notes}", 1.5)
+                terminals = (await snapshot(project))["terminals"]
+                assert terminals[notes]["status"] == "running"
+                two.shot(
+                    "Clicking a stopped session resumes it under the same native session id.",
+                    3.0,
+                )
+                await two.press("ctrl+backslash")
+                await two.click(f"#session-actions-{notes}")
+                two.shot(
+                    "Session menu: Edit, Stop, Delete, and Delete completely (also removes the native session).",
+                    3.0,
                 )
                 await two.click("#session-stop")
-                two.shot(
-                    "Stopping an independent session always asks for confirmation.", 2.4
-                )
-                await two.click("#yes", 1.2)
-                terminals = (await snapshot(project))["terminals"]
-                assert [entry["status"] for entry in terminals.values()] == ["stopped"]
-                two.shot(
-                    "Session stopped. Its record, group and output log remain.", 2.6
-                )
-                await two.click(f"#session-actions-{terminal_id}")
+                await two.click(f"#session-actions-{notes}")
                 await two.click("#session-remove")
                 await two.click("#yes", 1.0)
-                assert not (await snapshot(project))["terminals"]
+                assert notes not in (await snapshot(project))["terminals"]
                 two.shot(
-                    "Remove record: the stopped session disappears; vendor history is untouched.",
-                    2.6,
+                    "Delete removes the workspace record; the vendor history stays untouched.",
+                    2.8,
                 )
     return recording
 

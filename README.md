@@ -1,81 +1,119 @@
+<div align="center">
+
 # Kanbeat
 
-A filesystem-native Kanban board for AI coding agents. A ticket is a Markdown file, its status is the directory it lives in, and one persistent local supervisor per project runs your own installed coding CLIs against the queue. Any number of terminal clients can attach to that supervisor.
+**A filesystem-native Kanban board and local supervisor for AI coding agents.**
+
+A ticket is a Markdown file, its status is the directory it lives in, and one persistent supervisor per project runs your own coding CLIs against the queue.
+
+[![CI](https://github.com/arconw/Kanbeat/actions/workflows/ci.yml/badge.svg)](https://github.com/arconw/Kanbeat/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/arconw/Kanbeat?label=release&sort=semver)](https://github.com/arconw/Kanbeat/releases)
+![Python](https://img.shields.io/badge/python-3.11%E2%80%933.14-blue)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS-lightgrey)
+
+[Install](#installation) ·
+[Quick start](#quick-start) ·
+[Tickets and dependencies](#tickets-and-dependencies) ·
+[Sessions](#sessions) ·
+[Limitations](#limitations) ·
+[Docs](#documentation)
+
+</div>
 
 > **Early release, not production-ready.** The board, supervisor, structured worker flow, transition hooks, persistent terminals and session groups are implemented and covered by automated tests. Codex, Claude and OpenCode protocol paths were exercised against deterministic local fake APIs, but not against real remote models or every vendor CLI version, and agents edit your working tree. Read [Limitations](#limitations) first.
 
-![Kanbeat board: creating tickets and moving them between columns](docs/media/board.gif)
+![Kanbeat board: dependencies between tickets, the card strip and manual moves](docs/media/board.gif)
 
 *Recorded from the real TUI against a real supervisor. The tickets are moved by hand; no agent ran. See [how the demos are made](docs/media.md).*
 
-## What it does
+## Why Kanbeat
 
-- **Files are the board.** Tickets live in `.kanbeat/<column>/<id>-<slug>.md`. Moving a file moves the ticket, and you can edit tickets in any editor. No frontmatter, no hidden metadata.
+- **Files are the board.** Tickets live in `.kanbeat/<column>/<id>-<slug>.md`. Moving a file moves the ticket, and you can edit tickets in any editor or script them from the shell. No frontmatter, no hidden metadata, and everything can be committed with your project.
 - **One supervisor per project.** `kanbeat` starts or joins it. Closing a TUI never stops work, and several terminals can watch the same board.
-- **Play and Stop.** Play lets the supervisor dispatch the Todo queue to your coding CLI. Stop interrupts task workers and leaves every ticket where it is; independent sessions keep running.
+- **Bring your own CLI.** Codex CLI, Claude Code, OpenCode and Pi run through their native modes with your own login, permissions and sandbox. Kanbeat embeds no agent and never overrides those settings.
+- **Dependencies and parallel work.** A ticket can say `Blocked by: #002`. Independent tickets run in parallel, blocked ones wait in Todo, and a whole batch drops into Todo and works through itself in order.
 - **Developer, then Review/QA.** A developer turn moves a ticket to Review/QA, where zero or more reviewer slots with isolated contexts approve it or send it back with feedback.
-- **Bring your own CLI.** Codex CLI, Claude Code, OpenCode and Pi run through their native modes with your own login, permissions and sandbox. Kanbeat embeds no agent and never overrides those settings. Model and effort choices from a project configuration session seed fresh Codex, Claude and OpenCode workers.
-- **Native terminals.** The supervisor owns interactive terminals and shared harness runtimes. OpenCode, Codex and Claude task slots can be attached live while the board runs; Pi tasks require Board Stop. Independent sessions are organised into groups and survive detaching.
+- **Native terminals and sessions.** Attach to a running harness live, or keep independent sessions in groups. Every session has a native id, so it resumes where it stopped.
 - **Transition hooks.** Optionally run a prompt in a fresh native session after each column change Kanbeat makes.
-- **Scriptable.** `kanbeat new`, `list`, `move`, `play` and `stop` work from the shell.
-
-## Demos
-
-Both recordings use no coding CLI and no model: the Todo column stays empty, and terminals run a plain stand-in script, as the captions say.
-
-![Play and Stop with two clients on one supervisor](docs/media/play-stop.gif)
-
-*Play and Stop, and a second client joining the same supervisor. Closing the first client does not stop it.*
-
-![Sessions: groups and a supervisor-owned terminal](docs/media/sessions.gif)
-
-*Sessions: groups, a new independent session, a terminal that survives detaching, and the same session opened from a second client. The process in the terminal is a stand-in shell script, not a vendor CLI.*
-
-## Supported platforms
-
-| Platform | Status |
-| --- | --- |
-| Linux | Tested in CI on Python 3.11, 3.12, 3.13 and 3.14. |
-| macOS | Tested in CI on Python 3.14. |
-| WSL | A Linux runtime, but not yet tested on a Windows host. |
-| Native Windows | Not supported: the supervisor uses POSIX APIs. A port is tracked in [#11](https://github.com/arconw/Kanbeat/issues/11). |
-
-Kanbeat is not published on PyPI or Homebrew, and no prebuilt installers have been released yet. The source tree can build standalone Linux and macOS archives for a future release; see [Releases](docs/releases.md). Release and installer work is tracked in [#10](https://github.com/arconw/Kanbeat/issues/10).
-
-## Prerequisites
-
-- Python 3.11 or newer, and Git (the install command below fetches the release tag from GitHub).
-- [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/) for an isolated install; plain `pip` in a virtual environment also works.
-- At least one native CLI installed on your `PATH` and already authenticated: `codex`, `claude`, `opencode` or `pi`. Kanbeat does not log in for you.
-- A terminal at least 80 × 24 characters; about 130 columns shows all six board columns without scrolling.
 
 ## Installation
 
-Install the `v0.9.0` release tag from GitHub into an isolated environment:
+Kanbeat needs **Python 3.11 or newer** and **Git**, and at least one native CLI on your `PATH` that is already logged in: `codex`, `claude`, `opencode` or `pi`. Kanbeat does not log in for you.
+
+| System | Status |
+| --- | --- |
+| Linux | Supported, tested in CI on Python 3.11, 3.12, 3.13 and 3.14 (x86_64 and arm64 archives). |
+| macOS | Supported, tested in CI on Python 3.14 (Apple silicon and Intel archives). |
+| Windows (WSL) | A Linux runtime; install inside WSL as on Linux. Not yet tested on a Windows host. |
+| Windows (native) | Not supported: the supervisor uses POSIX APIs. A port is tracked in [#11](https://github.com/arconw/Kanbeat/issues/11). |
+
+Kanbeat is not on PyPI or Homebrew. Pick one of the options below; the tag in the commands is the release to install.
+
+### Linux and macOS: uv (recommended)
 
 ```sh
+# once: install uv (https://docs.astral.sh/uv/) and make sure Git is present
+curl -LsSf https://astral.sh/uv/install.sh | sh
 uv tool install git+https://github.com/arconw/Kanbeat.git@v0.9.0
+kanbeat --version
 ```
 
-If the command is not on your PATH after installation, run `uv tool update-shell` and reopen your terminal.
+If `kanbeat` is not found afterwards, run `uv tool update-shell` and reopen the terminal. Update with `uv tool install --force git+https://github.com/arconw/Kanbeat.git@<new tag>`; remove with `uv tool uninstall kanbeat`.
 
-Or, with pipx:
+### Linux and macOS: pipx
 
 ```sh
 pipx install git+https://github.com/arconw/Kanbeat.git@v0.9.0
+pipx ensurepath
 ```
 
-Use `pipx ensurepath` if needed. Without uv or pipx, use a virtual environment:
+### Linux and macOS: plain pip
 
 ```sh
-python -m venv ~/.venvs/kanbeat
+python3 -m venv ~/.venvs/kanbeat
 ~/.venvs/kanbeat/bin/python -m pip install git+https://github.com/arconw/Kanbeat.git@v0.9.0
 ~/.venvs/kanbeat/bin/kanbeat --help
 ```
 
-Run `~/.venvs/kanbeat/bin/kanbeat`, or add that `bin` directory to your `PATH`. To work on Kanbeat itself, see [Development](docs/guide.md#development).
+Run `~/.venvs/kanbeat/bin/kanbeat`, or add that `bin` directory to your `PATH`.
 
-## First use
+### Prerequisites by system
+
+| System | Python, Git and a package tool |
+| --- | --- |
+| Debian / Ubuntu | `sudo apt install python3 python3-venv pipx git` |
+| Fedora | `sudo dnf install python3 pipx git` |
+| Arch | `sudo pacman -S python python-pipx git` |
+| macOS (Homebrew) | `brew install python git uv` |
+| Windows | Install [WSL](https://learn.microsoft.com/windows/wsl/install) (`wsl --install`), then follow the Linux steps inside it. |
+
+### Standalone archive (no Python needed)
+
+Published releases also ship self-contained archives for Linux (x86_64, arm64) and macOS (Apple silicon, Intel) on the [Releases page](https://github.com/arconw/Kanbeat/releases), with a `SHA256SUMS` file. Archives appear there only once a release is published.
+
+```sh
+VERSION=0.9.0
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64)  TARGET=linux-x86_64 ;;
+  Linux-aarch64) TARGET=linux-arm64 ;;
+  Darwin-arm64)  TARGET=macos-arm64 ;;
+  Darwin-x86_64) TARGET=macos-x86_64 ;;
+esac
+BASE=https://github.com/arconw/Kanbeat/releases/download/v$VERSION
+curl -fLO "$BASE/kanbeat-$VERSION-$TARGET.tar.gz" -O "$BASE/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS        # macOS: shasum -a 256 --check --ignore-missing SHA256SUMS
+tar -xzf "kanbeat-$VERSION-$TARGET.tar.gz"
+mkdir -p ~/.local/opt ~/.local/bin
+mv "kanbeat-$VERSION-$TARGET" ~/.local/opt/kanbeat-$VERSION
+ln -sfn ~/.local/opt/kanbeat-$VERSION ~/.local/opt/kanbeat
+ln -sf ~/.local/opt/kanbeat/kanbeat ~/.local/bin/kanbeat
+```
+
+Keep the `_internal` directory next to the `kanbeat` executable and make sure `~/.local/bin` is on your `PATH`. The macOS archives are unsigned and not notarized; see [Releases](docs/releases.md) for the Gatekeeper step, updating and removing.
+
+To work on Kanbeat itself, see [Development](docs/guide.md#development).
+
+## Quick start
 
 Run Kanbeat from the root of the project you want agents to work on. Use a clean Git branch or worktree: Kanbeat does not manage worktrees or undo changes.
 
@@ -84,11 +122,11 @@ cd /path/to/my-project
 kanbeat
 ```
 
-The first run creates `.kanbeat/` and starts a background supervisor for the project. Then:
+The first run creates `.kanbeat/` and starts a background supervisor for the project. The TUI opens on **Sessions**; press `2` (or click **Board**) for the board.
 
 1. Press **+ Ticket**, give it a title and put it in **Backlog** or **Todo**. Tickets are plain Markdown files; edit them in your editor to add detail.
 2. Open **Settings** and check that the default harness is a CLI you have installed and logged in to.
-3. Press **Play**. The supervisor picks the first Todo ticket and hands its path to the native CLI. **This starts a real agent that can edit your working tree and uses your CLI account.**
+3. Press **Play**. The supervisor starts tickets from Todo and hands each ticket's path to the native CLI. **This starts real agents that can edit your working tree and use your CLI account.**
 4. Press **Stop** at any time. Open `kanbeat` in another terminal in the same project to watch the same board.
 
 The board starts stopped, so creating and moving tickets never starts an agent by itself. The same actions work from the shell:
@@ -103,23 +141,61 @@ kanbeat stop
 
 Commit `.kanbeat/` with your project so the board travels with it, and add `.kanbeat/.state/` to your `.gitignore`: it holds local runtime data and logs.
 
+Keys: `1` Sessions, `2` Board, `3` Archive, `4` Settings, `Ctrl+R` refresh, `Ctrl+Q` quit, and `Ctrl+\` detaches from a terminal.
+
+## Tickets and dependencies
+
+A ticket is one Markdown file named `<id>-<slug>.md`; the number is its permanent id. A ticket that has to wait for another says so in its own text, on a line right after the title:
+
+```md
+# Publish the docs site
+
+Blocked by: #002, #003
+
+Build the site and publish it once the API docs are written.
+```
+
+- A ticket in **Todo** starts only when every blocker is in **Done** or **Archive**. Until then it stays in Todo and starts by itself later, so you can drop a whole batch into Todo.
+- Tickets without dependencies start **in parallel**, up to `max_parallel` in `.kanbeat/config.json` (default 3). In a chain of four tickets only the first one starts.
+- The "blocks" side is derived and never written. The TUI shows `blocked by #002` and `→ blocks #003` on the cards and BLOCKED BY / BLOCKS lists in the open ticket; each entry opens that ticket.
+- Every card has a strip: `[=]` opens a column menu (Archive last), `[<]` and `[>]` move the ticket one column. Backlog and Todo moves are immediate; every other manual move, and every archive, asks for confirmation.
+
+`.kanbeat/INSTRUCTIONS.md` explains this format to an agent that you ask to write tickets. See the [Guide](docs/guide.md#dependencies) for the full rules.
+
+## Sessions
+
+![Sessions: groups, a native terminal beside the list and a second client](docs/media/sessions.gif)
+
+*Sessions: groups on the left, the terminal on the right, switching by click, detaching, and the same session opened from a second client. The process in the terminal is a stand-in shell script, not a vendor CLI.*
+
+- Sessions is the first tab. Groups and sessions sit in a list beside an embedded terminal; clicking a session switches to it.
+- Every independent session gets a native id (Codex thread, OpenCode session, Claude and Pi session id), so **clicking a stopped session resumes it** where it left off. The id can be set in Edit.
+- The session menu has Edit, Stop, **Delete** (removes the workspace record, the vendor history stays) and **Delete completely** (also removes the native session).
+- Select text with a plain left drag; it is copied when you release. Shift+drag keeps your terminal's own selection.
+- Independent sessions keep running when you detach, close the TUI or press Board Stop. Board task slots can be attached live while the board runs (OpenCode, Codex and Claude; Pi needs Board Stop).
+
+![Play and Stop with two clients on one supervisor](docs/media/play-stop.gif)
+
+*Play and Stop, and a second client joining the same supervisor. Closing the first client does not stop it. The Todo column is empty, so no coding CLI and no model runs.*
+
 ## Limitations
 
-- Early release. Behaviour, file layout and configuration may still change, and the old `.tasks` layout is not migrated.
+- Early release. Behaviour, file layout and configuration may still change. **0.9.0 renamed tickets to `<id>-<slug>.md`**; files named in the old `<order>-<id>-<slug>.md` form are reported as invalid and must be renamed by hand. The old `.tasks` layout is not migrated.
 - Only Linux and macOS are supported. WSL is untested and native Windows does not work.
 - Live vendor protocols were exercised against local deterministic fake APIs, not against every real remote provider, login mode or CLI version. Event formats and session resume can change between vendor releases; check your installed CLI versions before running unattended.
 - Live task attach is available for OpenCode, Codex and Claude. Pi task terminals still require Board Stop, and Pi model/effort capture is not implemented.
-- Kanbeat does not manage Git: no worktrees, branches, resets or cleanups. Agents change your working tree directly.
-- One ticket is active at a time. Only reviewers run in parallel.
+- Kanbeat does not manage Git: no worktrees, branches, resets or cleanups. Parallel tickets all edit the same working tree, so declare a dependency whenever two tickets touch the same files.
 - The TUI shows ticket Markdown read-only; edit the files externally.
-- Attached views are monitor-only while a structured worker turn is active, so Kanbeat never runs two writers against one native session. Pi task terminals need a stopped board.
+- Attached views are monitor-only while a structured worker turn is active, so Kanbeat never runs two writers against one native session.
 - Transition hooks are not exactly-once; make their actions safe to repeat.
 - Native terminals do not forward mouse reporting or clipboard requests.
+- A terminal of at least 80 × 24 is required; about 190 columns show all six board columns without scrolling, narrower terminals scroll the board sideways.
 
 ## Documentation
 
-- [Guide](docs/guide.md): ticket format, flow, live updates, native CLI lifecycle, configuration, hooks and development.
+- [Guide](docs/guide.md): ticket format, dependencies, flow, live updates, native CLI lifecycle, configuration, hooks and development.
 - [Interactive terminals](docs/terminals.md): terminal and session lifecycle, groups and limits.
+- [Releases](docs/releases.md): release archives, updating and removing.
 - [Design specification](docs/design/design.html): product and architecture design.
 - [Demo recordings](docs/media.md): how the GIFs are captured and what they do and do not show.
 

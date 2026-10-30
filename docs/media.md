@@ -12,17 +12,16 @@ The GIFs in `docs/media/` are captured from the real Kanbeat TUI by [`tools/reco
 ## What is not real, and why
 
 - **No coding CLI and no model is ever started.** The supervisor of each demo runs with a restricted `PATH` that contains only a plain shell script named `codex`, `claude`, `opencode` and `pi`. That script prints a banner and echoes the lines you type. The banner is visible in the terminal frames. These recordings are not evidence of live vendor CLI execution; compatibility with real Codex CLI, Claude Code, OpenCode and Pi is still to be validated.
-- **Tickets are moved by hand.** In [`board.gif`](media/board.gif) a person moves the card through Progress and Review/QA to Done with the ticket actions dialog while the board is stopped. No agent does that work.
+- **Tickets are moved by hand.** In [`board.gif`](media/board.gif) a person moves the card through Progress and Review/QA to Done with the card buttons (each manual step asks for confirmation) while the board is stopped. No agent does that work.
 - **Play/Stop never dispatches.** In [`play-stop.gif`](media/play-stop.gif) the Todo column is empty, so pressing Play starts nothing. The recorder verifies that no worker log or runtime entry exists afterwards.
 - **Time is compressed.** Frames are taken after each action settles; waiting times such as the 1.5 s refresh poll are not shown in real time.
 - **One path is rewritten.** The status bar shows the project path. In the frames it is replaced by `~/demo-project` so the recording machine's directories are not published. The recorder also refuses to render any frame containing the home directory, the user name or the demo work directory.
-- The ticket viewer and a few cards show real layout quirks of the current TUI (for example the wrapped `···` card menu). They are left as they are.
 
 ## The recordings
 
 | File | Shows |
 | --- | --- |
-| `board.gif` | Creating tickets from the TUI and from `kanbeat new` in a second terminal, ticket actions, manual moves to Done. |
+| `board.gif` | Creating tickets from the TUI and from `kanbeat new` in a second terminal, the card strip and column menu, dependencies, manual moves to Done. |
 | `play-stop.gif` | Play and Stop, task terminals disabled while the board runs, a second client joining, the first client closing without stopping anything. |
 | `sessions.gif` | Session groups, a new independent session, the supervisor-owned terminal, detaching, Board Play/Stop not touching the session, a second client reopening it, confirmed stop and record removal. |
 
@@ -39,4 +38,4 @@ python tools/record_demos.py --workdir .tmp/demo --output docs/media
 
 The recorder unsets `NO_COLOR` for its own process; with `NO_COLOR` set, Textual would render the frames without colours.
 
-Recordings use a 128 by 30 cell terminal (128 by 46 for the sessions demo). Smaller widths make the six board columns scroll horizontally.
+Recordings use a 128 by 30 cell terminal (196 by 32 for the board demo, because the six board columns are at least 30 columns wide each, and 128 by 46 for the sessions demo). In the play/stop demo the board is narrower than six columns and scrolls sideways.
