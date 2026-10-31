@@ -180,3 +180,53 @@ def test_unsupported_systems_and_bad_arguments_are_refused(tmp_path):
     assert "Usage: install.sh" in wrong.stderr
     helped = run(tmp_path, "--help")
     assert helped.returncode == 0 and "KANBEAT_VERSION" in helped.stdout
+
+
+def test_reinstalling_the_linked_version_keeps_a_working_install_and_no_leftovers(
+    tmp_path,
+):
+    release(tmp_path / "releases", "0.9.9")
+    assert run(tmp_path).returncode == 0
+    prefix = tmp_path / "home" / ".local"
+    marker = prefix / "opt" / "kanbeat-0.9.9" / "old-marker"
+    marker.write_text("x")
+    result = run(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    shown = subprocess.run(
+        [str(prefix / "bin" / "kanbeat")], capture_output=True, text=True
+    )
+    assert shown.stdout.strip() == "kanbeat 0.9.9"
+    assert sorted(path.name for path in (prefix / "opt").iterdir()) == [
+        "kanbeat",
+        "kanbeat-0.9.9",
+    ]
+
+
+def test_a_failed_swap_restores_the_previous_version(tmp_path):
+    release(tmp_path / "releases", "0.9.9")
+    assert run(tmp_path).returncode == 0
+    prefix = tmp_path / "home" / ".local"
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    real = subprocess.run(
+        ["sh", "-c", "command -v mv"], capture_output=True, text=True
+    ).stdout.strip()
+    wrapper = shim / "mv"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  *-old) ;;\n"
+        '  */.kanbeat-new-*) case "$2" in */kanbeat-0.9.9) exit 1 ;; esac ;;\n'
+        "esac\n"
+        f'exec {real} "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    result = run(tmp_path, PATH=f"{shim}{os.pathsep}{os.environ['PATH']}")
+    assert result.returncode != 0
+    assert "previous version was kept" in result.stderr
+    shown = subprocess.run(
+        [str(prefix / "bin" / "kanbeat")], capture_output=True, text=True
+    )
+    assert shown.stdout.strip() == "kanbeat 0.9.9"
+    assert not list((prefix / "opt").glob(".kanbeat-*"))

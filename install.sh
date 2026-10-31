@@ -80,7 +80,8 @@ install_release() {
     VERSION="${VERSION#v}"
     archive="kanbeat-$VERSION-$TARGET.tar.gz"
     work="$(mktemp -d)"
-    trap 'rm -rf "$work"' EXIT INT TERM
+    staging="$PREFIX/opt/.kanbeat-new-$$"
+    trap 'rm -rf "$work" "$staging"' EXIT INT TERM
 
     say "Installing Kanbeat $VERSION for $TARGET"
     download "$BASE_URL/v$VERSION/$archive" "$work/$archive"
@@ -97,8 +98,18 @@ install_release() {
 
     mkdir -p "$PREFIX/opt" "$PREFIX/bin"
     destination="$PREFIX/opt/kanbeat-$VERSION"
-    rm -rf "$destination"
-    mv "$work/kanbeat-$VERSION-$TARGET" "$destination"
+    rm -rf "$staging" "$staging-old"
+    mv "$work/kanbeat-$VERSION-$TARGET" "$staging" || fail "could not stage the new files in $PREFIX/opt"
+    if [ -e "$destination" ]; then
+        mv "$destination" "$staging-old" || fail "could not move the existing $destination aside"
+    fi
+    if ! mv "$staging" "$destination"; then
+        if [ -e "$staging-old" ]; then
+            mv "$staging-old" "$destination" || say "could not restore the previous version; it remains in $staging-old"
+        fi
+        fail "could not install into $destination; the previous version was kept"
+    fi
+    rm -rf "$staging-old"
     ln -sfn "$destination" "$PREFIX/opt/kanbeat"
     ln -sf "$PREFIX/opt/kanbeat/kanbeat" "$PREFIX/bin/kanbeat"
 
