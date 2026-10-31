@@ -162,7 +162,11 @@ def test_command_line_changes_show_a_notice_and_can_be_read_back(supervisor):
     assert undo["entry"]["id"] == 2
     assert supervisor.runtime.config["transition_hook"]["prompt"] == ""
     assert supervisor.runtime.config_history()[-1]["source"] == "cli revert"
-    assert len(supervisor.runtime.data["notices"]) == 2
+    notices = supervisor.runtime.data["notices"]
+    assert len(notices) == 2
+    assert notices[1]["message"].startswith(
+        "Config change #1 reverted from the command line"
+    )
 
 
 def test_the_history_has_its_own_file_that_the_state_does_not_carry(tmp_path):
@@ -229,12 +233,13 @@ def test_a_revert_that_keeps_settings_says_so(supervisor):
         supervisor, op="config_set", changes={"global_cp": "B", "max_parallel": 4}
     )
     run(supervisor, op="config_set", changes={"global_cp": "C"})
+    before = len(supervisor.runtime.data["notices"])
     result = run(supervisor, op="config_revert", id=first["entry"]["id"], source="cli")
     assert result["entry"]["skipped"] == ["global_cp"]
-    assert any(
-        "except global_cp" in note["message"]
-        for note in supervisor.runtime.data["notices"]
-    )
+    added = supervisor.runtime.data["notices"][before:]
+    assert len(added) == 1
+    assert "Kept global_cp, which changed again later" in added[0]["message"]
+    assert "reverted from the command line: max_parallel" in added[0]["message"]
 
 
 @pytest.mark.parametrize(
@@ -274,3 +279,42 @@ def test_max_parallel_rejects_values_that_are_not_whole_numbers(supervisor, valu
 def test_max_parallel_accepts_whole_numbers(supervisor, value, expected):
     supervisor.runtime.change_config({"max_parallel": value}, "cli")
     assert supervisor.runtime.config["max_parallel"] == expected
+
+
+def test_a_revert_from_the_settings_page_is_silent_unless_it_kept_something(supervisor):
+    first = run(supervisor, op="config_set", changes={"global_cp": "B"}, source="tui")
+    run(supervisor, op="config_revert", id=first["entry"]["id"])
+    assert supervisor.runtime.data.get("notices", []) == []
+    both = run(
+        supervisor, op="config_set", changes={"global_cp": "B", "max_parallel": 4}
+    )
+    run(supervisor, op="config_set", changes={"global_cp": "C"})
+    run(supervisor, op="config_revert", id=both["entry"]["id"])
+    [note] = supervisor.runtime.data["notices"]
+    assert (
+        note["message"].startswith("Config change #")
+        and "Kept global_cp" in note["message"]
+    )
+
+
+def test_the_settings_page_payload_does_not_trip_over_old_out_of_range_values(
+    supervisor,
+):
+    supervisor.runtime.config["max_parallel"] = 99
+    from kanbeat.config_keys import CONFIG_KEYS
+    from kanbeat.state import DEFAULT_CONFIG
+
+    assert all(key == "transition_hook" or key in CONFIG_KEYS for key in DEFAULT_CONFIG)
+    run(
+        supervisor,
+        op="save_config",
+        values={
+            "default_harness": "codex",
+            "global_cp": "Shown on the page",
+            "developer_prompt": "d",
+            "reviewer_prompt": "r",
+            "transition_hook": {"harness": "", "prompt": ""},
+        },
+    )
+    assert supervisor.runtime.config["max_parallel"] == 99
+    assert supervisor.runtime.config["global_cp"] == "Shown on the page"

@@ -1333,28 +1333,32 @@ class Supervisor:
             if not isinstance(changes, dict) or not changes:
                 raise ValueError("Expected settings to change")
             entry = self.runtime.change_config(changes, source)
-            skipped = []
+            skipped: list[str] = []
+            undone = None
         elif op == "config_revert":
-            number = whole_number(request.get("id"), "id", 1, 10**9)
-            entry, skipped = self.runtime.revert_config(number, f"{source} revert")
-            if skipped:
-                self.notice(
-                    f"Reverted change #{number} except {', '.join(skipped)}, "
-                    "which changed again later.",
-                    "warning",
-                )
-                self.save()
+            undone = whole_number(request.get("id"), "id", 1, 10**9)
+            entry, skipped = self.runtime.revert_config(undone, f"{source} revert")
         else:
             raise ValueError("Unsupported config command")
         if entry is None:
             return {"entry": None}
-        if source == "cli":
-            keys = ", ".join(row["key"] for row in entry["changes"])
-            self.notice(
+        keys = ", ".join(row["key"] for row in entry["changes"])
+        message = ""
+        if undone is None and source == "cli":
+            message = (
                 f"Config changed from the command line: {keys}. "
-                f"Undo: kanbeat config revert {entry['id']}, or Settings, History.",
-                "warning",
+                f"Undo: kanbeat config revert {entry['id']}, or Settings, History."
             )
+        elif undone is not None and (source == "cli" or skipped):
+            where = " from the command line" if source == "cli" else ""
+            message = f"Config change #{undone} reverted{where}: {keys}."
+            if skipped:
+                message += f" Kept {', '.join(skipped)}, which changed again later."
+            message += (
+                f" Undo: kanbeat config revert {entry['id']}, or Settings, History."
+            )
+        if message:
+            self.notice(message, "warning")
             self.save()
         return {
             "entry": {
