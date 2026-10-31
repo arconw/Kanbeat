@@ -204,12 +204,23 @@ The reader in `src/kanbeat/claude_history.py` confirmed the record types and ord
 - The session file's existence is the primary check: `~/.pi/agent/sessions/--<path>--/*_<id>.jsonl` (or under `PI_CODING_AGENT_SESSION_DIR`). Kanbeat's `pi_session_files` already performs that lookup. [K, P-DOCS]
 - A missing file means the session no longer exists. A filesystem read error, a launch failure with another message, or a timeout is temporary. Do not let `--session-id` create a new session before that distinction is made. [P-DOCS, K]
 
+### 7. Corrections found while writing the reader
+
+The reader in `src/kanbeat/pi_history.py` follows the entry tree and found these additions to the traversal rules:
+
+- The file has no separate leaf marker. The reader treats the last valid appended entry as the leaf, follows `parentId` to the root and reverses the chain, so entries on other branches are not exported. A session where the user navigated back without sending a message cannot be read exactly from the file alone: the last appended entry can belong to the previously active branch. [P-DOCS, K]
+- One message entry can produce several events: assistant text, hidden reasoning, tool calls and tool results may share the same record. The first exported event uses the bare entry `id`; later events from the same entry use `id:<index>` so event keys stay unique. The file line index is the position. [P-DOCS, K]
+- Every v2/v3 entry requires `parentId`. A missing or broken parent chain, a duplicate entry id, malformed JSON, a missing or mismatched session header, or a file that changes during the read makes the result available but incomplete rather than silently dropping entries. [P-DOCS, K]
+- `bashExecution` messages are direct shell commands, not model tool results. The reader exports them as a labelled `bash` tool call with the command and visible output. [P-DOCS]
+- System messages carry prompt sections and tool declarations, not conversation, so the reader skips them. `compaction`, `branch_summary`, `context_edit` and `custom_message` entries, plus `custom`, `branchSummary` and `compactionSummary` message roles, are reported as unsupported categories. Bookkeeping entry types such as `model_change`, `thinking_level_change`, `usage`, `label` and `session_info` are skipped. [P-DOCS]
+- An import is recognized only when a user message is a complete import envelope: the start marker must be at the beginning and the matching end marker at the end. A bare marker quoted inside a longer message is not an import. [K]
+
 ## What later tickets should rely on
 
 - **Codex:** `thread/items/list` with item ids and `turn/start` with `clientUserMessageId`; treat `thread/inject_items` as an unverified silent alternative. [C-SCHEMA, C-SRC, C-TEST]
 - **OpenCode:** `GET /session/{id}/message` paging with `limit`/`before`; `POST /session/{id}/message` with `messageID`, `noReply: true`, a `system` note and a text part. [O-SRC]
 - **Claude:** transcript records with `uuid`/`parentUuid`; delivery through `claude --resume … -p` and a context file; recognize imports by marker and then record the user record's `uuid`. [CL-FILES, CLI]
-- **Pi:** session entries with `id`/`parentId`; delivery through the RPC `prompt` or `pi -p --session-id`; recognize imports by marker and then record the user entry's `id`. [P-DOCS]
+- **Pi:** session entries with `id`/`parentId`; the reader in `src/kanbeat/pi_history.py` distinguishes available, missing and unreachable history, follows the last appended `parentId` chain and reports unsupported categories; delivery through the RPC `prompt` or `pi -p --session-id`; recognize imports by marker and then record the user entry's `id`. [P-DOCS, K]
 
 ## Unverified because it needs a live model
 
