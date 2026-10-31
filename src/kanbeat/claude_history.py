@@ -339,19 +339,11 @@ def _record_drafts(
     if not isinstance(content, list):
         return drafts, True
 
-    text_run: list[str] = []
-
-    def flush_text() -> None:
-        if text_run:
-            text = "\n".join(text_run)
-            text_run.clear()
-            if text:
-                drafts.append(_EventDraft(role, text))
-
     malformed = False
     for block in content:
         if isinstance(block, str):
-            text_run.append(block)
+            if block:
+                drafts.append(_EventDraft(role, block))
             continue
         if not isinstance(block, dict):
             malformed = True
@@ -363,13 +355,13 @@ def _record_drafts(
         if kind == "text":
             text = block.get("text")
             if isinstance(text, str):
-                text_run.append(text)
+                if text:
+                    drafts.append(_EventDraft(role, text))
             else:
                 malformed = True
         elif kind in ("thinking", "redacted_thinking"):
             _add_unsupported(unsupported, UNSUPPORTED_HIDDEN_REASONING)
         elif kind == "tool_use":
-            flush_text()
             name = _tool_name(block.get("name"))
             tool_id = block.get("id")
             if _is_identifier(tool_id) and name is not None:
@@ -378,7 +370,6 @@ def _record_drafts(
                 _EventDraft(ROLE_TOOL_CALL, _tool_use_text(block.get("input")), name)
             )
         elif kind == "tool_result":
-            flush_text()
             tool_id = block.get("tool_use_id")
             name = tool_names.get(tool_id) if isinstance(tool_id, str) else None
             drafts.append(
@@ -390,7 +381,6 @@ def _record_drafts(
             _add_unsupported(unsupported, UNSUPPORTED_IMAGES)
         else:
             _add_unsupported(unsupported, _content_category(kind))
-    flush_text()
     return drafts, malformed
 
 
