@@ -29,7 +29,7 @@ from .session_transfer import (
     ROLE_USER,
     ConversationEvent,
     HarnessHistory,
-    find_import_markers,
+    import_id_for_text,
 )
 
 HARNESS = "pi"
@@ -44,7 +44,19 @@ UNSUPPORTED_COMPACTION = "compaction summaries"
 UNSUPPORTED_BRANCH_SUMMARIES = "branch summaries"
 UNSUPPORTED_CONTEXT_EDITS = "context edits"
 UNSUPPORTED_CUSTOM_MESSAGES = "custom messages"
+UNSUPPORTED_TRUNCATED_OUTPUT = "truncated bash output"
 UNSUPPORTED_UNKNOWN = "unknown content"
+
+BOOKKEEPING_ENTRY_TYPES = frozenset(
+    (
+        "custom",
+        "label",
+        "model_change",
+        "session_info",
+        "thinking_level_change",
+        "usage",
+    )
+)
 
 ROLE_SYSTEM = "system"
 ROLE_TOOL_RESULT_MESSAGE = "toolResult"
@@ -55,13 +67,6 @@ ROLE_COMPACTION_SUMMARY = "compactionSummary"
 
 SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 IDENTIFIER = re.compile(r'[^\s"<>]+')
-_START_MARKER = re.compile(
-    r'^<!--\s*kanbeat-import\s+id="(?P<import_id>[^"\s<>]+)"\s+'
-    r'source="[^"\s<>]+"\s+events="\d+-\d+"\s*-->'
-)
-_END_MARKER = re.compile(
-    r'<!--\s*/kanbeat-import\s+id="(?P<import_id>[^"\s<>]+)"\s*-->'
-)
 
 
 @dataclass(frozen=True)
@@ -275,6 +280,7 @@ def _read_session_file(
     header: dict[str, Any] | None = None
     records: list[tuple[int, dict[str, Any]]] = []
     complete = True
+    expect_header = True
     try:
         with path.open("rb") as handle:
             for position, raw in enumerate(handle):
@@ -296,9 +302,15 @@ def _read_session_file(
                 if record.get("type") == "session":
                     if header is None:
                         header = record
+                        if not expect_header:
+                            complete = False
                     else:
                         complete = False
+                    expect_header = False
                     continue
+                if expect_header:
+                    complete = False
+                    expect_header = False
                 records.append((position, record))
     except FileNotFoundError:
         return _missing(session_id)
@@ -406,9 +418,9 @@ def _chain_events(
         drafts, malformed = _entry_drafts(entry, unsupported)
         if malformed:
             complete = False
+        import_id = _message_import_id(drafts)
         for index, draft in enumerate(drafts):
             event_id = entry_id if index == 0 else f"{entry_id}:{index}"
-            is_import, import_id = _import_of(draft)
             events.append(
                 ConversationEvent(
                     HARNESS,
@@ -417,8 +429,8 @@ def _chain_events(
                     draft.text,
                     event_id=event_id,
                     position=positions[entry_id],
-                    is_import=is_import,
-                    import_id=import_id,
+                    is_import=import_id is not None and draft.role == ROLE_USER,
+                    import_id=import_id if draft.role == ROLE_USER else None,
                     tool_name=draft.tool_name,
                 )
             )
@@ -445,6 +457,9 @@ def _entry_drafts(
     if entry_type == "custom_message":
         _add_unsupported(unsupported, UNSUPPORTED_CUSTOM_MESSAGES)
         return [], False
+    if entry_type in BOOKKEEPING_ENTRY_TYPES:
+        return [], False
+    _add_unsupported(unsupported, UNSUPPORTED_UNKNOWN)
     return [], False
 
 
@@ -467,6 +482,8 @@ def _message_drafts(
             return [], malformed
         return [_EventDraft(ROLE_TOOL_RESULT, text, tool_name)], malformed
     if role == ROLE_BASH_EXECUTION:
+        if message.get("truncated") is True:
+            _add_unsupported(unsupported, UNSUPPORTED_TRUNCATED_OUTPUT)
         text = _bash_text(message)
         if not text:
             return [], False
@@ -613,32 +630,13 @@ def _tool_call_text(value: Any) -> str:
         return str(value)
 
 
-def _import_of(draft: _EventDraft) -> tuple[bool, str | None]:
-    if draft.role != ROLE_USER or not draft.text:
-        return False, None
-    identifier = _import_id(draft.text)
-    return identifier is not None, identifier
-
-
-def _import_id(text: str) -> str | None:
-    stripped = text.strip()
-    starting = _START_MARKER.match(stripped)
-    if starting is None:
+def _message_import_id(drafts: list[_EventDraft]) -> str | None:
+    texts = [
+        draft.text for draft in drafts if draft.role == ROLE_USER and draft.text
+    ]
+    if not texts:
         return None
-    markers = find_import_markers(stripped)
-    if not markers or not markers[0].closed:
-        return None
-    identifier = starting.group("import_id")
-    if markers[0].import_id != identifier:
-        return None
-    ending = _END_MARKER.search(stripped)
-    if (
-        ending is None
-        or ending.end() != len(stripped)
-        or ending.group("import_id") != identifier
-    ):
-        return None
-    return identifier
+    return import_id_for_text("\n".join(texts))
 
 
 def _content_category(kind: Any) -> str:

@@ -259,3 +259,70 @@ def test_empty_session_and_invalid_identifier(tmp_path):
 
     with pytest.raises(ValueError):
         pi_history.read_pi_history("../fixture", sessions_dir=sessions)
+
+
+def test_import_envelope_split_across_text_blocks_is_flagged_as_one_message(tmp_path):
+    marker = render_short_prompt(
+        "Read the fixture context.", "fixture-import", ["codex"], 0, 1
+    )
+    blocks = [{"type": "text", "text": line} for line in marker.splitlines()]
+    records = [
+        header(),
+        message("user-import", None, {"role": "user", "content": blocks}),
+    ]
+    sessions, _ = session_file(tmp_path, records)
+
+    result = pi_history.read_pi_history(SESSION, sessions_dir=sessions)
+
+    assert result.available and result.complete
+    assert [event.event_id for event in result.events] == [
+        "user-import",
+        "user-import:1",
+        "user-import:2",
+    ]
+    assert all(event.is_import for event in result.events)
+    assert {event.import_id for event in result.events} == {"fixture-import"}
+    assert "\n".join(event.text for event in result.events) == marker
+
+
+def test_bash_execution_bookkeeping_and_unknown_entries_are_explicit(tmp_path):
+    records = [
+        header(),
+        message("user-one", None, {"role": "user", "content": "Run the fixture"}),
+        message(
+            "bash-one",
+            "user-one",
+            {
+                "role": "bashExecution",
+                "command": "pwd",
+                "output": "/fixture",
+                "exitCode": 0,
+                "cancelled": False,
+                "truncated": True,
+                "fullOutputPath": "/fixture/full.txt",
+            },
+        ),
+        entry("custom-one", "bash-one", "custom", customType="fixture", data={}),
+        entry("future-one", "custom-one", "future_entry"),
+    ]
+    sessions, _ = session_file(tmp_path, records)
+
+    result = pi_history.read_pi_history(SESSION, sessions_dir=sessions)
+
+    assert result.available and result.complete
+    assert [event.event_id for event in result.events] == ["user-one", "bash-one"]
+    assert result.events[1].render() == "Tool call (bash): pwd\n\nOutput:\n/fixture"
+    assert set(result.unsupported) == {"truncated bash output", "unknown content"}
+
+
+def test_a_session_header_after_the_first_record_is_incomplete(tmp_path):
+    records = [
+        message("user-one", None, {"role": "user", "content": "Fixture question"}),
+        header(),
+    ]
+    sessions, _ = session_file(tmp_path, records)
+
+    result = pi_history.read_pi_history(SESSION, sessions_dir=sessions)
+
+    assert result.available and not result.complete
+    assert [event.event_id for event in result.events] == ["user-one"]
