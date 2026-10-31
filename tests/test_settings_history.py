@@ -108,5 +108,7 @@ async def test_history_can_be_loaded_up_to_a_hundred_entries(tmp_path, monkeypat
         for expected in (25, 45, 65, 85, 100):
             await click_button(pilot, app, "#cfg-history-more")
             await until(pilot, lambda: len(entries(app)) == expected)
-        assert not app.query_one("#cfg-history-more", Button).display
+        await until(
+            pilot, lambda: not app.query_one("#cfg-history-more", Button).display
+        )
         assert entries(app)[0] == "cfg-entry-130" and entries(app)[-1] == "cfg-entry-31"

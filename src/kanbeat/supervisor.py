@@ -52,6 +52,16 @@ MAX_INPUT = 1024 * 1024
 HARNESS_NAMES = ("codex", "claude", "opencode", "pi")
 
 
+def whole_number(value: Any, name: str, low: int, high: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a whole number") from None
+    if not low <= number <= high:
+        raise ValueError(f"{name} must be between {low} and {high}")
+    return number
+
+
 class Supervisor:
     def __init__(self, project: Path):
         self.board = Board(project)
@@ -1315,16 +1325,25 @@ class Supervisor:
                 return {"config": self.runtime.config}
             return {"key": key, "value": read_key(self.runtime.config, check_key(key))}
         if op == "config_history":
-            return self.runtime.history_view(int(request.get("limit") or 5))
+            return self.runtime.history_view(
+                whole_number(request.get("limit", 5), "limit", 1, 100)
+            )
         if op == "config_set":
             changes = request.get("changes")
             if not isinstance(changes, dict) or not changes:
                 raise ValueError("Expected settings to change")
             entry = self.runtime.change_config(changes, source)
+            skipped = []
         elif op == "config_revert":
-            entry = self.runtime.revert_config(
-                int(request.get("id")), f"{source} revert"
-            )
+            number = whole_number(request.get("id"), "id", 1, 10**9)
+            entry, skipped = self.runtime.revert_config(number, f"{source} revert")
+            if skipped:
+                self.notice(
+                    f"Reverted change #{number} except {', '.join(skipped)}, "
+                    "which changed again later.",
+                    "warning",
+                )
+                self.save()
         else:
             raise ValueError("Unsupported config command")
         if entry is None:
@@ -1338,7 +1357,11 @@ class Supervisor:
             )
             self.save()
         return {
-            "entry": {"id": entry["id"], "keys": [r["key"] for r in entry["changes"]]}
+            "entry": {
+                "id": entry["id"],
+                "keys": [r["key"] for r in entry["changes"]],
+                "skipped": skipped,
+            }
         }
 
     async def _dispatch(self, request: dict[str, Any]) -> dict[str, Any]:

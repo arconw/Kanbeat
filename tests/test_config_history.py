@@ -89,18 +89,18 @@ def test_invalid_changes_are_refused_and_change_nothing(supervisor, changes, mes
 
 def test_revert_restores_old_values_and_is_itself_recorded(supervisor):
     state = supervisor.runtime
-    first = state.change_config({"global_cp": "one"}, "cli")
-    state.change_config({"global_cp": "two", "max_parallel": 4}, "tui")
-    undo = state.revert_config(first["id"], "tui revert")
-    assert state.config["global_cp"] == ""
-    assert state.config["max_parallel"] == 4
-    assert undo["source"] == "tui revert"
+    state.change_config({"global_cp": "one"}, "cli")
+    second = state.change_config({"global_cp": "two", "max_parallel": 4}, "tui")
+    undo, skipped = state.revert_config(second["id"], "tui revert")
+    assert skipped == [] and undo["source"] == "tui revert"
+    assert state.config["global_cp"] == "one" and state.config["max_parallel"] == 3
     with pytest.raises(ValueError, match="already undone"):
-        state.revert_config(first["id"], "tui revert")
+        state.revert_config(second["id"], "tui revert")
     with pytest.raises(ValueError, match="No config change #99"):
         state.revert_config(99, "tui revert")
-    state.revert_config(undo["id"], "tui revert")
-    assert state.config["global_cp"] == "two"
+    redo, _ = state.revert_config(undo["id"], "tui revert")
+    assert redo["id"] == 4
+    assert state.config["global_cp"] == "two" and state.config["max_parallel"] == 4
 
 
 def test_history_is_newest_first_truncated_and_capped_at_a_hundred(supervisor):
@@ -189,3 +189,48 @@ def test_the_new_instructions_replace_the_previous_unedited_ones(tmp_path):
     (board.root / "INSTRUCTIONS.md").write_text(edited, encoding="utf-8")
     board.ensure()
     assert (board.root / "INSTRUCTIONS.md").read_text(encoding="utf-8") == edited
+
+
+def test_a_revert_keeps_settings_that_changed_again_later(supervisor):
+    state = supervisor.runtime
+    first = state.change_config({"developer_prompt": "B", "max_parallel": 4}, "cli")
+    state.change_config({"developer_prompt": "C"}, "cli")
+    entry, skipped = state.revert_config(first["id"], "cli revert")
+    assert skipped == ["developer_prompt"]
+    assert [row["key"] for row in entry["changes"]] == ["max_parallel"]
+    assert state.config["developer_prompt"] == "C"
+    assert state.config["max_parallel"] == 3
+    only = state.change_config({"developer_prompt": "D"}, "cli")
+    state.change_config({"developer_prompt": "E"}, "cli")
+    with pytest.raises(ValueError, match="changed again later"):
+        state.revert_config(only["id"], "cli revert")
+    assert state.config["developer_prompt"] == "E"
+
+
+def test_a_revert_that_keeps_settings_says_so(supervisor):
+    first = run(
+        supervisor, op="config_set", changes={"global_cp": "B", "max_parallel": 4}
+    )
+    run(supervisor, op="config_set", changes={"global_cp": "C"})
+    result = run(supervisor, op="config_revert", id=first["entry"]["id"], source="cli")
+    assert result["entry"]["skipped"] == ["global_cp"]
+    assert any(
+        "except global_cp" in note["message"]
+        for note in supervisor.runtime.data["notices"]
+    )
+
+
+@pytest.mark.parametrize(
+    "request_,message",
+    [
+        ({"op": "config_history", "limit": 0}, "limit must be between"),
+        ({"op": "config_history", "limit": 101}, "limit must be between"),
+        ({"op": "config_history", "limit": "many"}, "limit must be a whole number"),
+        ({"op": "config_revert"}, "id must be a whole number"),
+        ({"op": "config_revert", "id": "x"}, "id must be a whole number"),
+        ({"op": "config_revert", "id": 0}, "id must be between"),
+    ],
+)
+def test_bad_numbers_get_a_clear_error(supervisor, request_, message):
+    with pytest.raises(ValueError, match=message):
+        run(supervisor, **request_)

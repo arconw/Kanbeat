@@ -65,8 +65,13 @@ async def config_command(send: Send, args: Any) -> None:
 def report_entry(entry: dict[str, Any] | None, verb: str) -> None:
     if entry is None:
         print("Nothing to change: the settings already have these values")
-    else:
-        print(f"{verb}: {', '.join(entry['keys'])} (change #{entry['id']})")
+        return
+    print(f"{verb}: {', '.join(entry['keys'])} (change #{entry['id']})")
+    if entry.get("skipped"):
+        print(
+            f"kept: {', '.join(entry['skipped'])} (changed again later)",
+            file=sys.stderr,
+        )
 
 
 def board_rows(snapshot: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:

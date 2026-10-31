@@ -115,18 +115,30 @@ class LocalState:
         self.save()
         return entry
 
-    def revert_config(self, entry_id: int, source: str) -> dict[str, Any]:
+    def revert_config(
+        self, entry_id: int, source: str
+    ) -> tuple[dict[str, Any] | None, list[str]]:
         entry = next(
             (row for row in self.config_history() if row["id"] == entry_id), None
         )
         if entry is None:
             raise ValueError(f"No config change #{entry_id} in the history")
-        restored = self.change_config(
-            {row["key"]: row["old"] for row in entry["changes"]}, source
-        )
+        applicable = {}
+        skipped = []
+        for row in entry["changes"]:
+            if read_key(self.config, row["key"]) == row["new"]:
+                applicable[row["key"]] = row["old"]
+            elif read_key(self.config, row["key"]) != row["old"]:
+                skipped.append(row["key"])
+        if not applicable and skipped:
+            raise ValueError(
+                f"Change #{entry_id} cannot be reverted: {', '.join(skipped)} "
+                "changed again later. Revert the later change first"
+            )
+        restored = self.change_config(applicable, source)
         if restored is None:
             raise ValueError(f"Change #{entry_id} is already undone")
-        return restored
+        return restored, skipped
 
     def history_view(self, limit: int) -> dict[str, Any]:
         history = self.config_history()
