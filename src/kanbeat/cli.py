@@ -8,7 +8,13 @@ from pathlib import Path
 import sys
 
 from . import __version__
-from .agent_cli import KNOWN_KEYS, config_command, status_command, watch_command
+from .agent_cli import (
+    KNOWN_KEYS,
+    config_command,
+    events_command,
+    status_command,
+    watch_command,
+)
 from .filesystem import Board
 from .launcher import run_internal
 from .ipc import socket_path
@@ -52,6 +58,13 @@ def parser() -> argparse.ArgumentParser:
     watch.add_argument(
         "--interval", type=float, default=1.0, help="Seconds between checks"
     )
+    watch.add_argument(
+        "--since", type=int, help="Start after this event number (default: now)"
+    )
+    events = sub.add_parser("events", help="Print recent ticket events and exit")
+    events.add_argument("--json", action="store_true", help="One JSON object per line")
+    events.add_argument("--since", type=int, help="Only events after this number")
+    events.add_argument("--limit", type=int, default=100, help="Most events to print")
     config = sub.add_parser(
         "config", help="Read and change project settings, with history"
     )
@@ -128,7 +141,17 @@ def run() -> None:
         elif args.command == "watch":
             asyncio.run(
                 _with_supervisor(
-                    project, watch_command, args.json, max(args.interval, 0.5)
+                    project,
+                    watch_command,
+                    args.json,
+                    max(args.interval, 0.5),
+                    args.since,
+                )
+            )
+        elif args.command == "events":
+            asyncio.run(
+                _with_supervisor(
+                    project, events_command, args.json, args.since, args.limit
                 )
             )
         elif args.command == "list":

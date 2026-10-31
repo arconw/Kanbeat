@@ -33,7 +33,8 @@ from .codex_host import CodexAppServerHost, CodexHostError
 from .codex_runtime import CodexRun
 from .config_keys import check_key, read_key
 from .state import LocalState
-from .hooks import TransitionHooks
+from .events import EventLog
+from .hooks import HookSubscriber
 from .terminals import Terminals
 from .session_groups import SessionGroups
 from .terminal_control import terminal_request
@@ -69,9 +70,10 @@ class Supervisor:
         self.board = Board(project)
         self.board.ensure()
         self.runtime = LocalState(self.board)
-        self.hooks = TransitionHooks(
-            self.runtime, lambda harness: self.native_settings(harness)
-        )
+        self.runtime.data.pop("hooks", None)
+        self.runtime.data.pop("hook_seq", None)
+        self.events = EventLog(self.runtime)
+        self.subscriber = HookSubscriber(self)
         self.terminals = Terminals(self.runtime)
         self.state_dir = self.board.root / ".state"
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -349,10 +351,7 @@ class Supervisor:
         remove_socket(self.socket)
 
     def move_ticket(self, ticket_id: str, column: str) -> Ticket:
-        before = self.board.find(ticket_id)
-        after = self.board.move(ticket_id, column)
-        self.hooks.enqueue(before, after)
-        return after
+        return self.board.move(ticket_id, column)
 
     def save(self) -> None:
         self.runtime.save()
@@ -873,7 +872,6 @@ class Supervisor:
         self.jobs.clear()
         for state in [
             *self.runtime.data["tickets"].values(),
-            {"runtime": self.hooks.entries},
             {
                 "runtime": {
                     key: entry
@@ -899,7 +897,6 @@ class Supervisor:
     async def play(self) -> None:
         for state in [
             *self.runtime.data["tickets"].values(),
-            {"runtime": self.hooks.entries},
             {"runtime": self.terminals.entries},
         ]:
             for item in state.get("runtime", {}).values():
@@ -1015,7 +1012,6 @@ class Supervisor:
                 continue
             self.runtime.data["hosts"].pop(kind, None)
         recovery = list(self.runtime.data["tickets"].items())
-        recovery.append(("transition-hooks", {"runtime": self.hooks.entries}))
         recovery.append(("interactive-terminals", {"runtime": self.terminals.entries}))
         for ticket_id, state in recovery:
             for slot, entry in state.get("runtime", {}).items():
@@ -1101,30 +1097,9 @@ class Supervisor:
                         self._reported.add(error)
                 return
             self.runtime.clean_deleted_tickets({ticket.id for ticket in tickets})
+            if self.events.observe(tickets, self.runtime.data["execution"]):
+                self.save()
             if self.runtime.data["execution"] != "running":
-                return
-            if any(
-                entry.get("status") == "recovery_blocked"
-                for entry in self.hooks.entries.values()
-            ):
-                return
-            if any(
-                key.startswith("hook:") and not job.done()
-                for key, job in self.jobs.items()
-            ):
-                return
-            pending = next(
-                (
-                    event_id
-                    for event_id, entry in self.hooks.entries.items()
-                    if entry.get("status") == "pending"
-                ),
-                None,
-            )
-            if pending is not None:
-                self.jobs["hook:" + pending] = asyncio.create_task(
-                    self.hooks.execute(pending, self.runs)
-                )
                 return
             default = str(self.runtime.config["default_harness"])
             if not available(default):
@@ -1292,7 +1267,7 @@ class Supervisor:
             "config": self.runtime.config,
             "config_seq": self.runtime.data.get("config_seq", 0),
             "custom": self.runtime.data.get("custom", {}),
-            "hooks": self.hooks.entries,
+            "event_seq": self.events.last,
             "terminals": self.terminals.snapshot(),
         }
 
@@ -1306,6 +1281,7 @@ class Supervisor:
             raise RuntimeError("Supervisor is shutting down")
         if request.get("op") in (
             "snapshot",
+            "events",
             "log",
             "terminal_snapshot",
             "terminal_wait",
@@ -1375,6 +1351,15 @@ class Supervisor:
         op = request.get("op")
         if op == "snapshot":
             return self.snapshot()
+        if op == "events":
+            since = request.get("since")
+            limit = whole_number(request.get("limit", 100), "limit", 1, 200)
+            if since is None:
+                return {"events": [], "last": self.events.last}
+            cursor = whole_number(since, "since", 0, 10**12)
+            events = self.events.since(cursor, limit)
+            last = events[-1]["seq"] if events else max(cursor, self.events.last)
+            return {"events": events, "last": last}
         if str(op).startswith("config_"):
             return self.config_request(request)
         if str(op).startswith(("session_", "group_")):
@@ -1554,11 +1539,13 @@ class Supervisor:
                     if message not in self._reported:
                         self.notice("Supervisor: " + message, "error")
                         self._reported.add(message)
+                self.subscriber.kick()
                 try:
                     await asyncio.wait_for(self.shutdown_requested.wait(), timeout=1)
                 except asyncio.TimeoutError:
                     pass
         finally:
+            await self.subscriber.stop()
             try:
                 try:
                     await self.stop("Supervisor exiting")

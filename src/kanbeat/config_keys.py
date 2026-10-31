@@ -4,6 +4,7 @@ from typing import Any
 
 HARNESSES = ("codex", "claude", "opencode", "pi")
 TEXT_LIMIT = 20000
+TEXT_LIMITS = {"transition_hook.prompt": 8000}
 MAX_PARALLEL_LIMIT = 32
 TEXT_KEYS = (
     "global_cp",
@@ -79,6 +80,7 @@ def coerce(key: str, value: Any) -> Any:
         raise ValueError(
             "transition_hook.harness must be empty or one of " + ", ".join(HARNESSES)
         )
-    if len(value) > TEXT_LIMIT:
-        raise ValueError(f"{key} is longer than {TEXT_LIMIT} characters")
+    limit = TEXT_LIMITS.get(key, TEXT_LIMIT)
+    if len(value) > limit:
+        raise ValueError(f"{key} is longer than {limit} characters")
     return value

@@ -1,105 +1,184 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+import asyncio
+import time
+from typing import TYPE_CHECKING, Any
 
-from .filesystem import Ticket
-from .native import NativeRun, available
-from .native_settings import NativeSettings
-from .state import LocalState
+from .events import format_event
+from .native import available
+
+if TYPE_CHECKING:
+    from .supervisor import Supervisor
+
+SESSION_TITLE = "Transition hook"
+WAKE_QUIET = 8.0
+WAKE_GAP = 15.0
+START_QUIET = 3.0
+START_TIMEOUT = 90.0
+RETRY_DELAY = 60.0
+WAKE_EVENTS = 30
+PROMPT_BYTES = 16000
+PREAMBLE = (
+    "You are the Kanbeat board subscriber for this project. Kanbeat wakes you "
+    "whenever a ticket is created, moved or deleted, or the board starts or "
+    "stops, and tells you what happened. Do what your standing instructions "
+    "say about those events and keep answers short. Before you change tickets "
+    "or settings, read .kanbeat/INSTRUCTIONS.md. Do not repeat work you have "
+    "already done for an earlier event."
+)
 
 
-class TransitionHooks:
-    def __init__(
-        self,
-        state: LocalState,
-        settings_for: Callable[[str], NativeSettings | None] | None = None,
-    ):
-        self.state = state
-        self.settings_for = settings_for or (lambda _harness: None)
-        self.entries = state.data.setdefault("hooks", {})
+def event_lines(events: list[dict[str, Any]]) -> str:
+    return "\n".join(f"#{event['seq']} {format_event(event)}" for event in events)
 
-    def enqueue(self, before: Ticket, after: Ticket) -> None:
-        config = self.state.config.get("transition_hook") or {}
-        if before.column == after.column or not config.get("prompt", "").strip():
-            return
-        serial = int(self.state.data.get("hook_seq", 0)) + 1
-        self.state.data["hook_seq"] = serial
-        self.entries[str(serial)] = {
-            "ticket": after.id,
-            "from": before.column,
-            "to": after.column,
-            "harness": config.get("harness") or self.state.config["default_harness"],
-            "prompt": config["prompt"],
-            "status": "pending",
-        }
-        self.state.save()
 
-    def record_process(
-        self, entry: dict[str, Any], pid: int, identity: str | None
-    ) -> None:
-        entry.update(pid=pid, process_identity=identity)
-        self.state.save()
+def first_prompt(prompt: str, events: list[dict[str, Any]]) -> str:
+    text = (
+        f"{PREAMBLE}\n\nStanding instructions:\n{prompt}\n\n"
+        f"Board events so far:\n{event_lines(events)}"
+    )
+    if len(text.encode()) > PROMPT_BYTES:
+        raise ValueError("the hook prompt is too long to start the session")
+    return text
 
-    async def execute(self, event_id: str, runs: dict[str, NativeRun]) -> None:
-        entry = self.entries[event_id]
-        if entry["status"] != "pending" or self.state.data["execution"] != "running":
-            return
-        key = "hook:" + event_id
-        entry["status"] = "running"
-        self.state.save()
+
+def wake_text(events: list[dict[str, Any]]) -> str:
+    first, last = events[0]["seq"], events[-1]["seq"]
+    return (
+        f"Kanbeat board events #{first} to #{last}:\n{event_lines(events)}\n"
+        "Continue with your standing instructions. "
+        f"Earlier events: kanbeat events --since {max(first - 1, 0)}."
+    )
+
+
+class HookSubscriber:
+    def __init__(self, supervisor: Supervisor):
+        self.supervisor = supervisor
+        self.task: asyncio.Task | None = None
+        self.last_wake = 0.0
+        self.retry_at = 0.0
+        self.reported: set[str] = set()
+
+    @property
+    def state(self) -> dict[str, Any]:
+        return self.supervisor.runtime.data.setdefault("hook", {})
+
+    def kick(self) -> None:
+        if self.task is None or self.task.done():
+            self.task = asyncio.create_task(self.guarded_step())
+
+    async def stop(self) -> None:
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+            await asyncio.gather(self.task, return_exceptions=True)
+
+    def session_entry(self) -> dict[str, Any] | None:
+        return next(
+            (
+                entry
+                for entry in self.supervisor.terminals.entries.values()
+                if entry.get("owner") == "custom" and entry.get("role") == "hook"
+            ),
+            None,
+        )
+
+    def fail(self, message: str) -> None:
+        self.retry_at = time.monotonic() + RETRY_DELAY
+        if message not in self.reported:
+            self.reported.add(message)
+            self.supervisor.notice("Transition hook: " + message, "error")
+            self.supervisor.save()
+
+    async def guarded_step(self) -> None:
         try:
-            harness = entry["harness"]
+            await self.step()
+        except asyncio.CancelledError:
+            raise
+        except (ValueError, RuntimeError, OSError) as exc:
+            self.fail(str(exc))
+
+    async def step(self) -> None:
+        if self.supervisor.shutdown_requested.is_set():
+            return
+        config = self.supervisor.runtime.config.get("transition_hook") or {}
+        prompt = str(config.get("prompt") or "").strip()
+        if not prompt:
+            if self.state.pop("cursor", None) is not None:
+                self.supervisor.save()
+            return
+        events = self.supervisor.events
+        if "cursor" not in self.state:
+            self.state["cursor"] = events.last
+            self.supervisor.save()
+            return
+        pending = events.since(self.state["cursor"], WAKE_EVENTS)
+        now = time.monotonic()
+        if not pending or now < self.retry_at or now - self.last_wake < WAKE_GAP:
+            return
+        entry = self.session_entry()
+        if entry is None:
+            harness = str(
+                config.get("harness")
+                or self.supervisor.runtime.config["default_harness"]
+            )
             if not available(harness):
-                raise ValueError("Hook harness unavailable: " + harness)
-            ticket = self.state.board.find(entry["ticket"])
-            path = ticket.path.relative_to(self.state.board.project).as_posix()
-            prompt = "\n\n".join(
-                [
-                    entry["prompt"],
-                    f"Kanbeat transition event {event_id}: ticket #{ticket.id} "
-                    f"{entry['from']} -> {entry['to']}.",
-                    f"Current canonical ticket path: {path}. Read it directly if needed.",
-                    "This is an independent transition hook session. Do not edit, "
-                    "rename, move or delete Kanbeat tickets, configuration or runtime "
-                    "state. Do not read worker transcripts or custom prompts. "
-                    "Do not change ticket status. External side effects must be idempotent.",
-                ]
+                self.fail(f"harness {harness} is unavailable")
+                return
+            await self.supervisor.dispatch(
+                {
+                    "op": "session_create",
+                    "title": SESSION_TITLE,
+                    "harness": harness,
+                    "prompt": first_prompt(prompt, pending),
+                    "role": "hook",
+                }
             )
-            settings = self.settings_for(harness)
-            options = {"settings": settings} if settings is not None else {}
-            run = NativeRun(
-                harness,
-                prompt,
-                None,
-                self.state.board.project,
-                self.state.board.root / ".state" / "logs" / f"hook-{event_id}.log",
-                on_process=lambda pid, identity: self.record_process(
-                    entry, pid, identity
-                ),
-                **options,
+            self.delivered(pending)
+            return
+        session = self.supervisor.terminals.sessions.get(entry["id"])
+        running = session is not None and entry.get("status") in ("starting", "running")
+        if not running:
+            if entry.get("status") == "stopping":
+                return
+            await self.supervisor.dispatch(
+                {"op": "session_restart", "terminal": entry["id"]}
             )
-            runs[key] = run
-            result = await run.execute()
-            entry["status"] = (
-                "interrupted"
-                if run.stopping
-                else ("completed" if result.ok else "failed")
-            )
-            entry["reason"] = result.reason
-        except Exception as exc:
-            run = runs.get(key)
-            if run is not None:
-                await run.stop()
-            entry.update(status="failed", reason=str(exc))
-        finally:
-            runs.pop(key, None)
-            entry.pop("pid", None)
-            entry.pop("process_identity", None)
-            if entry["status"] != "completed":
-                self.state.notice(
-                    f"Transition hook {event_id} for #{entry['ticket']}: "
-                    f"{entry['status']}. {entry.get('reason', '')} "
-                    "Ticket status preserved; hook will not be replayed automatically.",
-                    "warning",
-                )
-            self.state.save()
+            if not await self.settle(entry["id"]):
+                self.fail("the session did not become ready after a restart")
+                return
+        elif session.quiet_for() < WAKE_QUIET:
+            return
+        await self.type_into(entry["id"], pending)
+
+    async def settle(self, terminal_id: str) -> bool:
+        deadline = time.monotonic() + START_TIMEOUT
+        while time.monotonic() < deadline:
+            session = self.supervisor.terminals.sessions.get(terminal_id)
+            entry = self.supervisor.terminals.entries.get(terminal_id, {})
+            if (
+                session is not None
+                and entry.get("status") == "running"
+                and session.quiet_for() >= START_QUIET
+            ):
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
+    async def type_into(self, terminal_id: str, pending: list[dict[str, Any]]) -> None:
+        await self.supervisor.dispatch(
+            {
+                "op": "terminal_input",
+                "terminal": terminal_id,
+                "events": [
+                    {"kind": "paste", "text": wake_text(pending)},
+                    {"kind": "key", "key": "enter", "character": "\r"},
+                ],
+            }
+        )
+        self.delivered(pending)
+
+    def delivered(self, pending: list[dict[str, Any]]) -> None:
+        self.state["cursor"] = pending[-1]["seq"]
+        self.last_wake = time.monotonic()
+        self.retry_at = 0.0
+        self.supervisor.save()

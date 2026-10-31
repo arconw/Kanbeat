@@ -42,7 +42,8 @@ kanbeat move 001 backlog
 kanbeat play
 kanbeat stop
 kanbeat status [--json]      # execution state and the tickets per column, with blockers
-kanbeat watch [--json]       # one line per ticket event until interrupted
+kanbeat events [--since N]   # ticket events after number N, then exit
+kanbeat watch [--json]       # keep printing new ticket events until interrupted
 kanbeat config get [key]     # settings; set, history and revert are described below
 kanbeat --project /path/to/project   # select another project root
 kanbeat --version
@@ -58,7 +59,8 @@ Open a second terminal in the **same** project and launch `kanbeat` again: it co
 A ticket's status is the folder it sits in, so an agent or a script can run the board with plain files and these commands; there is no separate API or MCP server. [`INSTRUCTIONS.md`](#on-disk-layout) in every project tells agents the same.
 
 - `kanbeat status` prints the execution state and the tickets per column; `--json` gives the same as one JSON object (`execution` and `columns`, each ticket with `id`, `title` and the `blocked_by` ids that are not done yet).
-- `kanbeat watch` polls the supervisor once a second (`--interval` changes that) and prints one line per event: `created`, `moved`, `deleted` and `execution` (the board went from stopped to running or back). `--json` prints one object per line with a `time`. It sees every change to the files, including ones made by hand, and keeps no backlog: events that happen while it is not running are not replayed. An agent subscribes by running it as a background process.
+- **Events.** Kanbeat records every ticket change it sees in the files as a numbered event: `created`, `moved`, `deleted`, and `execution` when the board goes from stopped to running or back. Changes made by hand and by Kanbeat look the same. The supervisor checks the files once a second, so changes that are made and undone inside one check are not recorded. The last 200 events are kept in `.kanbeat/.state/supervisor.json`, and numbers never repeat while that file exists.
+- `kanbeat events [--since N] [--limit N] [--json]` prints the events after number N and exits. `kanbeat watch [--since N] [--json]` keeps printing new ones, once per second at most (`--interval`, at least 0.5 seconds), starts from now unless `--since` says otherwise, and `--json` adds the event number (`seq`) and a `time` to every line. If the supervisor goes away it prints `supervisor disconnected`, retries for about a minute and prints `supervisor connected` and the events it missed when it is back. An agent that follows the board can run it as a background process.
 - `kanbeat config get [key]`, `config set <key> <value>`, `config history [--limit N]` and `config revert <id>` read and change `config.json` through the supervisor. A change applies at once and the TUI Settings page follows. The keys are `default_harness`, `max_parallel` (1 to 32), `global_cp`, `developer_prompt`, `reviewer_prompt`, `transition_hook.harness` and `transition_hook.prompt`. A long prompt can come from `--file PATH`, or from standard input with the value `-`. Do not edit `config.json` by hand while the supervisor runs: it reads the file once at start and the Settings page rewrites it from memory.
 - **History.** Every change to the settings, from the TUI, the command line or a revert, is recorded with its old and new values (tickets are not tracked). The last 100 changes are kept in `.kanbeat/.state/config-history.json`, which is written only when a setting changes. A change made from anywhere but the Settings page (the command line, or any other client of the supervisor that does not say it is the Settings page) shows as a notice in the TUI without asking for approval and names the command that undoes it. Reverting restores the recorded old values as they were, even if they would not pass today's checks. Settings has a **History** section that lists the last 5 changes collapsed, unfolds one to show the old and new values, loads 20 more at a time up to 100, and has a Revert button per change. A revert is recorded too, so it can be undone as well.
 - Never edit `.kanbeat/.state/`. It is the supervisor's private runtime state, held in memory and rewritten from there; a hand edit is lost or corrupts it.
@@ -235,38 +237,26 @@ Unix-socket limit. See [Issue #5](https://github.com/arconw/Kanbeat/issues/5).
 
 ## Transition hooks
 
-Configure an optional native harness and prompt in Settings or `config.json`:
+The transition hook is a session that Kanbeat wakes whenever the board changes, so an agent can follow the tickets, keep a tracker in sync or manage the queue. It uses the same numbered events as `kanbeat events` and `kanbeat watch`. Configure it in Settings or with `kanbeat config set transition_hook.harness claude` and `transition_hook.prompt "..."`, or in `config.json`:
 
 ```json
 {
   "transition_hook": {
     "harness": "claude",
-    "prompt": "Update the GitHub issue linked in the ticket after this transition."
+    "prompt": "Update the GitHub issue linked in a ticket whenever it changes column."
   }
 }
 ```
 
-An empty prompt disables hooks; an empty harness selects the project default at
-queue time. Every column change made through Kanbeat (including manual moves,
-archive/restore and failure transitions) queues one hook. Creating,
-deleting or externally moving a file does not queue a hook. Pending hooks run
-serially on Play, before the next board turn. Each starts a fresh native session
-with the transition event ID and current canonical ticket path, without worker
-history, ticket body copies or worker CP. The configured hook prompt alone defines
-its automation; hooks retain native CLI permissions and authentication.
+An empty prompt turns the hook off; an empty harness means the project default. The prompt is at most 8,000 characters.
 
-Hook failures notify the user and preserve the ticket's new column. Missing hook
-harnesses fail that hook without default fallback or stopping the board. Stop
-interrupts running hooks too. The local ledger is in `.kanbeat/.state/supervisor.json`
-under `hooks`, and output is in `.kanbeat/.state/logs/hook-<event-id>.log`.
+- **One session.** Kanbeat keeps one independent session named **Transition hook**, in Sessions under **Ungrouped**. It starts the first time something changes after the hook is turned on, and its first prompt holds a short explanation, your standing instructions and the events so far. Events from before you turned the hook on are not delivered.
+- **Waking it.** The session is told about new events as it becomes free. If it is running and has been quiet for about eight seconds (no terminal output), Kanbeat types a short message into it and presses Enter: the event numbers, one line per event, and how to read earlier ones. If it is stopped, Kanbeat resumes it under the same native session id, waits until it is ready and then types the message. If you removed the session, the next change starts a new one. Events that arrive while it is busy are delivered together, up to 30 at a time, and at least 15 seconds apart.
+- **Any board state.** Waking does not need Play. Changes made by hand, from the command line or by an agent count, and so do the board starting and stopping, so a hook that moves tickets can wake itself; keep the prompt specific and idempotent.
+- **What it can do.** It is an ordinary session: your login, permissions and sandbox apply, and it may read `.kanbeat/INSTRUCTIONS.md` to manage tickets and settings with the commands described above. Stop or remove it from the session menu like any other session.
+- **Limits.** Waking works by typing into the terminal, so it relies on the harness being at its input prompt when it is quiet; a harness that is waiting for an answer to a question may receive the message as that answer. The delivered position is kept in `.kanbeat/.state/supervisor.json` and an event is typed at most once, so after a crash or a refused write it may be missed rather than repeated. If the harness is unavailable or the prompt is too long to start the session, a notice says why and Kanbeat tries again after a minute.
 
-Completed, failed and interrupted events are never replayed automatically. On
-restart the board stays stopped, pending events wait for Play, and interrupted
-hooks require manual inspection of their external effects. A running hook's
-outcome can be uncertain after a crash. The ledger and file rename are separate
-writes: a crash between them can leave a moved ticket without a queued hook.
-Deleting `.state` loses the ledger. This is not an exactly-once guarantee for
-external services; make hook operations idempotent and inspect before retrying.
+Earlier versions started a fresh one-shot session for every column change and recorded them in a ledger. That mode is gone: pending events and the ledger from an older state file are dropped when the supervisor starts.
 
 ## Development
 
