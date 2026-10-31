@@ -52,7 +52,7 @@ Open a second terminal in the **same** project and launch `kanbeat` again: it co
 
 `kanbeat shutdown` waits for cleanup without starting an absent supervisor. Add `--yes` to confirm stopping independent sessions. See [Releases](releases.md#update) before changing an installed binary.
 
-TUI keys: `1` Board, `2` Sessions, `3` Archive, `4` Settings, `Ctrl+R` refresh, `Ctrl+Q` quit the TUI (the supervisor keeps running), `Ctrl+\` detach from an interactive terminal. Board, Sessions, Archive and Settings are also clickable. The minimum supported size is 80 × 24 characters; roughly 130 columns show all six fixed-width board lanes, and narrower terminals can scroll them horizontally. Dialogs and Settings scroll vertically in shorter terminals. Slot labels, controls and runtime badges have separate space, and invalid saved harness choices show a warning before Save.
+TUI keys: `1` Sessions, `2` Board, `3` Archive, `4` Settings, `Ctrl+R` refresh, `Ctrl+Q` quit the TUI (the supervisor keeps running), `Ctrl+\` detach from an interactive terminal. Board, Sessions, Archive and Settings are also clickable. The minimum supported size is 80 × 24 characters; roughly 130 columns show all six fixed-width board lanes, and narrower terminals can scroll them horizontally. Dialogs and Settings scroll vertically in shorter terminals. Slot labels, controls and runtime badges have separate space, and invalid saved harness choices show a warning before Save.
 
 Clicking the visible backdrop outside a dialog closes that dialog without saving. A confirmation is cancelled. Clicks inside controls and drags that start inside the dialog do not dismiss it; nested dialogs close one at a time. Full-screen views use their Close/Detach controls, and detaching a terminal keeps its process running.
 
@@ -180,6 +180,14 @@ If a session no longer exists, the worker attempts a fresh run in the same slot.
 ## Interactive terminals and sessions
 
 The Sessions tab lists task terminals (a Developer or Reviewer slot of a ticket, available while the board is stopped) and independent sessions that you organise into your own groups. Independent sessions keep running when you detach and when the board is stopped. The supervisor owns every PTY; TUI clients only display and forward input, so several clients can open the same terminal.
+
+### Changes panel
+
+On the Sessions tab, a panel to the right of the terminal shows the project's uncommitted changes. It takes about 30% of the width and is closed until you open it with the button next to Detach; it then stays open until you close it (`×`, `Esc` or the same button). Kanbeat remembers that choice per project in `.kanbeat/.state/ui.json`. The button shows `3 files | +35 -11` (or just `files` when there are none). It blinks gently when the changes differ from the state you last saw with the panel open, and stops as soon as you open the panel; it does not blink while the panel is open, or after you have looked and closed it, until something changes again.
+
+The panel is the first thing to give way when the window narrows: when the terminal would get less than 60 columns it hides itself, and returns when there is room again. If you press the button on a very narrow window, the panel covers the whole Sessions page instead, and closing it there does not change your saved choice.
+
+The panel lists the changed files and, below the list, shows every file's diff as one stream with a line-number column, green added lines, red removed lines, highlighted changed words and syntax colours. The list and the diff scroll independently; clicking a file in the list scrolls the diff to it, and clicking a file's header folds or unfolds it. New (untracked) files and tests or generated files (`tests/`, `*.lock`, `dist/` and similar) start closed: new files unfold in place and the `N tests/generated (show)` row reveals the rest. `[ ask ]` types a reference to the file (`@path`, or the plain path in a Terminal session) into the open session without sending it. `source:` switches between Current (staged, unstaged and new files against `HEAD`), Unstaged, Staged and Last commit. The view refreshes by itself every two seconds; it only runs read-only Git commands, never takes Git's index lock and ignores `.kanbeat/.state/`.
 
 Harness selectors in Settings, slot configuration and New session include an Open button. It starts or reattaches one persistent native TUI session per harness in the project. Use it to configure the native CLI, then start new sessions.
 

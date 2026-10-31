@@ -367,8 +367,12 @@ def apply_input(terminal: TerminalSession, request: dict[str, Any]) -> None:
     }
     if base.startswith("f") and base[1:].isdigit():
         terminal.board.input_fkey(int(base[1:]), modifier)
+    elif modifiers == ["ctrl"] and base == "enter":
+        terminal.board.input_key(constants.LF)
     else:
         character = request.get("character")
+        if modifiers == ["ctrl"] and len(base) == 1 and "a" <= base <= "z":
+            character = base
         terminal.board.input_key(
             character
             if isinstance(character, str) and character

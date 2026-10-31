@@ -10,7 +10,7 @@ from textual.widgets import Static
 
 class StartupScreen(Screen):
     def on_key(self, event: events.Key) -> None:
-        if event.key in ("ctrl+q", "ctrl+c"):
+        if event.key == "ctrl+q":
             return
         event.stop()
         event.prevent_default()
