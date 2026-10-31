@@ -99,3 +99,13 @@ jobs:
           sha256sum --check --ignore-missing checksums.txt
           tar -xzf actionlint_1.7.12_linux_amd64.tar.gz actionlint
       - run: .tmp/actionlint -color
+
+  installer:
+    name: Lint the installer script
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: shellcheck --shell=sh install.sh
