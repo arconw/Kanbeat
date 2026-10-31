@@ -14,9 +14,13 @@ Version 0.9.1 adds plain **Terminal** sessions that remember their working direc
 
 Version 0.10.0 adds the Apache License 2.0 (a `LICENSE` file, the `license` field in the package metadata and a copy in every archive) and the **changes panel** to Sessions: a files button next to Detach shows the uncommitted changes (`3 files | +35 -11`) and opens a panel beside the terminal with a file list, a wrapped diff stream, highlighted changed words, syntax colours, closed new and test files, an `[ ask ]` button that types a file reference into the open session, and a source menu (Current, Unstaged, Staged, Last commit). The panel is closed until you open it, remembers your choice, hides itself when the terminal needs the room and covers the page on a very narrow window; the button blinks gently when something changed that you have not seen. Terminal keys are forwarded properly: Ctrl+Enter inserts a newline and Ctrl+V reaches harnesses that use the Kitty keyboard protocol, while Kanbeat no longer binds Ctrl+C or Ctrl+P itself (Textual's quit hint and command palette are gone). The demo GIFs are re-recorded for the new interface and `changes.gif` is new.
 
+Version 1.0.0 adds the ways to run Kanbeat from outside the TUI and replaces the transition hook. `kanbeat config get`, `set`, `history` and `revert` change the project settings through the supervisor, so a change applies at once, every change is recorded (the last 100, with a **History** section and Revert buttons in Settings) and a change from outside the Settings page shows a notice in the TUI. `kanbeat status` prints the board, and the supervisor now records every ticket change it sees in the files as a numbered event that `kanbeat events` and `kanbeat watch` read, so a watcher can resume from a number. `INSTRUCTIONS.md` has a "Managing the board" section for agents, and clicked buttons are no longer drawn in reverse.
+
+**What changes for existing users.** The transition hook no longer starts a one-shot session for every column change. It is now one session, **Transition hook** (Sessions, Ungrouped), that Kanbeat wakes with the numbered events, including changes made by hand and while the board is stopped; the old per-event ledger is dropped when the supervisor starts, and `transition_hook.prompt` is limited to 8,000 characters and 12,000 bytes. Kanbeat no longer binds Ctrl+C or Ctrl+P itself, so they reach the terminal, and plain labels no longer allow mouse text selection. Restart the supervisor (`kanbeat shutdown`) after updating so it runs the new code.
+
 ## Current status
 
-- Standalone archives and `install.sh` are published from 0.9.1 onwards. The Python quick-start pins the tested `v0.10.0` tag, which installs from Git as described in the [README](../README.md#installation).
+- Standalone archives and `install.sh` are published from 0.9.1 onwards. The Python quick-start pins the tested `v1.0.0` tag, which installs from Git as described in the [README](../README.md#installation).
 - Archives are built by the `Release` workflow. A pull request builds and smoke-tests them without publishing. A reviewed `v*` tag builds them again and prepares a **draft** GitHub release for the owner to inspect and publish by hand.
 - Kanbeat is not on PyPI or Homebrew, and the workflow never publishes there.
 - Kanbeat is licensed under the [Apache License 2.0](../LICENSE). Archives ship `LICENSE` and `THIRD_PARTY_NOTICES.txt` with the upstream licence texts of the bundled packages and a note on the CPython runtime and PyInstaller bootloader.
@@ -53,10 +57,10 @@ Download the archive for your platform and `SHA256SUMS` from the release page, t
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS      # Linux
 shasum -a 256 --check --ignore-missing SHA256SUMS  # macOS
-tar -xzf kanbeat-0.10.0-linux-x86_64.tar.gz
+tar -xzf kanbeat-1.0.0-linux-x86_64.tar.gz
 mkdir -p ~/.local/opt ~/.local/bin
-mv kanbeat-0.10.0-linux-x86_64 ~/.local/opt/kanbeat-0.10.0
-ln -sfn ~/.local/opt/kanbeat-0.10.0 ~/.local/opt/kanbeat
+mv kanbeat-1.0.0-linux-x86_64 ~/.local/opt/kanbeat-1.0.0
+ln -sfn ~/.local/opt/kanbeat-1.0.0 ~/.local/opt/kanbeat
 ln -sf ~/.local/opt/kanbeat/kanbeat ~/.local/bin/kanbeat
 kanbeat --version
 ```
@@ -66,7 +70,7 @@ Keep the `_internal` directory next to the `kanbeat` executable. Make sure `~/.l
 On macOS, a browser download carries a quarantine attribute. After verifying the checksum, remove it from the unpacked directory only if you trust the source:
 
 ```sh
-xattr -dr com.apple.quarantine ~/.local/opt/kanbeat-0.10.0
+xattr -dr com.apple.quarantine ~/.local/opt/kanbeat-1.0.0
 ```
 
 Download and trust behavior depends on the download tool and local macOS policy.
@@ -88,7 +92,7 @@ Project data lives in each project's `.kanbeat/` directory and is unaffected.
 ```sh
 rm ~/.local/bin/kanbeat
 rm ~/.local/opt/kanbeat
-rm -rf ~/.local/opt/kanbeat-0.10.0
+rm -rf ~/.local/opt/kanbeat-1.0.0
 ```
 
 Your projects' `.kanbeat/` directories are not touched; delete them yourself if you no longer want the tickets.
@@ -110,7 +114,7 @@ Wheel and sdist installs are unchanged: `uv tool install`, `pipx install` or `pi
 python -m venv .tmp/venv
 .tmp/venv/bin/python -m pip install '.[release]'
 .tmp/venv/bin/python tools/build_release.py --output .tmp/release/out --work .tmp/release/work
-.tmp/venv/bin/python tools/smoke_release.py .tmp/release/out/kanbeat-0.10.0-linux-x86_64.tar.gz --work .tmp/release/smoke
+.tmp/venv/bin/python tools/smoke_release.py .tmp/release/out/kanbeat-1.0.0-linux-x86_64.tar.gz --work .tmp/release/smoke
 ```
 
 `build_release.py` writes `kanbeat-<version>-<os>-<arch>.tar.gz` and a matching `.sha256`. `smoke_release.py` verifies the checksum, extracts into a fresh directory, and runs the extracted program outside the source tree against a fixture executable named `codex` on an isolated `PATH`. No vendor CLI or model is called. It checks:
