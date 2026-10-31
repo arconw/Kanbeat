@@ -374,3 +374,34 @@ async def test_a_subscriber_that_fell_far_behind_is_told_events_were_lost(
     assert "4 earlier events are no longer available." in text
     assert supervisor.runtime.data["hook"]["cursor"] == 10
     assert "#6 created" in text or "#7 created" in text
+
+
+@pytest.mark.asyncio
+async def test_a_problem_that_comes_back_after_a_success_is_reported_again(
+    supervisor, monkeypatch
+):
+    await wake(supervisor)
+    monkeypatch.setattr(hooks, "available", lambda name: False)
+    supervisor.board.create("One")
+    await wake(supervisor)
+    assert len(supervisor.runtime.data["notices"]) == 1
+    monkeypatch.setattr(hooks, "available", lambda name: True)
+    supervisor.subscriber.retry_at = 0.0
+    await wake(supervisor)
+    assert len(hook_entries(supervisor)) == 1
+    await asyncio.sleep(0.4)
+    supervisor.board.create("Two")
+    await wake(supervisor)
+    monkeypatch.setattr(hooks, "available", lambda name: False)
+    [entry] = hook_entries(supervisor)
+    await supervisor.dispatch(
+        {"op": "terminal_stop", "terminal": entry["id"], "confirmed": True}
+    )
+    await supervisor.dispatch(
+        {"op": "session_delete", "terminal": entry["id"], "confirmed": True}
+    )
+    supervisor.board.create("Three")
+    supervisor.subscriber.retry_at = 0.0
+    await wake(supervisor)
+    messages = [n["message"] for n in supervisor.runtime.data["notices"]]
+    assert messages.count("Transition hook: harness claude is unavailable") == 2

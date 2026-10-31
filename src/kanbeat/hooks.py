@@ -224,4 +224,5 @@ class HookSubscriber:
         self.state["cursor"] = pending[-1]["seq"]
         self.last_wake = time.monotonic()
         self.retry_at = 0.0
+        self.reported.clear()
         self.supervisor.save()
