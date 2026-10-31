@@ -279,6 +279,54 @@ async def test_oversized_page_retries_smaller_limit_on_the_same_cursor():
 
 
 @pytest.mark.asyncio
+async def test_oversized_older_page_retries_same_cursor_without_losing_messages():
+    class SizeLimitedOlderPageHost:
+        def __init__(self):
+            self.calls = []
+
+        async def read_messages_page(self, session_id, *, limit, before):
+            self.calls.append((limit, before))
+            if before is None:
+                return OpenCodeMessagePage(
+                    (
+                        message(
+                            "msg_new",
+                            "assistant",
+                            [text_part("prt_new", "msg_new", "Newest")],
+                        ),
+                    ),
+                    "older",
+                )
+            if limit > 1:
+                raise OpenCodeHostError("OpenCode response is too large")
+            return OpenCodeMessagePage(
+                (
+                    message(
+                        "msg_old",
+                        "user",
+                        [text_part("prt_old", "msg_old", "Oldest")],
+                    ),
+                )
+            )
+
+    host = SizeLimitedOlderPageHost()
+
+    result = await read_opencode_history(host, SESSION)
+
+    assert result.available and result.complete
+    assert [event.event_id for event in result.events] == ["msg_old", "msg_new"]
+    assert host.calls == [
+        (50, None),
+        (50, "older"),
+        (25, "older"),
+        (12, "older"),
+        (6, "older"),
+        (3, "older"),
+        (1, "older"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_one_oversized_message_is_an_explicit_failure():
     class AlwaysTooLargeHost:
         def __init__(self):
