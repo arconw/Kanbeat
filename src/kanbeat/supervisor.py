@@ -1354,6 +1354,9 @@ class Supervisor:
         if op == "events":
             since = request.get("since")
             limit = whole_number(request.get("limit", 100), "limit", 1, 200)
+            if request.get("tail") is not None:
+                count = whole_number(request.get("tail"), "tail", 1, 200)
+                return {"events": self.events.events[-count:], "last": self.events.last}
             if since is None:
                 return {"events": [], "last": self.events.last}
             cursor = whole_number(since, "since", 0, 10**12)

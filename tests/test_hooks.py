@@ -60,6 +60,24 @@ async def on_screen(supervisor, terminal_id, text, seconds=6):
     pytest.fail(f"{text!r} never appeared; the screen shows {shown!r}")
 
 
+@pytest.fixture
+def pastes(supervisor, monkeypatch):
+    sent = []
+    real = supervisor.dispatch
+
+    async def spy(request):
+        if request.get("op") == "terminal_input":
+            sent.extend(
+                event["text"]
+                for event in request["events"]
+                if event.get("kind") == "paste"
+            )
+        return await real(request)
+
+    monkeypatch.setattr(supervisor, "dispatch", spy)
+    return sent
+
+
 def hook_entries(supervisor):
     return [
         entry
@@ -163,7 +181,7 @@ async def test_a_removed_session_is_started_again(supervisor):
 
 
 @pytest.mark.asyncio
-async def test_events_are_delivered_in_batches_of_thirty(supervisor):
+async def test_events_are_delivered_in_batches_of_thirty(supervisor, pastes):
     await wake(supervisor)
     for number in range(40):
         supervisor.board.create(f"Task {number}")
@@ -174,8 +192,10 @@ async def test_events_are_delivered_in_batches_of_thirty(supervisor):
     await on_screen(supervisor, entry["id"], "READY")
     await asyncio.sleep(0.4)
     await wake(supervisor)
-    await on_screen(supervisor, entry["id"], "ECHO:#40 created #040")
     assert supervisor.runtime.data["hook"]["cursor"] == 40
+    [text] = pastes
+    assert text.startswith("Kanbeat board events #31 to #40 (")
+    assert text.count("\n#") == 10 and "#40 created #040" in text
 
 
 @pytest.mark.asyncio
@@ -294,7 +314,7 @@ def test_titles_are_cleaned_before_they_reach_a_terminal():
 
 @pytest.mark.asyncio
 async def test_a_batch_that_would_not_fit_is_cut_and_the_rest_comes_next(
-    supervisor, monkeypatch
+    supervisor, monkeypatch, pastes
 ):
     ticket, entry = await started(supervisor)
     await asyncio.sleep(0.4)
@@ -304,12 +324,14 @@ async def test_a_batch_that_would_not_fit_is_cut_and_the_rest_comes_next(
     await wake(supervisor)
     cursor = supervisor.runtime.data["hook"]["cursor"]
     assert 1 < cursor < 11
-    await on_screen(supervisor, entry["id"], f"ECHO:#{cursor} created")
+    [first] = pastes
+    assert len(first.encode()) <= 600 and f"to #{cursor} (" in first
     await asyncio.sleep(0.4)
     monkeypatch.setattr(hooks, "PASTE_BYTES", 12000)
     await wake(supervisor)
     assert supervisor.runtime.data["hook"]["cursor"] == 11
-    await on_screen(supervisor, entry["id"], "ECHO:#11 created #011")
+    assert f"#{cursor + 1} to #11 (" in pastes[1] or f"#{cursor + 1}" in pastes[1]
+    assert pastes[1].count("created #") == 11 - cursor
 
 
 @pytest.mark.asyncio
@@ -323,3 +345,15 @@ async def test_a_session_that_is_still_starting_is_left_alone(supervisor):
     entry["status"] = "running"
     await wake(supervisor)
     assert supervisor.runtime.data["hook"]["cursor"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_long_prompt_in_a_wide_script_still_starts_the_session(supervisor):
+    prompt = "語" * 4000
+    await wake(supervisor)
+    supervisor.runtime.change_config({"transition_hook.prompt": prompt}, "cli")
+    supervisor.board.create("Task")
+    await wake(supervisor)
+    [entry] = hook_entries(supervisor)
+    assert prompt in entry["prompt"] and "created #" in entry["prompt"]
+    assert supervisor.runtime.data["notices"] == []

@@ -64,7 +64,14 @@ def parser() -> argparse.ArgumentParser:
     events = sub.add_parser("events", help="Print recent ticket events and exit")
     events.add_argument("--json", action="store_true", help="One JSON object per line")
     events.add_argument("--since", type=int, help="Only events after this number")
-    events.add_argument("--limit", type=int, default=100, help="Most events to print")
+    events.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        choices=range(1, 201),
+        metavar="1-200",
+        help="Most events to print (the newest ones without --since)",
+    )
     config = sub.add_parser(
         "config", help="Read and change project settings, with history"
     )

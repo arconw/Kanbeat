@@ -388,3 +388,11 @@ def test_whole_numbers_given_as_text_or_as_integral_floats_are_accepted(supervis
     supervisor.runtime.change_config({"global_cp": "x"}, "cli")
     assert run(supervisor, op="config_history", limit="5")["total"] == 1
     assert run(supervisor, op="config_history", limit=2.0)["total"] == 1
+
+
+def test_the_hook_prompt_is_limited_in_bytes_as_well_as_in_characters(supervisor):
+    supervisor.runtime.change_config({"transition_hook.prompt": "語" * 4000}, "cli")
+    with pytest.raises(ValueError, match="longer than 12000 bytes"):
+        supervisor.runtime.change_config({"transition_hook.prompt": "語" * 4001}, "cli")
+    with pytest.raises(ValueError, match="longer than 8000 characters"):
+        supervisor.runtime.change_config({"transition_hook.prompt": "a" * 8001}, "cli")

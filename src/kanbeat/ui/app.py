@@ -775,9 +775,14 @@ class KanbeatApp(App[None], inherit_bindings=False):
             target = next(iter(panel.query("#" + focused_id)), None)
             if target is not None and target is not previous_focus:
                 target.focus(scroll_visible=False)
-        for tab in TABS:
-            self.query_one("#nav-" + tab, Button).set_class(tab == self.tab, "selected")
-        self.query_one("#diff-toggle", Button).display = self.tab == "sessions"
+        try:
+            for tab in TABS:
+                self.query_one("#nav-" + tab, Button).set_class(
+                    tab == self.tab, "selected"
+                )
+            self.query_one("#diff-toggle", Button).display = self.tab == "sessions"
+        except NoMatches:
+            return
         if self.tab == "sessions":
             self.call_later(self.refresh_changes)
 

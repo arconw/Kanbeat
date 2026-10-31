@@ -250,3 +250,15 @@ def test_watch_starts_over_when_the_supervisor_numbers_events_from_scratch(capsy
     assert capsys.readouterr().out.splitlines() == [
         "moved #a todo -> progress  Title a"
     ]
+
+
+def test_events_without_a_number_asks_for_the_newest_ones(capsys):
+    async def send(request):
+        assert request == {"op": "events", "tail": 3}
+        return {"events": [moved(8), moved(9, "b")], "last": 9}
+
+    assert asyncio.run(events_command(send, False, None, 3)) == 9
+    assert capsys.readouterr().out.splitlines() == [
+        "moved #a todo -> progress  Title a",
+        "moved #b todo -> progress  Title b",
+    ]

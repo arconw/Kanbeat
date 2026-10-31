@@ -146,3 +146,20 @@ def test_diff_events_orders_tickets_then_execution():
     ]
     assert diff_events(before, before) == []
     assert EventLog is not None
+
+
+def test_the_tail_mode_returns_the_newest_events(supervisor):
+    for number in range(5):
+        supervisor.board.create(f"Task {number}")
+        tick(supervisor)
+    reply = run(supervisor, op="events", tail=2)
+    assert [e["seq"] for e in reply["events"]] == [4, 5] and reply["last"] == 5
+    assert [e["seq"] for e in run(supervisor, op="events", tail=50)["events"]] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]
+    with pytest.raises(ValueError, match="tail must be between"):
+        run(supervisor, op="events", tail=0)

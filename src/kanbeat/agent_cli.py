@@ -136,7 +136,10 @@ def emit(event: dict[str, Any], as_json: bool) -> None:
 async def events_command(
     send: Send, as_json: bool, since: int | None, limit: int
 ) -> int:
-    reply = await send({"op": "events", "since": since or 0, "limit": limit})
+    if since is None:
+        reply = await send({"op": "events", "tail": limit})
+    else:
+        reply = await send({"op": "events", "since": since, "limit": limit})
     for event in reply["events"]:
         emit(event, as_json)
     return reply["last"]
