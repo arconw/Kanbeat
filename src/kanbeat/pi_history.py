@@ -631,9 +631,7 @@ def _tool_call_text(value: Any) -> str:
 
 
 def _message_import_id(drafts: list[_EventDraft]) -> str | None:
-    texts = [
-        draft.text for draft in drafts if draft.role == ROLE_USER and draft.text
-    ]
+    texts = [draft.text for draft in drafts if draft.role == ROLE_USER and draft.text]
     if not texts:
         return None
     return import_id_for_text("\n".join(texts))
