@@ -194,7 +194,8 @@ def test_repository_without_commits_shows_everything_added(tmp_path):
     ]
 
 
-def test_not_a_repository_is_unavailable(tmp_path):
+def test_not_a_repository_is_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     changes = collect_changes(tmp_path)
     assert not changes.available and changes.files == []
 

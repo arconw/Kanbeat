@@ -413,12 +413,14 @@ class ColumnMenu(PopupMenu):
             app.move_by_hand(ticket_id, target)
 
 
-def file_reference(entry: dict[str, Any], path: str) -> str:
+def file_reference(entry: dict[str, Any], path: str) -> str | None:
     if entry.get("harness") == "shell":
         return shlex.quote(path)
-    if any(char.isspace() for char in path) and '"' not in path:
-        return f'@"{path}"'
-    return "@" + path
+    if not any(char.isspace() for char in path):
+        return "@" + path
+    if '"' in path:
+        return None
+    return f'@"{path}"'
 
 
 class SourceMenu(PopupMenu):
@@ -886,11 +888,14 @@ class KanbeatApp(App[None], inherit_bindings=False):
             )
             return
         entry = self.snapshot.get("terminals", {}).get(terminal_id) or {}
-        self.run_worker(
-            pane.send_input(
-                {"kind": "paste", "text": file_reference(entry, path) + " "}
+        reference = file_reference(entry, path)
+        if reference is None:
+            self.notify(
+                "This file name has spaces and quotes, so it cannot be referenced safely",
+                severity="warning",
             )
-        )
+            return
+        self.run_worker(pane.send_input({"kind": "paste", "text": reference + " "}))
         pane.query_one(TerminalDisplay).focus()
 
     async def show_diff(self, focus: bool = False) -> None:
@@ -902,12 +907,18 @@ class KanbeatApp(App[None], inherit_bindings=False):
         self.update_diff_button()
         self.call_later(self.refresh_changes, True)
 
+    def remember_diff_hidden(self, hidden: bool) -> None:
+        try:
+            self.preferences.remember(DIFF_HIDDEN_KEY, hidden)
+        except OSError as exc:
+            self.notify(f"Could not save the panel choice: {exc}", severity="warning")
+
     def hide_diff(self) -> None:
         view = self.diff_view()
         if view is None:
             return
         if not view.has_class("-cover"):
-            self.preferences.remember(DIFF_HIDDEN_KEY, True)
+            self.remember_diff_hidden(True)
         self.diff_forced = False
         view.hide()
         self.update_diff_button()
@@ -920,7 +931,7 @@ class KanbeatApp(App[None], inherit_bindings=False):
         if view.display:
             self.hide_diff()
             return
-        self.preferences.remember(DIFF_HIDDEN_KEY, False)
+        self.remember_diff_hidden(False)
         fits = page.diff_fits()
         self.diff_forced = not fits
         view.set_class(not fits, "-cover")

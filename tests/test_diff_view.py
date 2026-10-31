@@ -434,6 +434,7 @@ async def test_diff_updates_in_real_time_and_keeps_opened_state(repo, monkeypatc
 
 @pytest.mark.asyncio
 async def test_project_outside_git_explains_itself(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     app = make_app(tmp_path, monkeypatch)
     async with app.run_test(size=(170, 40)) as pilot:
         view = await opened(app, pilot)
@@ -474,7 +475,8 @@ async def test_navigation_fits_with_terminal_controls_and_big_counts(
     [
         ("claude", "src/a.py", "@src/a.py"),
         ("codex", "my file.txt", '@"my file.txt"'),
-        ("claude", 'we"ird name.txt', '@we"ird name.txt'),
+        ("claude", 'we"ird.txt', '@we"ird.txt'),
+        ("claude", 'we"ird name.txt', None),
         ("shell", "src/a.py", "src/a.py"),
         ("shell", "my file.txt", "'my file.txt'"),
         ("shell", "$(rm -rf ~).txt", "'$(rm -rf ~).txt'"),
@@ -529,3 +531,45 @@ async def test_a_slow_result_for_the_old_source_is_dropped(repo, monkeypatch):
         await pilot.pause()
         assert view.source == "staged"
         assert list_paths(view) == staged == []
+
+
+@pytest.mark.asyncio
+async def test_ask_refuses_names_that_cannot_be_referenced_safely(repo, monkeypatch):
+    app = make_app(repo, monkeypatch)
+    async with app.run_test(size=(170, 40)) as pilot:
+        await opened(app, pilot)
+        sent = []
+
+        async def record(values):
+            sent.append(values)
+
+        monkeypatch.setattr(app.query_one(TerminalPane), "send_input", record)
+        app.embedded_terminal = "t1"
+        app.snapshot = {"terminals": {"t1": {"harness": "claude"}}}
+        app.ask_about('we"ird name.txt')
+        await pilot.pause()
+        assert sent == []
+        assert any("cannot be referenced" in n.message for n in app._notifications)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_save_does_not_stop_the_panel_from_opening_or_closing(
+    repo, monkeypatch
+):
+    app = make_app(repo, monkeypatch)
+
+    def broken(key, value):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(app.preferences, "remember", broken)
+    async with app.run_test(size=(170, 40)) as pilot:
+        view = await opened(app, pilot)
+        assert view.display
+        await click_button(pilot, "#diff-toggle")
+        await until(pilot, lambda: not view.display)
+        await click_button(pilot, "#diff-toggle")
+        await until(pilot, lambda: view.display)
+        await click_button(pilot, "#diff-close")
+        await until(pilot, lambda: not view.display)
+        saves = [n for n in app._notifications if "Could not save" in n.message]
+        assert len(saves) >= 3
