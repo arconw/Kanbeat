@@ -14,7 +14,7 @@ Install Kanbeat from a release archive. No Python or Git needed.
 Usage: install.sh [--uninstall] [--help]
 
 Environment:
-  KANBEAT_VERSION   release to install, for example 0.9.0 (default: the latest published release)
+  KANBEAT_VERSION   release to install, for example 0.9.1 (default: the latest published release)
   KANBEAT_PREFIX    installation prefix (default: ~/.local)
 
 The archive is unpacked to <prefix>/opt/kanbeat-<version>, and <prefix>/bin/kanbeat
