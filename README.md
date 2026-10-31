@@ -16,15 +16,23 @@ A ticket is a Markdown file, its status is the directory it lives in, and one pe
 [Tickets and dependencies](#tickets-and-dependencies) ·
 [Sessions](#sessions) ·
 [Limitations](#limitations) ·
-[Docs](#documentation)
+[Docs](#documentation) ·
+[YouTube](https://www.youtube.com/@arco9-lab)
 
 </div>
 
-> **Early release, not production-ready.** The board, supervisor, structured worker flow, transition hooks, persistent terminals and session groups are implemented and covered by automated tests. Codex, Claude and OpenCode protocol paths were exercised against deterministic local fake APIs, but not against real remote models or every vendor CLI version, and agents edit your working tree. Read [Limitations](#limitations) first.
+> **Beta.** Kanbeat is still under active development, so you may meet rough edges, but the happy path works: it has been tried by hand with several of the supported CLIs. The automated tests run against deterministic local fake APIs rather than real models, and agents edit your working tree, so read [Limitations](#limitations) before letting them run unattended.
 
 ![Kanbeat board: dependencies between tickets, the card strip and manual moves](docs/media/board.gif)
 
 *Recorded from the real TUI against a real supervisor. The tickets are moved by hand; no agent ran. See [how the demos are made](docs/media.md).*
+
+<div align="center">
+
+<a href="https://www.youtube.com/@arco9-lab"><img src="docs/media/channel-icon.png" alt="Arco9 Lab" width="30" align="absmiddle"></a>&nbsp;
+<a href="https://www.youtube.com/@arco9-lab"><b>Arco9 Lab on YouTube</b></a>
+
+</div>
 
 ## Why Kanbeat
 
@@ -260,7 +268,7 @@ flowchart TB
 - Sessions is the first tab. Groups and sessions sit in a list beside an embedded terminal; clicking a session switches to it.
 - Every independent session gets a native id (Codex thread, OpenCode session, Claude and Pi session id), so **clicking a stopped session resumes it** where it left off. The id can be set in Edit.
 - Besides a harness, a session can be a plain **Terminal** running your shell. Its working directory is remembered: after Stop or a restart, clicking the session opens a fresh shell in the directory you last `cd`-ed to.
-- The session menu has Edit, Stop, **Delete** (removes the workspace record, the vendor history stays) and **Delete completely** (also removes the native session).
+- The session menu has Edit, Stop, **Remove from Kanbeat** (the record goes, the conversation stays in the harness) and **Delete session and history** (also deletes the conversation in the harness).
 - Select text with a plain left drag; it is copied when you release. Shift+drag keeps your terminal's own selection.
 - Independent sessions keep running when you detach, close the TUI or press Board Stop. Board task slots can be attached live while the board runs (OpenCode, Codex and Claude; Pi needs Board Stop).
 
@@ -270,7 +278,7 @@ flowchart TB
 
 ## Limitations
 
-- Early release. Behaviour, file layout and configuration may still change. **0.9.0 renamed tickets to `<id>-<slug>.md`**; files named in the old `<order>-<id>-<slug>.md` form are reported as invalid and must be renamed by hand. The old `.tasks` layout is not migrated.
+- Beta. Behaviour, file layout and configuration may still change. **0.9.0 renamed tickets to `<id>-<slug>.md`**; files named in the old `<order>-<id>-<slug>.md` form are reported as invalid and must be renamed by hand. The old `.tasks` layout is not migrated.
 - Only Linux and macOS are supported. WSL is untested and native Windows does not work.
 - Live vendor protocols were exercised against local deterministic fake APIs, not against every real remote provider, login mode or CLI version. Event formats and session resume can change between vendor releases; check your installed CLI versions before running unattended.
 - Live task attach is available for OpenCode, Codex and Claude. Pi task terminals still require Board Stop, and Pi model/effort capture is not implemented.

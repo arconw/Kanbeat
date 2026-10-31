@@ -5,3 +5,4 @@ HARNESS = [
     ("Pi", "pi"),
 ]
 SESSION_HARNESS = [*HARNESS, ("Terminal", "shell")]
+HARNESS_LABELS = {value: label for label, value in HARNESS}

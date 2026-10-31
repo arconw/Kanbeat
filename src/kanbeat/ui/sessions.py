@@ -11,7 +11,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from .modal import BackdropModal
 from textual.widgets import Button, Collapsible, Input, Select, Static, TextArea
 
-from .options import SESSION_HARNESS
+from .options import HARNESS_LABELS, SESSION_HARNESS
 from .terminal import TerminalPane
 from .session_rows import SessionRow, SessionSection, TaskSessions
 
@@ -278,7 +278,9 @@ class SessionActions(PopupMenu):
             if running and self.entry.get("attached"):
                 yield Button("Stop", id="session-stop")
             if status != "stopping":
-                yield Button("Delete", id="session-remove", variant="error")
+                yield Button(
+                    "Remove from Kanbeat", id="session-remove", variant="error"
+                )
                 if self.entry.get("native_session") and self.entry["harness"] in (
                     "claude",
                     "codex",
@@ -286,7 +288,9 @@ class SessionActions(PopupMenu):
                     "pi",
                 ):
                     yield Button(
-                        "Delete completely", id="session-remove-all", variant="error"
+                        "Delete session and history",
+                        id="session-remove-all",
+                        variant="error",
                     )
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -309,12 +313,19 @@ class SessionActions(PopupMenu):
         from .app import Confirm
 
         harness = self.entry["harness"]
-        question = (
-            f"Delete this session completely, including its history in {harness}? "
-            "This cannot be undone."
-            if native
-            else f"Remove this session from the workspace? Its history in {harness} is kept."
-        )
+        name = escape(self.entry["title"])
+        product = HARNESS_LABELS.get(harness, harness)
+        if native:
+            question = (
+                f"Delete {name} and its conversation in {product}? "
+                "This cannot be undone."
+            )
+        elif harness == SHELL:
+            question = f"Remove {name} from Kanbeat? Its shell is closed."
+        else:
+            question = (
+                f"Remove {name} from Kanbeat? Its conversation stays in {product}."
+            )
         app = self.app
         if not await app.push_screen_wait(Confirm(question)):
             return

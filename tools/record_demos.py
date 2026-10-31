@@ -543,7 +543,7 @@ async def sessions_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
                 await two.press("ctrl+backslash")
                 await two.click(f"#session-actions-{notes}")
                 two.shot(
-                    "Session menu: Edit, Stop, Delete, and Delete completely (also removes the native session).",
+                    "Session menu: Edit, Stop, Remove from Kanbeat, and Delete session and history.",
                     3.0,
                 )
                 await two.click("#session-stop")
@@ -552,7 +552,7 @@ async def sessions_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
                 await two.click("#yes", 1.0)
                 assert notes not in (await snapshot(project))["terminals"]
                 two.shot(
-                    "Delete removes the workspace record; the vendor history stays untouched.",
+                    "Remove from Kanbeat drops the record; the conversation stays in the harness.",
                     2.8,
                 )
     return recording
