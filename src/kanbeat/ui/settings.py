@@ -55,6 +55,7 @@ class Settings(VerticalScroll):
         self.history_seen: int | None = None
         self.history_open: set[int] = set()
         self.history_lock = asyncio.Lock()
+        self.history_error = ""
 
     def compose(self) -> ComposeResult:
         yield Static("SETTINGS / PROJECT DEFAULTS", classes="page-heading")
@@ -118,11 +119,21 @@ class Settings(VerticalScroll):
 
     async def load_history(self) -> None:
         async with self.history_lock:
+            try:
+                result = await self.app.rpc(
+                    {"op": "config_history", "limit": self.history_limit}
+                )
+                entries = result["history"]
+                total = result["total"]
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+                if str(exc) != self.history_error:
+                    self.history_error = str(exc)
+                    self.app.notify(
+                        f"Could not load the history: {exc}", severity="warning"
+                    )
+                return
+            self.history_error = ""
             self.history_seen = self.app.snapshot.get("config_seq", 0)
-            result = await self.app.rpc(
-                {"op": "config_history", "limit": self.history_limit}
-            )
-            entries = result["history"]
             try:
                 container = self.query_one("#cfg-history", Vertical)
                 more = self.query_one("#cfg-history-more", Button)
@@ -149,10 +160,8 @@ class Settings(VerticalScroll):
                     for entry in entries
                 )
             )
-            more.display = (
-                len(entries) < result["total"] and self.history_limit < HISTORY_MAX
-            )
-            more.label = f"Show more ({len(entries)} of {result['total']})"
+            more.display = len(entries) < total and self.history_limit < HISTORY_MAX
+            more.label = f"Show more ({len(entries)} of {total})"
 
     def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
         self.track_entry(event.collapsible, True)
@@ -176,7 +185,7 @@ class Settings(VerticalScroll):
     def update_snapshot(self, snapshot) -> None:
         config = snapshot.get("config") or {}
         if snapshot.get("config_seq", 0) != self.history_seen:
-            self.run_worker(self.load_history(), exclusive=True, group="history")
+            self.run_worker(self.load_history, exclusive=True, group="history")
         fields = [("default_harness", "#cfg-harness", Select)] + [
             (field, "#cfg-" + field, TextArea)
             for field in ("global_cp", "developer_prompt", "reviewer_prompt")

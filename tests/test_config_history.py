@@ -251,6 +251,10 @@ def test_a_revert_that_keeps_settings_says_so(supervisor):
         ({"op": "config_revert"}, "id must be a whole number"),
         ({"op": "config_revert", "id": "x"}, "id must be a whole number"),
         ({"op": "config_revert", "id": 0}, "id must be between"),
+        ({"op": "config_revert", "id": True}, "id must be a whole number"),
+        ({"op": "config_revert", "id": 1.5}, "id must be a whole number"),
+        ({"op": "config_history", "limit": 3.9}, "limit must be a whole number"),
+        ({"op": "config_history", "limit": True}, "limit must be a whole number"),
     ],
 )
 def test_bad_numbers_get_a_clear_error(supervisor, request_, message):
@@ -378,3 +382,9 @@ def test_a_revert_restores_a_recorded_value_that_would_not_pass_today(supervisor
     assert skipped == []
     assert state.config["max_parallel"] == 99
     assert len(state.config["global_cp"]) == 25000
+
+
+def test_whole_numbers_given_as_text_or_as_integral_floats_are_accepted(supervisor):
+    supervisor.runtime.change_config({"global_cp": "x"}, "cli")
+    assert run(supervisor, op="config_history", limit="5")["total"] == 1
+    assert run(supervisor, op="config_history", limit=2.0)["total"] == 1

@@ -128,3 +128,34 @@ async def test_overlapping_history_loads_do_not_clash(tmp_path, monkeypatch):
         await asyncio.gather(*(settings.load_history() for _ in range(4)))
         assert len(entries(app)) == 6
         assert len(set(entries(app))) == 6
+
+
+@pytest.mark.asyncio
+async def test_a_failing_history_request_is_reported_once_and_retried(
+    tmp_path, monkeypatch
+):
+    supervisor, app = make_app(tmp_path, monkeypatch, 2)
+    real = supervisor.dispatch
+    state = {"fail": True}
+
+    async def flaky(request):
+        if request.get("op") == "config_history" and state["fail"]:
+            raise RuntimeError("supervisor restarting")
+        return await real(request)
+
+    monkeypatch.setattr(app, "rpc", flaky)
+    async with app.run_test(size=(140, 70)) as pilot:
+        await pilot.pause()
+        await pilot.click("#nav-settings")
+        settings = app.query_one("#settings")
+        await until(pilot, lambda: settings.history_error != "")
+        for _ in range(3):
+            await settings.load_history()
+        warnings = [n for n in app._notifications if "Could not load" in n.message]
+        assert len(warnings) == 1
+        assert entries(app) == [] and settings.history_seen is None
+        state["fail"] = False
+        await app.refresh_snapshot(force=True)
+        settings.update_snapshot(app.snapshot)
+        await until(pilot, lambda: len(entries(app)) == 2)
+        assert settings.history_error == ""

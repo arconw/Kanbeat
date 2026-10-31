@@ -53,6 +53,8 @@ HARNESS_NAMES = ("codex", "claude", "opencode", "pi")
 
 
 def whole_number(value: Any, name: str, low: int, high: int) -> int:
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        raise ValueError(f"{name} must be a whole number")
     try:
         number = int(value)
     except (TypeError, ValueError):
