@@ -756,10 +756,188 @@ async def agents_demo(
     return recording
 
 
+CHANGES_FILES = {
+    ".gitignore": ".kanbeat/\n",
+    "src/shapes.py": (
+        "def area(width, height):\n"
+        "    return width + height\n"
+        "\n"
+        "\n"
+        "def perimeter(width, height):\n"
+        "    return 2 * (width + height)\n"
+        "\n"
+        "\n"
+        "def describe(width, height):\n"
+        "    return f'{width} x {height}'\n"
+    ),
+    "src/cli.py": (
+        "import sys\n"
+        "\n"
+        "from shapes import area\n"
+        "\n"
+        "\n"
+        "def main():\n"
+        "    print(area(2, 3))\n"
+        "\n"
+        "\n"
+        "if __name__ == '__main__':\n"
+        "    sys.exit(main())\n"
+    ),
+    "tests/test_shapes.py": (
+        "from shapes import area\n\n\ndef test_area():\n    assert area(2, 3) == 5\n"
+    ),
+    "README.md": "# Shapes\n\nSmall geometry helpers.\n",
+}
+
+
+def demo_git(demo: Demo, project: Path, *arguments: str) -> None:
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Demo",
+            "-c",
+            "user.email=demo@example.com",
+            "-c",
+            "init.defaultBranch=main",
+            *arguments,
+        ],
+        cwd=project,
+        env={**demo.env, "GIT_CONFIG_GLOBAL": "/dev/null"},
+        check=True,
+        capture_output=True,
+    )
+
+
+def prepare_changes_project(demo: Demo, project: Path) -> None:
+    for name, content in CHANGES_FILES.items():
+        path = project / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    demo_git(demo, project, "init", "-q")
+    demo_git(demo, project, "add", ".")
+    demo_git(demo, project, "commit", "-q", "-m", "Start")
+    shapes = project / "src" / "shapes.py"
+    shapes.write_text(
+        shapes.read_text(encoding="utf-8").replace(
+            "return width + height\n\n\ndef perimeter",
+            "return width * height\n\n\ndef perimeter",
+        )
+        + "\n\ndef scale(width, height, factor):\n"
+        "    return width * factor, height * factor\n",
+        encoding="utf-8",
+    )
+    cli = project / "src" / "cli.py"
+    cli.write_text(
+        cli.read_text(encoding="utf-8").replace(
+            "print(area(2, 3))", "print(area(2, 3))\n    return 0"
+        ),
+        encoding="utf-8",
+    )
+    tests = project / "tests" / "test_shapes.py"
+    tests.write_text(
+        tests.read_text(encoding="utf-8").replace("== 5", "== 6"), encoding="utf-8"
+    )
+    (project / "docs").mkdir()
+    (project / "docs" / "notes.md").write_text(
+        "# Notes\n\nArea is width times height.\nPerimeter stays as it is.\n",
+        encoding="utf-8",
+    )
+    demo_git(demo, project, "add", "src/cli.py")
+
+
+async def changes_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
+    from kanbeat.ui.diff import DiffView
+
+    project = demo.project("changes-demo")
+    prepare_changes_project(demo, project)
+    recording = Recording("changes", renderer, project)
+    size = (160, 40)
+    async with demo.supervisor(project):
+        async with Client("Terminal 1 · TUI", project, recording, size) as one:
+            await one.app.refresh_changes(True)
+            await one.settle(0.8)
+            button = one.app.query_one("#diff-toggle")
+            assert button.label.plain.startswith("4 files")
+            one.shot(
+                "In a Git project the files button counts the changed files and lines. The panel is closed until you open it.",
+                3.0,
+            )
+            await one.click("#new-session")
+            await one.click("#session-title")
+            await one.type("Notes shell")
+            one.app.screen.query_one("#session-harness").value = "claude"
+            await one.settle(0.3)
+            await one.click("#session-start", 1.5)
+            await one.click("#diff-toggle", 1.0)
+            await one.app.refresh_changes(True)
+            await one.settle(1.0)
+            view = one.app.query_one(DiffView)
+            assert view.display and "src/shapes.py" in view.canvas.offsets
+            one.shot(
+                "Click files: the changes open beside the terminal. Files on top, every diff below; the session keeps running.",
+                3.4,
+            )
+            names = [row.path for row in view.files.rows if row.action == "jump"]
+            await one.pilot.click(view.files, offset=(3, names.index("src/shapes.py")))
+            await one.settle(0.6)
+            one.shot(
+                "Click a file in the list to jump to it. The list and the diff scroll separately.",
+                3.0,
+            )
+            canvas = view.canvas
+            header = canvas.offsets["docs/notes.md"]
+            canvas.scroll_to(y=max(0, header - 3), animate=False, immediate=True)
+            await one.settle(0.5)
+            one.shot(
+                "New files start closed. Tests and generated files hide behind a (show) row.",
+                3.0,
+            )
+            await one.pilot.click(canvas, offset=(3, header - canvas.scroll_offset.y))
+            await one.settle(0.6)
+            assert "docs/notes.md" in canvas.opened_new
+            one.shot("Click a header to open a new file.", 2.4)
+            target = canvas.offsets["src/shapes.py"]
+            canvas.scroll_to(y=max(0, target - 1), animate=False, immediate=True)
+            await one.settle(0.5)
+            ask = canvas.rows[target].ask_from
+            await one.pilot.click(
+                canvas, offset=(ask + 2, target - canvas.scroll_offset.y)
+            )
+            await one.settle(1.0)
+            state = await snapshot(project)
+            terminal = terminal_titled(state, "Notes shell")
+            screen = await request(
+                project, {"op": "terminal_snapshot", "terminal": terminal}
+            )
+            assert "@src/shapes.py" in screen["text"]
+            one.shot(
+                "[ ask ] types a reference to the file into the open session without sending it.",
+                3.4,
+            )
+            await one.click("#diff-source", 0.6)
+            one.shot("Source: Current, Unstaged, Staged or Last commit.", 2.6)
+            await one.click("#source-staged", 1.2)
+            assert [row.path for row in view.files.rows if row.action == "jump"] == [
+                "src/cli.py"
+            ]
+            one.shot("Staged shows only what is already added to the index.", 2.8)
+            await one.click("#diff-source", 0.5)
+            await one.click("#source-current", 1.2)
+            await one.click("#diff-close", 0.8)
+            assert not view.display
+            one.shot(
+                "Close it with x or the files button. Kanbeat remembers whether you left it open.",
+                2.8,
+            )
+    return recording
+
+
 SCENARIOS = {
     "board": board_demo,
     "play-stop": play_stop_demo,
     "sessions": sessions_demo,
+    "changes": changes_demo,
     "agents": agents_demo,
 }
 REAL_SCENARIOS = {"agents"}
