@@ -10,6 +10,7 @@ A ticket is a Markdown file, its status is the directory it lives in, and one pe
 [![Release](https://img.shields.io/github/v/tag/arconw/Kanbeat?label=release&sort=semver)](https://github.com/arconw/Kanbeat/releases)
 ![Python](https://img.shields.io/badge/python-3.11%E2%80%933.14-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS-lightgrey)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
 [Install](#installation) ·
 [Quick start](#quick-start) ·

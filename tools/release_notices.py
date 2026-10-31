@@ -11,9 +11,9 @@ from packaging.utils import canonicalize_name
 NOTICE_FILE = re.compile(r"(^|/)(LICEN[CS]E|COPYING|NOTICE|AUTHORS)[^/]*$", re.I)
 
 RUNTIME_NOTE = """\
-Kanbeat itself currently has no licence file; the project owner has not
-published licence terms. Nothing in this archive grants rights beyond those in
-the upstream notices below.
+Kanbeat itself is licensed under the Apache License, Version 2.0; the full
+text is in the LICENSE file next to this one. The upstream notices below cover
+the third-party packages bundled in this archive.
 
 This archive is a PyInstaller onedir bundle. It also contains the CPython
 runtime (Python Software Foundation License, https://docs.python.org/3/license.html),
