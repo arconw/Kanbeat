@@ -168,9 +168,7 @@ def read_claude_history(
         else claude_projects_dir(env)
     )
     try:
-        next(base.iterdir())
-    except StopIteration:
-        pass
+        matches, listing_error = _transcript_matches(base, session)
     except FileNotFoundError:
         return _missing(session)
     except NotADirectoryError:
@@ -179,15 +177,46 @@ def read_claude_history(
         return _unreachable(
             session, "Could not list the Claude projects directory", error
         )
-    try:
-        matches = sorted(base.glob(f"*/{session}.jsonl"), key=str)
-    except OSError as error:
+    if listing_error is not None and not matches:
         return _unreachable(
-            session, "Could not list the Claude projects directory", error
+            session, "Could not list a Claude project directory", listing_error
         )
     if not matches:
         return _missing(session)
     return _read_transcript(matches[0], session, ordinal_start)
+
+
+def _transcript_matches(base: Path, session: str) -> tuple[list[Path], OSError | None]:
+    matches: list[Path] = []
+    listing_error: OSError | None = None
+    filename = f"{session}.jsonl"
+    with os.scandir(base) as projects:
+        for project in projects:
+            try:
+                if not project.is_dir():
+                    continue
+            except OSError as error:
+                if listing_error is None:
+                    listing_error = error
+                continue
+            try:
+                with os.scandir(project.path) as files:
+                    for entry in files:
+                        if entry.name != filename:
+                            continue
+                        try:
+                            if entry.is_file():
+                                matches.append(Path(entry.path))
+                        except OSError as error:
+                            if listing_error is None:
+                                listing_error = error
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as error:
+                if listing_error is None:
+                    listing_error = error
+    matches.sort(key=str)
+    return matches, listing_error
 
 
 def _validate_session_id(value: Any) -> str:
