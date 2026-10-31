@@ -197,3 +197,27 @@ def test_watch_gives_up_when_the_supervisor_never_comes_back(capsys):
         asyncio.run(watch_command(send, True, 0, retries=3))
     lines = capsys.readouterr().out.splitlines()
     assert [json.loads(line)["event"] for line in lines] == ["disconnected"]
+
+
+def test_watch_retries_when_the_first_answer_fails_or_is_malformed(capsys):
+    steps = iter(
+        [
+            OSError("not up yet"),
+            {"tickets": "broken"},
+            snapshot(a="todo"),
+            snapshot(a="progress"),
+        ]
+    )
+
+    async def send(request):
+        item = next(steps)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    asyncio.run(watch_command(send, False, 0, rounds=3))
+    assert capsys.readouterr().out.splitlines() == [
+        "supervisor disconnected",
+        "supervisor connected",
+        "moved #a todo -> progress  Title a",
+    ]

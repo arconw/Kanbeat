@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
@@ -117,20 +118,25 @@ class LocalState:
                 write_key(updated, key, value)
         if not rows:
             return None
-        atomic_json(self.config_path, updated)
-        self.config = updated
         last = self.history[-1]["id"] if self.history else 0
         serial = max(int(self.data.get("config_seq", 0)), last) + 1
-        self.data["config_seq"] = serial
         entry = {
             "id": serial,
             "time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "source": source,
             "changes": rows,
         }
-        self.history.append(entry)
-        del self.history[:-HISTORY_LIMIT]
-        atomic_json(self.history_path, {"entries": self.history})
+        history = [*self.history, entry][-HISTORY_LIMIT:]
+        atomic_json(self.history_path, {"entries": history})
+        try:
+            atomic_json(self.config_path, updated)
+        except BaseException:
+            with suppress(OSError):
+                atomic_json(self.history_path, {"entries": self.history})
+            raise
+        self.history = history
+        self.config = updated
+        self.data["config_seq"] = serial
         self.save()
         return entry
 

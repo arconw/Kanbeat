@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from textual.widgets import Button, Collapsible, Static
 
@@ -112,3 +114,17 @@ async def test_history_can_be_loaded_up_to_a_hundred_entries(tmp_path, monkeypat
             pilot, lambda: not app.query_one("#cfg-history-more", Button).display
         )
         assert entries(app)[0] == "cfg-entry-130" and entries(app)[-1] == "cfg-entry-31"
+
+
+@pytest.mark.asyncio
+async def test_overlapping_history_loads_do_not_clash(tmp_path, monkeypatch):
+    supervisor, app = make_app(tmp_path, monkeypatch, 6)
+    async with app.run_test(size=(140, 70)) as pilot:
+        await pilot.pause()
+        await pilot.click("#nav-settings")
+        await until(pilot, lambda: len(entries(app)) == 5)
+        settings = app.query_one("#settings")
+        settings.history_limit = 25
+        await asyncio.gather(*(settings.load_history() for _ in range(4)))
+        assert len(entries(app)) == 6
+        assert len(set(entries(app))) == 6

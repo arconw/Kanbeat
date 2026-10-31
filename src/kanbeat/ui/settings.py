@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from textual.app import ComposeResult
+from textual.css.query import NoMatches
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Collapsible, Select, Static, TextArea
 
@@ -52,6 +54,7 @@ class Settings(VerticalScroll):
         self.history_limit = HISTORY_FIRST
         self.history_seen: int | None = None
         self.history_open: set[int] = set()
+        self.history_lock = asyncio.Lock()
 
     def compose(self) -> ComposeResult:
         yield Static("SETTINGS / PROJECT DEFAULTS", classes="page-heading")
@@ -114,36 +117,42 @@ class Settings(VerticalScroll):
         await self.load_history()
 
     async def load_history(self) -> None:
-        self.history_seen = self.app.snapshot.get("config_seq", 0)
-        result = await self.app.rpc(
-            {"op": "config_history", "limit": self.history_limit}
-        )
-        entries = result["history"]
-        container = self.query_one("#cfg-history", Vertical)
-        await container.remove_children()
-        if not entries:
-            await container.mount(
-                Static("No settings changes yet.", classes="hint", markup=False)
+        async with self.history_lock:
+            self.history_seen = self.app.snapshot.get("config_seq", 0)
+            result = await self.app.rpc(
+                {"op": "config_history", "limit": self.history_limit}
             )
-        await container.mount(
-            *(
-                Collapsible(
-                    Static(
-                        history_details(entry), classes="history-detail", markup=False
-                    ),
-                    Button("Revert", id=f"cfg-revert-{entry['id']}"),
-                    title=history_title(entry),
-                    collapsed=entry["id"] not in self.history_open,
-                    id=f"cfg-entry-{entry['id']}",
+            entries = result["history"]
+            try:
+                container = self.query_one("#cfg-history", Vertical)
+                more = self.query_one("#cfg-history-more", Button)
+            except NoMatches:
+                return
+            await container.remove_children()
+            if not entries:
+                await container.mount(
+                    Static("No settings changes yet.", classes="hint", markup=False)
                 )
-                for entry in entries
+            await container.mount(
+                *(
+                    Collapsible(
+                        Static(
+                            history_details(entry),
+                            classes="history-detail",
+                            markup=False,
+                        ),
+                        Button("Revert", id=f"cfg-revert-{entry['id']}"),
+                        title=history_title(entry),
+                        collapsed=entry["id"] not in self.history_open,
+                        id=f"cfg-entry-{entry['id']}",
+                    )
+                    for entry in entries
+                )
             )
-        )
-        more = self.query_one("#cfg-history-more", Button)
-        more.display = (
-            len(entries) < result["total"] and self.history_limit < HISTORY_MAX
-        )
-        more.label = f"Show more ({len(entries)} of {result['total']})"
+            more.display = (
+                len(entries) < result["total"] and self.history_limit < HISTORY_MAX
+            )
+            more.label = f"Show more ({len(entries)} of {result['total']})"
 
     def on_collapsible_expanded(self, event: Collapsible.Expanded) -> None:
         self.track_entry(event.collapsible, True)

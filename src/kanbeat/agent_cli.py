@@ -200,26 +200,29 @@ async def watch_command(
     rounds: int | None = None,
     retries: int = WATCH_RETRIES,
 ) -> None:
-    before = watch_index(await send({"op": "snapshot"}))
-    done = failures = 0
-    while rounds is None or done < rounds:
-        await asyncio.sleep(interval)
-        done += 1
+    before = None
+    failures = polls = 0
+    while True:
         try:
             after = watch_index(await send({"op": "snapshot"}))
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             failures += 1
             if failures == 1:
                 emit({"event": "disconnected"}, as_json)
             if failures > retries:
                 raise RuntimeError("The supervisor stopped answering") from None
-            continue
-        if failures:
-            emit({"event": "connected"}, as_json)
-            failures = 0
-        for event in diff_events(before, after):
-            emit(event, as_json)
-        before = after
+        else:
+            if failures:
+                emit({"event": "connected"}, as_json)
+                failures = 0
+            if before is not None:
+                for event in diff_events(before, after):
+                    emit(event, as_json)
+            before = after
+        if rounds is not None and polls >= rounds:
+            return
+        polls += 1
+        await asyncio.sleep(interval)
 
 
 KNOWN_KEYS = ", ".join(CONFIG_KEYS)

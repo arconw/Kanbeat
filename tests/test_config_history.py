@@ -318,3 +318,37 @@ def test_the_settings_page_payload_does_not_trip_over_old_out_of_range_values(
     )
     assert supervisor.runtime.config["max_parallel"] == 99
     assert supervisor.runtime.config["global_cp"] == "Shown on the page"
+
+
+def test_a_failed_write_leaves_the_settings_and_the_history_as_they_were(
+    supervisor, monkeypatch
+):
+    import kanbeat.state as state_module
+
+    state = supervisor.runtime
+    state.change_config({"max_parallel": 2}, "cli")
+    real = state_module.atomic_json
+    before = (dict(state.config), [dict(e) for e in state.config_history()])
+
+    def failing_config(path, data):
+        if path == state.config_path:
+            raise OSError("disk full")
+        real(path, data)
+
+    monkeypatch.setattr(state_module, "atomic_json", failing_config)
+    with pytest.raises(OSError, match="disk full"):
+        state.change_config({"max_parallel": 6}, "cli")
+    assert (state.config, state.config_history()) == before
+    assert json.loads(state.history_path.read_text())["entries"] == before[1]
+    assert json.loads(state.config_path.read_text())["max_parallel"] == 2
+
+    def failing_history(path, data):
+        if path == state.history_path:
+            raise OSError("read-only")
+        real(path, data)
+
+    monkeypatch.setattr(state_module, "atomic_json", failing_history)
+    with pytest.raises(OSError, match="read-only"):
+        state.change_config({"max_parallel": 7}, "cli")
+    assert state.config["max_parallel"] == 2
+    assert json.loads(state.config_path.read_text())["max_parallel"] == 2
