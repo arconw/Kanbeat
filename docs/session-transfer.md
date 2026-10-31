@@ -156,7 +156,7 @@ Use the shared host in `src/kanbeat/opencode_host.py`; the server route root is 
 
 The reader in `src/kanbeat/claude_history.py` confirmed the record types and ordering above, and found these additions to the traversal rules:
 
-- A user or assistant record can contain several content blocks and several tool calls or results. The record `uuid` identifies the record, not each block. A single-event record uses the bare `uuid` as the event id; additional events from the same record use `uuid:<event-index>` so event keys stay unique. The file line index remains the position. [CL-FILES, K]
+- A user or assistant record can contain several content blocks and several tool calls or results. The record `uuid` identifies the record, not each block. The first event from a record uses the bare `uuid` as the event id; additional events from the same record use `uuid:<event-index>` so event keys stay unique. The file line index remains the position. [CL-FILES, K]
 - Some user records are injected metadata (`isMeta: true`) and some are compaction summaries (`isCompactSummary: true`). Both are skipped: they are not original conversation. Compaction summaries are reported as an unsupported category. [CL-FILES]
 - `tool_result.content` is a string or an array of `text`, `image` and `tool_reference` blocks. Only text is exported; images and other block types are reported. [CL-FILES]
 - `custom-title` and `agent-name` records also appear in current transcripts and are non-conversation, like the record types already listed. Attachment records include hook output, tool input copies and file changes; they remain non-conversation and are reported as attachments. [CL-FILES]

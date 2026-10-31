@@ -257,7 +257,7 @@ def _read_transcript(
                     complete = False
                     continue
                 for index, draft in enumerate(drafts):
-                    event_id = uuid if len(drafts) == 1 else f"{uuid}:{index}"
+                    event_id = uuid if index == 0 else f"{uuid}:{index}"
                     is_import, import_id = _import_of(draft, ledger)
                     events.append(
                         ConversationEvent(
