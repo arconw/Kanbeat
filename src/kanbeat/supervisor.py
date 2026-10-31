@@ -1358,7 +1358,7 @@ class Supervisor:
                 return {"events": [], "last": self.events.last}
             cursor = whole_number(since, "since", 0, 10**12)
             events = self.events.since(cursor, limit)
-            last = events[-1]["seq"] if events else max(cursor, self.events.last)
+            last = events[-1]["seq"] if events else self.events.last
             return {"events": events, "last": last}
         if str(op).startswith("config_"):
             return self.config_request(request)

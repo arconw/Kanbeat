@@ -174,7 +174,7 @@ async def test_events_are_delivered_in_batches_of_thirty(supervisor):
     await on_screen(supervisor, entry["id"], "READY")
     await asyncio.sleep(0.4)
     await wake(supervisor)
-    await on_screen(supervisor, entry["id"], "ECHO:Kanbeat board events #31 to #40 (")
+    await on_screen(supervisor, entry["id"], "ECHO:#40 created #040")
     assert supervisor.runtime.data["hook"]["cursor"] == 40
 
 
@@ -304,12 +304,12 @@ async def test_a_batch_that_would_not_fit_is_cut_and_the_rest_comes_next(
     await wake(supervisor)
     cursor = supervisor.runtime.data["hook"]["cursor"]
     assert 1 < cursor < 11
-    await on_screen(supervisor, entry["id"], f"to #{cursor} (")
+    await on_screen(supervisor, entry["id"], f"ECHO:#{cursor} created")
     await asyncio.sleep(0.4)
     monkeypatch.setattr(hooks, "PASTE_BYTES", 12000)
     await wake(supervisor)
     assert supervisor.runtime.data["hook"]["cursor"] == 11
-    await on_screen(supervisor, entry["id"], "to #11 (")
+    await on_screen(supervisor, entry["id"], "ECHO:#11 created #011")
 
 
 @pytest.mark.asyncio

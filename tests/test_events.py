@@ -105,6 +105,7 @@ def test_the_events_operation_pages_forward_from_a_cursor(supervisor):
     reply = run(supervisor, op="events", since=2)
     assert [e["seq"] for e in reply["events"]] == [3] and reply["last"] == 3
     assert run(supervisor, op="events", since=3) == {"events": [], "last": 3}
+    assert run(supervisor, op="events", since=40) == {"events": [], "last": 3}
     with pytest.raises(ValueError, match="limit must be between"):
         run(supervisor, op="events", since=0, limit=0)
     with pytest.raises(ValueError, match="since must be a whole number"):
