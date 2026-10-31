@@ -34,8 +34,10 @@ class LocalState:
         self.board = board
         self.path = board.root / ".state" / "supervisor.json"
         self.config_path = board.root / "config.json"
+        self.history_path = board.root / ".state" / "config-history.json"
         self.data = self._read()
         self.config = self._config()
+        self.history = self._read_history()
 
     def _read(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -83,8 +85,24 @@ class LocalState:
             }
         self.change_config(flatten(values), "tui")
 
+    def _read_history(self) -> list[dict[str, Any]]:
+        try:
+            value = json.loads(self.history_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        entries = value.get("entries") if isinstance(value, dict) else None
+        if not isinstance(entries, list):
+            return []
+        return [
+            entry
+            for entry in entries
+            if isinstance(entry, dict)
+            and isinstance(entry.get("id"), int)
+            and isinstance(entry.get("changes"), list)
+        ][-HISTORY_LIMIT:]
+
     def config_history(self) -> list[dict[str, Any]]:
-        return self.data.setdefault("config_history", [])
+        return self.history
 
     def change_config(
         self, changes: dict[str, Any], source: str
@@ -109,9 +127,9 @@ class LocalState:
             "source": source,
             "changes": rows,
         }
-        history = self.config_history()
-        history.append(entry)
-        del history[:-HISTORY_LIMIT]
+        self.history.append(entry)
+        del self.history[:-HISTORY_LIMIT]
+        atomic_json(self.history_path, {"entries": self.history})
         self.save()
         return entry
 

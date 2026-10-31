@@ -165,6 +165,23 @@ def test_command_line_changes_show_a_notice_and_can_be_read_back(supervisor):
     assert len(supervisor.runtime.data["notices"]) == 2
 
 
+def test_the_history_has_its_own_file_that_the_state_does_not_carry(tmp_path):
+    first = Supervisor(tmp_path)
+    first.runtime.change_config({"global_cp": "x" * 20000}, "cli")
+    state_file = tmp_path / ".kanbeat" / ".state"
+    history = json.loads((state_file / "config-history.json").read_text())
+    assert history["entries"][0]["changes"][0]["new"] == "x" * 20000
+    assert "config_history" not in json.loads(
+        (state_file / "supervisor.json").read_text()
+    )
+    (state_file / "config-history.json").write_text("not json")
+    assert Supervisor(tmp_path).runtime.config_history() == []
+    (state_file / "config-history.json").write_text(
+        '{"entries": [1, {"id": 2}, {"id": 3, "changes": []}]}'
+    )
+    assert [e["id"] for e in Supervisor(tmp_path).runtime.config_history()] == [3]
+
+
 def test_the_history_survives_a_restart(tmp_path):
     first = Supervisor(tmp_path)
     first.runtime.change_config({"max_parallel": 2}, "cli")
