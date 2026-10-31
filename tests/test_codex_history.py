@@ -178,6 +178,35 @@ async def test_unsupported_content_is_named_and_never_exported():
 
 
 @pytest.mark.asyncio
+async def test_unknown_item_types_and_unlabelled_output_use_fixed_categories():
+    long_kind = "future-" + "x" * 500
+    result = await read_codex_history(
+        FakeHost(
+            page(
+                entry("future-1", long_kind),
+                entry(
+                    "image-output",
+                    "functionCallOutput",
+                    name="read",
+                    output={"type": "input_image", "image_url": "data:fixture"},
+                ),
+                entry(
+                    "odd-output",
+                    "functionCallOutput",
+                    name="read",
+                    output={"unexpected": "fixture"},
+                ),
+            )
+        ),
+        THREAD,
+    )
+    assert result.available and result.complete
+    assert result.events == ()
+    assert result.unsupported == ("attachments", "unknown content")
+    assert long_kind not in result.unsupported
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error", "outcome"),
     [

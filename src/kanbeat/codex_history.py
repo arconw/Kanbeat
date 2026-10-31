@@ -52,6 +52,7 @@ UNSUPPORTED_COLLAB_CALLS = "collab calls"
 UNSUPPORTED_SLEEP = "sleep"
 UNSUPPORTED_CONTEXT_COMPACTION = "context compaction"
 UNSUPPORTED_WEB_RESULTS = "web search results"
+UNSUPPORTED_UNKNOWN = "unknown content"
 
 MISSING_MESSAGE = "Codex thread no longer exists"
 UNREACHABLE_MESSAGE = "Codex history is temporarily unreachable"
@@ -424,7 +425,7 @@ def _event(
     if kind == "contextCompaction":
         unsupported.add(UNSUPPORTED_CONTEXT_COMPACTION)
         return None
-    unsupported.add(kind)
+    unsupported.add(UNSUPPORTED_UNKNOWN)
     return None
 
 
@@ -567,7 +568,49 @@ def _output_text(value: Any, unsupported: set[str]) -> str:
                     unsupported.add(UNSUPPORTED_ATTACHMENTS)
         return "\n".join(parts)
     if isinstance(value, dict):
-        return _output_text(value.get("content", value.get("text")), unsupported)
+        kind = value.get("type")
+        if kind in (
+            "image",
+            "input_image",
+            "inputImage",
+            "local_image",
+            "localImage",
+            "audio",
+            "input_audio",
+            "inputAudio",
+            "local_audio",
+            "localAudio",
+            "file",
+            "input_file",
+            "inputFile",
+        ) or any(
+            key in value
+            for key in (
+                "image_url",
+                "imageUrl",
+                "audio_url",
+                "audioUrl",
+                "file_id",
+                "fileId",
+            )
+        ):
+            unsupported.add(UNSUPPORTED_ATTACHMENTS)
+            return ""
+        if kind == "encrypted_content" or "encrypted_content" in value:
+            unsupported.add(UNSUPPORTED_ENCRYPTED)
+            return ""
+        content = value.get("content")
+        if content is not None:
+            text = _output_text(content, unsupported)
+            if text:
+                return text
+        text = value.get("text")
+        if isinstance(text, str):
+            return text
+        if content is not None or "text" in value:
+            return ""
+        unsupported.add(UNSUPPORTED_UNKNOWN)
+        return ""
     return ""
 
 
