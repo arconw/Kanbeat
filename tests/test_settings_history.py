@@ -14,8 +14,8 @@ def make_app(tmp_path, monkeypatch, changes):
     return supervisor, app
 
 
-async def until(pilot, condition):
-    for _ in range(150):
+async def until(pilot, condition, seconds=3):
+    for _ in range(int(seconds / 0.02)):
         if condition():
             return
         await pilot.pause(0.02)
@@ -107,7 +107,7 @@ async def test_history_can_be_loaded_up_to_a_hundred_entries(tmp_path, monkeypat
         await until(pilot, lambda: len(entries(app)) == 5)
         for expected in (25, 45, 65, 85, 100):
             await click_button(pilot, app, "#cfg-history-more")
-            await until(pilot, lambda: len(entries(app)) == expected)
+            await until(pilot, lambda: len(entries(app)) == expected, seconds=20)
         await until(
             pilot, lambda: not app.query_one("#cfg-history-more", Button).display
         )

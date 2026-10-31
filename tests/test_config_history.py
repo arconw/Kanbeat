@@ -251,3 +251,26 @@ def test_a_revert_that_keeps_settings_says_so(supervisor):
 def test_bad_numbers_get_a_clear_error(supervisor, request_, message):
     with pytest.raises(ValueError, match=message):
         run(supervisor, **request_)
+
+
+def test_entry_ids_never_repeat_when_the_state_file_is_lost(tmp_path):
+    first = Supervisor(tmp_path)
+    first.runtime.change_config({"max_parallel": 2}, "cli")
+    first.runtime.change_config({"max_parallel": 4}, "cli")
+    (tmp_path / ".kanbeat" / ".state" / "supervisor.json").unlink()
+    again = Supervisor(tmp_path)
+    entry = again.runtime.change_config({"max_parallel": 6}, "cli")
+    assert entry["id"] == 3
+    assert [row["id"] for row in again.runtime.config_history()] == [1, 2, 3]
+
+
+@pytest.mark.parametrize("value", [True, False, 3.9, "3.9", None, "many", [3]])
+def test_max_parallel_rejects_values_that_are_not_whole_numbers(supervisor, value):
+    with pytest.raises(ValueError, match="whole number"):
+        supervisor.runtime.change_config({"max_parallel": value}, "cli")
+
+
+@pytest.mark.parametrize("value,expected", [("3", 3), (4, 4), (5.0, 5), (" 6 ", 6)])
+def test_max_parallel_accepts_whole_numbers(supervisor, value, expected):
+    supervisor.runtime.change_config({"max_parallel": value}, "cli")
+    assert supervisor.runtime.config["max_parallel"] == expected

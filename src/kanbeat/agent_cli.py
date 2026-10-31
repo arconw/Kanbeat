@@ -12,6 +12,7 @@ from .config_keys import CONFIG_KEYS
 Send = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 COLUMN_ORDER = ("backlog", "todo", "progress", "review", "done", "failed", "archive")
 LINE_PREVIEW = 60
+WATCH_RETRIES = 120
 
 
 def one_line(value: Any) -> str:
@@ -176,7 +177,20 @@ def format_event(event: dict[str, Any]) -> str:
             f"moved #{event['ticket']} {event['from']} -> {event['to']}  "
             f"{event['title']}"
         )
+    if kind in ("connected", "disconnected"):
+        return f"supervisor {kind}"
     return f"execution {event['from']} -> {event['to']}"
+
+
+def emit(event: dict[str, Any], as_json: bool) -> None:
+    if as_json:
+        event = {
+            "time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            **event,
+        }
+        print(json.dumps(event, ensure_ascii=False), flush=True)
+    else:
+        print(format_event(event), flush=True)
 
 
 async def watch_command(
@@ -184,22 +198,27 @@ async def watch_command(
     as_json: bool,
     interval: float,
     rounds: int | None = None,
+    retries: int = WATCH_RETRIES,
 ) -> None:
     before = watch_index(await send({"op": "snapshot"}))
-    done = 0
+    done = failures = 0
     while rounds is None or done < rounds:
         await asyncio.sleep(interval)
         done += 1
-        after = watch_index(await send({"op": "snapshot"}))
+        try:
+            after = watch_index(await send({"op": "snapshot"}))
+        except (OSError, RuntimeError):
+            failures += 1
+            if failures == 1:
+                emit({"event": "disconnected"}, as_json)
+            if failures > retries:
+                raise RuntimeError("The supervisor stopped answering") from None
+            continue
+        if failures:
+            emit({"event": "connected"}, as_json)
+            failures = 0
         for event in diff_events(before, after):
-            if as_json:
-                event = {
-                    "time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    **event,
-                }
-                print(json.dumps(event, ensure_ascii=False), flush=True)
-            else:
-                print(format_event(event), flush=True)
+            emit(event, as_json)
         before = after
 
 

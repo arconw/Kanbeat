@@ -157,3 +157,43 @@ def test_watch_prints_one_line_per_event_as_text_or_json(capsys):
     event = json.loads(line)
     assert event["event"] == "moved" and event["to"] == "done"
     assert event["time"].endswith("Z")
+
+
+def test_watch_reports_a_lost_supervisor_and_picks_up_after_it_returns(capsys):
+    calls = iter(
+        [
+            snapshot(a="todo"),
+            RuntimeError("down"),
+            OSError("gone"),
+            snapshot("running", a="progress"),
+        ]
+    )
+
+    async def send(request):
+        item = next(calls)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    asyncio.run(watch_command(send, False, 0, rounds=3))
+    assert capsys.readouterr().out.splitlines() == [
+        "supervisor disconnected",
+        "supervisor connected",
+        "moved #a todo -> progress  Title a",
+        "execution stopped -> running",
+    ]
+
+
+def test_watch_gives_up_when_the_supervisor_never_comes_back(capsys):
+    state = {"calls": 0}
+
+    async def send(request):
+        state["calls"] += 1
+        if state["calls"] > 1:
+            raise OSError("gone")
+        return snapshot(a="todo")
+
+    with pytest.raises(RuntimeError, match="stopped answering"):
+        asyncio.run(watch_command(send, True, 0, retries=3))
+    lines = capsys.readouterr().out.splitlines()
+    assert [json.loads(line)["event"] for line in lines] == ["disconnected"]

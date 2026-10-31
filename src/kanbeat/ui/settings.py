@@ -125,8 +125,8 @@ class Settings(VerticalScroll):
             await container.mount(
                 Static("No settings changes yet.", classes="hint", markup=False)
             )
-        for entry in entries:
-            await container.mount(
+        await container.mount(
+            *(
                 Collapsible(
                     Static(
                         history_details(entry), classes="history-detail", markup=False
@@ -136,7 +136,9 @@ class Settings(VerticalScroll):
                     collapsed=entry["id"] not in self.history_open,
                     id=f"cfg-entry-{entry['id']}",
                 )
+                for entry in entries
             )
+        )
         more = self.query_one("#cfg-history-more", Button)
         more.display = (
             len(entries) < result["total"] and self.history_limit < HISTORY_MAX

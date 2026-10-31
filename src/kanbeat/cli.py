@@ -128,7 +128,7 @@ def run() -> None:
         elif args.command == "watch":
             asyncio.run(
                 _with_supervisor(
-                    project, watch_command, args.json, max(args.interval, 0.2)
+                    project, watch_command, args.json, max(args.interval, 0.5)
                 )
             )
         elif args.command == "list":

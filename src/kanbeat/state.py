@@ -119,7 +119,8 @@ class LocalState:
             return None
         atomic_json(self.config_path, updated)
         self.config = updated
-        serial = int(self.data.get("config_seq", 0)) + 1
+        last = self.history[-1]["id"] if self.history else 0
+        serial = max(int(self.data.get("config_seq", 0)), last) + 1
         self.data["config_seq"] = serial
         entry = {
             "id": serial,

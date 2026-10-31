@@ -60,6 +60,10 @@ def check_key(key: str) -> str:
 def coerce(key: str, value: Any) -> Any:
     check_key(key)
     if key == "max_parallel":
+        if isinstance(value, bool) or (
+            isinstance(value, float) and not value.is_integer()
+        ):
+            raise ValueError("max_parallel must be a whole number")
         try:
             number = int(value)
         except (TypeError, ValueError):
