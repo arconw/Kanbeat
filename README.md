@@ -44,6 +44,7 @@ A ticket is a Markdown file, its status is the directory it lives in, and one pe
 - **Developer, then Review/QA.** A developer turn moves a ticket to Review/QA, where zero or more reviewer slots with isolated contexts approve it or send it back with feedback.
 - **Native terminals and sessions.** Attach to a running harness live, or keep independent sessions in groups. Every session has a native id, so it resumes where it stopped.
 - **Changes panel.** A button next to Detach shows `3 files | +35 -11` and opens the project's uncommitted diff beside the terminal, with a clickable file list, wrapped lines, highlighted words and an `[ ask ]` button that drops a file reference into the open session.
+- **Agents can run the board.** A ticket's status is its folder, and `kanbeat status`, `watch`, `config get/set` (with a history you can revert in Settings) and `INSTRUCTIONS.md` let an agent manage tickets and settings without an extra server.
 - **Transition hooks.** Optionally run a prompt in a fresh native session after each column change Kanbeat makes.
 
 ## Installation

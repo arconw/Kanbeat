@@ -41,6 +41,9 @@ kanbeat new "Implement auth" --column todo --description "Add token validation"
 kanbeat move 001 backlog
 kanbeat play
 kanbeat stop
+kanbeat status [--json]      # execution state and the tickets per column, with blockers
+kanbeat watch [--json]       # one line per ticket event until interrupted
+kanbeat config get [key]     # settings; set, history and revert are described below
 kanbeat --project /path/to/project   # select another project root
 kanbeat --version
 kanbeat shutdown             # exit the supervisor after cleaning up workers
@@ -49,6 +52,16 @@ kanbeat shutdown             # exit the supervisor after cleaning up workers
 The project root is the current working directory by default. `--project` is a top-level option and goes before the subcommand. `kanbeat run` is the explicit form of plain `kanbeat`. `kanbeat supervisor` runs a foreground supervisor for debugging; the normal CLI starts a detached supervisor automatically.
 
 Open a second terminal in the **same** project and launch `kanbeat` again: it connects to the same supervisor. A different project directory starts an independent supervisor. `kanbeat new`, `move`, `play` and `stop` also start the supervisor when none is running.
+
+### Running the board from the command line
+
+A ticket's status is the folder it sits in, so an agent or a script can run the board with plain files and these commands; there is no separate API or MCP server. [`INSTRUCTIONS.md`](#on-disk-layout) in every project tells agents the same.
+
+- `kanbeat status` prints the execution state and the tickets per column; `--json` gives the same as one JSON object (`execution` and `columns`, each ticket with `id`, `title` and the `blocked_by` ids that are not done yet).
+- `kanbeat watch` polls the supervisor once a second (`--interval` changes that) and prints one line per event: `created`, `moved`, `deleted` and `execution` (the board went from stopped to running or back). `--json` prints one object per line with a `time`. It sees every change to the files, including ones made by hand, and keeps no backlog: events that happen while it is not running are not replayed. An agent subscribes by running it as a background process.
+- `kanbeat config get [key]`, `config set <key> <value>`, `config history [--limit N]` and `config revert <id>` read and change `config.json` through the supervisor. A change applies at once and the TUI Settings page follows. The keys are `default_harness`, `max_parallel` (1 to 32), `global_cp`, `developer_prompt`, `reviewer_prompt`, `transition_hook.harness` and `transition_hook.prompt`. A long prompt can come from `--file PATH`, or from standard input with the value `-`. Do not edit `config.json` by hand while the supervisor runs: it reads the file once at start and the Settings page rewrites it from memory.
+- **History.** Every change to the settings, from the TUI, the command line or a revert, is recorded with its old and new values (tickets are not tracked). The last 100 changes are kept in `.kanbeat/.state/config-history.json`, which is written only when a setting changes. A change made from anywhere but the Settings page (the command line, or any other client of the supervisor that does not say it is the Settings page) shows as a notice in the TUI without asking for approval and names the command that undoes it. Reverting restores the recorded old values as they were, even if they would not pass today's checks. Settings has a **History** section that lists the last 5 changes collapsed, unfolds one to show the old and new values, loads 20 more at a time up to 100, and has a Revert button per change. A revert is recorded too, so it can be undone as well.
+- Never edit `.kanbeat/.state/`. It is the supervisor's private runtime state, held in memory and rewritten from there; a hand edit is lost or corrupts it.
 
 `kanbeat shutdown` waits for cleanup without starting an absent supervisor. Add `--yes` to confirm stopping independent sessions. See [Releases](releases.md#update) before changing an installed binary.
 

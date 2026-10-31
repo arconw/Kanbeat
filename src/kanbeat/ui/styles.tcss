@@ -4,6 +4,7 @@ StartupScreen { background: #0b1019; align: center middle; }
 #startup-subtitle { width: auto; height: 1; color: #8d9fb4; text-align: center; }
 #root { height: 100%; width: 100%; }
 Button { height: 1; min-width: 8; border: none; padding: 0 1; }
+Button:focus { text-style: bold; background-tint: #ffffff 10%; }
 #nav {
     height: 2;
     padding: 0 1;
@@ -180,3 +181,8 @@ DiffView.-cover { width: 100%; min-width: 0; layer: overlay; border-left: none; 
 #diff-source:hover { text-style: bold underline; }
 #diff-files { height: 3; padding: 0 1; border-bottom: solid #5a6575; scrollbar-gutter: stable; background: #0f1620; }
 #diff-canvas { height: 1fr; padding: 0 1; scrollbar-gutter: stable; background: #0f1620; }
+#cfg-history { height: auto; }
+#cfg-history Collapsible { padding: 0; margin-bottom: 1; }
+.history-detail { height: auto; padding: 0 1; color: #aebed2; }
+#cfg-history Button { min-width: 10; margin: 1 0 0 1; }
+#cfg-history-more { margin-top: 1; }
