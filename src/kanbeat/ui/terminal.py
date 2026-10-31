@@ -541,6 +541,7 @@ class TerminalPane(TerminalSession, Vertical):
         self.workers.cancel_group(self, "terminal-watch")
         self.reset_terminal(terminal_id)
         self.app.embedded_terminal = terminal_id
+        self.app.update_diff_button()
         self.part("#terminal-heading", Static).update("")
         self.show_hint(DEFAULT_HINT)
         self.part("#terminal-live", Button).disabled = True
@@ -559,6 +560,7 @@ class TerminalPane(TerminalSession, Vertical):
         self.workers.cancel_group(self, "terminal-input")
         self.reset_terminal(None)
         self.app.embedded_terminal = None
+        self.app.update_diff_button()
         self.part("#terminal-heading", Static).update("")
         self.show_body(False)
         self.post_message(self.Closed())

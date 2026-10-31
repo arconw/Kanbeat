@@ -51,9 +51,9 @@ async def terminal(tmp_path, monkeypatch):
         await supervisor.terminals.stop()
 
 
-async def contains(session, text):
+async def contains(session, text, count=1):
     for _ in range(200):
-        if text in session.snapshot()["text"]:
+        if session.snapshot()["text"].count(text) >= count:
             return
         await asyncio.sleep(0.01)
     pytest.fail(f"Missing expected terminal output: {text}")
@@ -535,3 +535,124 @@ def test_ansi_blue_is_light_enough_to_read_on_the_dark_background():
         return 0.2126 * red + 0.7152 * green + 0.0722 * blue
 
     assert luminance(colors[4]) > 0.5
+
+
+def press(key, character, kitty):
+    board = HistoryBoard(width=80, height=24)
+    capture = InputCapture()
+    board.host.attach(capture)
+    if kitty:
+        board.parser.feed("\x1b[>1u")
+    apply_input(
+        SimpleNamespace(board=board),
+        {"kind": "key", "key": key, "character": character},
+    )
+    return capture.data
+
+
+@pytest.mark.parametrize("kitty,expected", [(False, b"\x16"), (True, b"\x1b[118;5u")])
+def test_ctrl_v_reaches_the_harness_so_it_can_paste_an_image(kitty, expected):
+    assert press("ctrl+v", "\x16", kitty) == expected
+
+
+@pytest.mark.parametrize("kitty", [False, True])
+def test_ctrl_enter_is_a_newline_and_enter_still_submits(kitty):
+    assert press("ctrl+enter", "\r", kitty) == b"\n"
+    assert press("enter", "\r", kitty) == b"\r"
+
+
+def test_other_ctrl_letters_keep_their_control_codes():
+    assert press("ctrl+a", "\x01", False) == b"\x01"
+    assert press("ctrl+c", "\x03", False) == b"\x03"
+
+
+def hex_cli(kitty):
+    enable = "\\x1b[>1u" if kitty else ""
+    return f"""
+import os, tty
+tty.setraw(0)
+print('{enable}READY\\r', flush=True)
+while True:
+    print('GOT:' + os.read(0, 4096).hex() + '\\r', flush=True)
+"""
+
+
+@pytest_asyncio.fixture(params=[False, True], ids=["legacy-harness", "kitty-harness"])
+async def keyed_terminal(request, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "kanbeat.terminals.interactive_command",
+        lambda *args: [sys.executable, "-u", "-c", hex_cli(request.param)],
+    )
+    monkeypatch.setattr("kanbeat.supervisor.available", lambda name: True)
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Task")
+    terminal_id = (
+        await supervisor.dispatch({"op": "terminal_open", "ticket": ticket.id})
+    )["terminal"]
+    session = supervisor.terminals.get(terminal_id)
+    await contains(session, "READY")
+    try:
+        yield supervisor, session, request.param
+    finally:
+        await supervisor.terminals.stop()
+
+
+async def press_in_real_pty(supervisor, session, key, character=None):
+    await supervisor.dispatch(
+        {
+            "op": "terminal_input",
+            "terminal": session.id,
+            "events": [{"kind": "key", "key": key, "character": character}],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_ctrl_enter_from_a_kitty_terminal_reaches_a_real_pty_as_a_newline(
+    keyed_terminal,
+):
+    supervisor, session, _ = keyed_terminal
+    await press_in_real_pty(supervisor, session, "ctrl+enter")
+    await contains(session, "GOT:0a")
+    await press_in_real_pty(supervisor, session, "enter", "\r")
+    await contains(session, "GOT:0d")
+
+
+@pytest.mark.asyncio
+async def test_ctrl_v_reaches_a_real_pty_in_both_keyboard_modes(keyed_terminal):
+    supervisor, session, kitty = keyed_terminal
+    await press_in_real_pty(supervisor, session, "ctrl+v")
+    await contains(session, "GOT:" + ("1b5b3131383b3575" if kitty else "16"))
+    await press_in_real_pty(supervisor, session, "ctrl+v", "\x16")
+    await contains(session, "GOT:" + ("1b5b3131383b3575" if kitty else "16"), count=2)
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_is_not_bound_by_kanbeat_and_reaches_the_terminal(
+    keyed_terminal, monkeypatch
+):
+    supervisor, session, kitty = keyed_terminal
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    notices = []
+    monkeypatch.setattr(
+        app, "notify", lambda message, **kwargs: notices.append(message)
+    )
+    async with app.run_test(size=(100, 40)) as pilot:
+        assert "ctrl+c" not in app._bindings.key_to_bindings
+        assert "ctrl+p" not in app._bindings.key_to_bindings
+        assert "ctrl+q" in app._bindings.key_to_bindings
+        await pilot.click("#nav-board")
+        await pilot.pause()
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert notices == []
+        app.push_screen(TerminalView(session.id))
+        await pilot.pause()
+        await pilot.pause(0.3)
+        await pilot.press("ctrl+c")
+        await contains(session, "GOT:" + ("1b5b39393b3575" if kitty else "03"))
+        await pilot.press("ctrl+p")
+        await contains(session, "GOT:" + ("1b5b3131323b3575" if kitty else "10"))
+        assert isinstance(app.screen, TerminalView)
+        assert notices == []

@@ -10,6 +10,7 @@ A ticket is a Markdown file, its status is the directory it lives in, and one pe
 [![Release](https://img.shields.io/github/v/tag/arconw/Kanbeat?label=release&sort=semver)](https://github.com/arconw/Kanbeat/releases)
 ![Python](https://img.shields.io/badge/python-3.11%E2%80%933.14-blue)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS-lightgrey)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
 [Install](#installation) ·
 [Quick start](#quick-start) ·
@@ -42,6 +43,7 @@ A ticket is a Markdown file, its status is the directory it lives in, and one pe
 - **Dependencies and parallel work.** A ticket can say `Blocked by: #002`. Independent tickets run in parallel, blocked ones wait in Todo, and a whole batch drops into Todo and works through itself in order.
 - **Developer, then Review/QA.** A developer turn moves a ticket to Review/QA, where zero or more reviewer slots with isolated contexts approve it or send it back with feedback.
 - **Native terminals and sessions.** Attach to a running harness live, or keep independent sessions in groups. Every session has a native id, so it resumes where it stopped.
+- **Changes panel.** A button next to Detach shows `3 files | +35 -11` and opens the project's uncommitted diff beside the terminal, with a clickable file list, wrapped lines, highlighted words and an `[ ask ]` button that drops a file reference into the open session.
 - **Transition hooks.** Optionally run a prompt in a fresh native session after each column change Kanbeat makes.
 
 ## Installation
@@ -64,7 +66,7 @@ kanbeat --version
 
 The script picks the archive for your system, downloads it and `SHA256SUMS` from the latest published [release](https://github.com/arconw/Kanbeat/releases), verifies the checksum, unpacks it to `~/.local/opt/kanbeat-<version>` and links `~/.local/bin/kanbeat` to it. The archive carries its own Python runtime, so nothing else is needed. The script does not use `sudo` and never edits your shell profile or any project; if `~/.local/bin` is not on your `PATH` it prints the line to add.
 
-- **Pin a version or move the install:** `KANBEAT_VERSION=0.9.1 KANBEAT_PREFIX=/opt/tools sh install.sh`.
+- **Pin a version or move the install:** `KANBEAT_VERSION=0.10.0 KANBEAT_PREFIX=/opt/tools sh install.sh`.
 - **Inspect it first:** `curl -fsSLO https://raw.githubusercontent.com/arconw/Kanbeat/main/install.sh`, read it, then `sh install.sh`. Every release also carries the same script as an asset.
 - **Update:** run `kanbeat shutdown` in each project that has a supervisor, then run the installer again. Older versions stay next to the new one in `~/.local/opt`.
 - **Remove:** `sh install.sh --uninstall` removes the links and the unpacked versions. Your projects' `.kanbeat/` directories are not touched.
@@ -80,7 +82,7 @@ These need **Python 3.11 or newer** and **Git**. Pick one; the tag in the comman
 ```sh
 # once: install uv (https://docs.astral.sh/uv/) and make sure Git is present
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv tool install git+https://github.com/arconw/Kanbeat.git@v0.9.1
+uv tool install git+https://github.com/arconw/Kanbeat.git@v0.10.0
 kanbeat --version
 ```
 
@@ -89,7 +91,7 @@ If `kanbeat` is not found afterwards, run `uv tool update-shell` and reopen the 
 **pipx:**
 
 ```sh
-pipx install git+https://github.com/arconw/Kanbeat.git@v0.9.1
+pipx install git+https://github.com/arconw/Kanbeat.git@v0.10.0
 pipx ensurepath
 ```
 
@@ -97,7 +99,7 @@ pipx ensurepath
 
 ```sh
 python3 -m venv ~/.venvs/kanbeat
-~/.venvs/kanbeat/bin/python -m pip install git+https://github.com/arconw/Kanbeat.git@v0.9.1
+~/.venvs/kanbeat/bin/python -m pip install git+https://github.com/arconw/Kanbeat.git@v0.10.0
 ~/.venvs/kanbeat/bin/kanbeat --help
 ```
 
@@ -116,7 +118,7 @@ Run `~/.venvs/kanbeat/bin/kanbeat`, or add that `bin` directory to your `PATH`.
 Prefer to do it by hand? Download the archive for your system and `SHA256SUMS` from the [Releases page](https://github.com/arconw/Kanbeat/releases):
 
 ```sh
-VERSION=0.9.1
+VERSION=0.10.0
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)  TARGET=linux-x86_64 ;;
   Linux-aarch64) TARGET=linux-arm64 ;;
@@ -261,6 +263,10 @@ flowchart TB
 
 *Sessions: groups on the left, the terminal on the right, switching by click, detaching, and the same session opened from a second client. The process in the terminal is a stand-in shell script, not a vendor CLI.*
 
+![Changes panel: file list, diff stream, ask and source](docs/media/changes.gif)
+
+*The changes panel in a throwaway Git project: the files button with the counts, the panel beside the terminal, jumping through the list, a new file opened from its closed state, `[ ask ]` typing `@src/shapes.py` into the session, and the Staged source. Again a stand-in shell script, not a vendor CLI.*
+
 ![Real Claude Code, Codex, OpenCode and Pi sessions fixing four small bugs](docs/media/agents.gif)
 
 *Real Claude Code, OpenCode, Pi and Codex sessions, started from Sessions and run on the author's own accounts in a throwaway project (four tiny buggy modules, one agent each). The account name, email, plan and usage lines are masked in the recording; everything else is the agents' real output.*
@@ -270,6 +276,7 @@ flowchart TB
 - Besides a harness, a session can be a plain **Terminal** running your shell. Its working directory is remembered: after Stop or a restart, clicking the session opens a fresh shell in the directory you last `cd`-ed to.
 - The session menu has Edit, Stop, **Remove from Kanbeat** (the record goes, the conversation stays in the harness) and **Delete session and history** (also deletes the conversation in the harness).
 - Select text with a plain left drag; it is copied when you release. Shift+drag keeps your terminal's own selection.
+- The **files** button opens the [changes panel](docs/guide.md#changes-panel) on the right: it is closed until you open it, remembers your choice, steps aside when the terminal needs the room, and covers the whole page on a very narrow window.
 - Independent sessions keep running when you detach, close the TUI or press Board Stop. Board task slots can be attached live while the board runs (OpenCode, Codex and Claude; Pi needs Board Stop).
 
 ![Play and Stop with two clients on one supervisor](docs/media/play-stop.gif)

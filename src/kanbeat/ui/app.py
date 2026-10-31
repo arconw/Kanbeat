@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -17,8 +18,10 @@ from textual.geometry import Region
 from textual.widgets import Button, Input, Markdown, Select, Static, TextArea
 from textual.css.query import NoMatches
 
+from ..diff import SOURCES, Changes, collect
 from ..supervisor import request
-from .terminal import TerminalPane, TerminalView
+from .diff import DiffView, summary_markup, summary_tooltip
+from .terminal import TerminalDisplay, TerminalPane, TerminalView
 from .sessions import PopupMenu, SessionsView
 from .session_rows import live_session, worker_is_active, worker_status_label
 from .options import HARNESS
@@ -410,6 +413,37 @@ class ColumnMenu(PopupMenu):
             app.move_by_hand(ticket_id, target)
 
 
+def file_reference(entry: dict[str, Any], path: str) -> str | None:
+    if entry.get("harness") == "shell":
+        return shlex.quote(path)
+    if not any(char.isspace() for char in path):
+        return "@" + path
+    if '"' in path:
+        return None
+    return f'@"{path}"'
+
+
+class SourceMenu(PopupMenu):
+    def __init__(self, current: str, anchor: Region | None = None):
+        super().__init__(anchor)
+        self.current = current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="menu"):
+            yield Static("SOURCE", classes="section-title")
+            for key, label in SOURCES.items():
+                yield Button(label, id="source-" + key, disabled=key == self.current)
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        source = (event.button.id or "")[len("source-") :]
+        app = self.app
+        self.dismiss(None)
+        view = app.diff_view()
+        if view is not None:
+            await view.set_source(source)
+
+
 class NewTicket(BackdropModal[None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="sm"):
@@ -462,11 +496,16 @@ class ArchiveView(VerticalScroll):
 
 
 TABS = ("sessions", "board", "archive", "settings")
+COMPACT_LABEL_WIDTH = 160
+COMPACT_ALWAYS_WIDTH = 100
+DIFF_HIDDEN_KEY = "diff-panel-hidden"
+DIFF_HIDDEN_DEFAULT = True
 
 
-class KanbeatApp(App[None]):
+class KanbeatApp(App[None], inherit_bindings=False):
     TITLE = "Kanbeat"
     CSS_PATH = "styles.tcss"
+    ENABLE_COMMAND_PALETTE = False
     HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (136, "-wide")]
     BINDINGS = [
         ("1", "tab('sessions')", "Sessions"),
@@ -491,6 +530,11 @@ class KanbeatApp(App[None]):
         self._initial_snapshot = True
         self._pulse_bright = False
         self.embedded_terminal: str | None = None
+        self.changes: Changes | None = None
+        self._diff_signature = ""
+        self._diff_updating = False
+        self._diff_seen: str | None = None
+        self.diff_forced = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="root"):
@@ -502,6 +546,7 @@ class KanbeatApp(App[None]):
                     yield Button("Live", id="terminal-live", disabled=True)
                     yield Button("Stop", id="terminal-stop", variant="error")
                     yield Button("Detach", id="terminal-detach")
+                yield Button("files", id="diff-toggle")
                 yield Static("", id="nav-spacer")
                 for tab in TABS:
                     yield Button(tab.title(), id="nav-" + tab, classes="nav-button")
@@ -525,6 +570,7 @@ class KanbeatApp(App[None]):
                 self.pop_screen()
             self.set_interval(1.5, self.refresh_snapshot)
             self.set_interval(0.8, self.pulse_working)
+            self.set_interval(2.0, self.refresh_changes)
 
     def pulse_working(self) -> None:
         """Pulse only confirmed running workers, without rebuilding the board."""
@@ -534,6 +580,11 @@ class KanbeatApp(App[None]):
             return
         for label in self.screen.query(".agent-working"):
             label.set_class(bright, "agent-pulse")
+        try:
+            button = self.query_one("#diff-toggle", Button)
+        except NoMatches:
+            return
+        button.set_class(bright and self.diff_unseen(), "diff-pulse")
 
     async def rpc(self, message: dict[str, Any]) -> dict[str, Any]:
         return await request(self.project, message)
@@ -719,6 +770,175 @@ class KanbeatApp(App[None]):
                 target.focus(scroll_visible=False)
         for tab in TABS:
             self.query_one("#nav-" + tab, Button).set_class(tab == self.tab, "selected")
+        self.query_one("#diff-toggle", Button).display = self.tab == "sessions"
+        if self.tab == "sessions":
+            self.call_later(self.refresh_changes)
+
+    def on_resize(self) -> None:
+        self.update_diff_button()
+
+    def diff_view(self) -> DiffView | None:
+        if not self.screen_stack:
+            return None
+        return next(iter(self.screen_stack[0].query(DiffView)), None)
+
+    def compact_diff_label(self) -> bool:
+        width = self.size.width
+        if width < COMPACT_ALWAYS_WIDTH:
+            return True
+        return self.embedded_terminal is not None and width < COMPACT_LABEL_WIDTH
+
+    def diff_hidden(self) -> bool:
+        return self.preferences.is_collapsed(DIFF_HIDDEN_KEY, DIFF_HIDDEN_DEFAULT)
+
+    def diff_unseen(self) -> bool:
+        changes = self.changes
+        view = self.diff_view()
+        if changes is None or not changes.available or not changes.files:
+            return False
+        if view is not None and view.display:
+            return False
+        return self._diff_seen not in (None, changes.signature)
+
+    def diff_mode(self, fits: bool) -> str:
+        if fits:
+            return "" if self.diff_hidden() else "side"
+        return "cover" if self.diff_forced else ""
+
+    def sessions_page(self) -> SessionsView | None:
+        if not self.screen_stack:
+            return None
+        return next(iter(self.screen_stack[0].query(SessionsView)), None)
+
+    def apply_diff_layout(self) -> None:
+        page = self.sessions_page()
+        view = self.diff_view()
+        if page is None or view is None or not page.size.width:
+            return
+        fits = page.diff_fits()
+        if fits:
+            self.diff_forced = False
+        mode = self.diff_mode(fits)
+        view.set_class(mode == "cover", "-cover")
+        if bool(mode) == view.display:
+            return
+        if mode:
+            view.display = True
+            self.call_later(self.show_diff, False)
+        else:
+            view.hide()
+            self.update_diff_button()
+
+    def mark_diff_seen(self) -> None:
+        if self.changes is not None and self.changes.available:
+            self._diff_seen = self.changes.signature
+
+    def update_diff_button(self) -> None:
+        try:
+            button = self.query_one("#diff-toggle", Button)
+        except NoMatches:
+            return
+        button.label = summary_markup(self.changes, self.compact_diff_label())
+        button.tooltip = summary_tooltip(self.changes)
+        button.refresh(layout=True)
+        view = self.diff_view()
+        button.set_class(view is not None and view.display, "selected")
+        unseen = self.diff_unseen()
+        button.set_class(unseen, "diff-unseen")
+        if not unseen:
+            button.remove_class("diff-pulse")
+
+    async def refresh_changes(self, force: bool = False) -> None:
+        if self._diff_updating or not self.is_mounted or self.tab != "sessions":
+            return
+        self._diff_updating = True
+        try:
+            changes = await collect(self.project, "" if force else self._diff_signature)
+            if changes.failed:
+                return
+            if not changes.unchanged:
+                self._diff_signature = changes.signature
+                self.changes = changes
+            view = self.diff_view()
+            visible = view is not None and view.display
+            if visible or self._diff_seen is None:
+                self.mark_diff_seen()
+            self.update_diff_button()
+            if visible:
+                if view.source != "current":
+                    await view.poll(force=force)
+                elif not changes.unchanged:
+                    await view.show_changes(changes)
+        finally:
+            self._diff_updating = False
+
+    def choose_diff_source(self, anchor: Region) -> None:
+        view = self.diff_view()
+        if view is not None:
+            self.push_screen(SourceMenu(view.source, anchor))
+
+    def ask_about(self, path: str) -> None:
+        terminal_id = self.embedded_terminal
+        pane = next(iter(self.screen_stack[0].query(TerminalPane)), None)
+        if terminal_id is None or pane is None:
+            self.notify("Open a session first, then press ask", severity="warning")
+            return
+        if any(ord(char) < 32 or ord(char) == 127 for char in path):
+            self.notify(
+                "This file name has control characters, so it is not inserted",
+                severity="warning",
+            )
+            return
+        entry = self.snapshot.get("terminals", {}).get(terminal_id) or {}
+        reference = file_reference(entry, path)
+        if reference is None:
+            self.notify(
+                "This file name has spaces and quotes, so it cannot be referenced safely",
+                severity="warning",
+            )
+            return
+        self.run_worker(pane.send_input({"kind": "paste", "text": reference + " "}))
+        pane.query_one(TerminalDisplay).focus()
+
+    async def show_diff(self, focus: bool = False) -> None:
+        view = self.diff_view()
+        if view is None:
+            return
+        await view.open(self.changes, focus)
+        self.mark_diff_seen()
+        self.update_diff_button()
+        self.call_later(self.refresh_changes, True)
+
+    def remember_diff_hidden(self, hidden: bool) -> None:
+        try:
+            self.preferences.remember(DIFF_HIDDEN_KEY, hidden)
+        except OSError as exc:
+            self.notify(f"Could not save the panel choice: {exc}", severity="warning")
+
+    def hide_diff(self) -> None:
+        view = self.diff_view()
+        if view is None:
+            return
+        if not view.has_class("-cover"):
+            self.remember_diff_hidden(True)
+        self.diff_forced = False
+        view.hide()
+        self.update_diff_button()
+
+    async def toggle_diff(self) -> None:
+        view = self.diff_view()
+        page = self.sessions_page()
+        if view is None or page is None:
+            return
+        if view.display:
+            self.hide_diff()
+            return
+        self.remember_diff_hidden(False)
+        fits = page.diff_fits()
+        self.diff_forced = not fits
+        view.set_class(not fits, "-cover")
+        view.display = True
+        await self.show_diff(True)
 
     def action_tab(self, tab: str) -> None:
         self.tab = tab
@@ -734,7 +954,9 @@ class KanbeatApp(App[None]):
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         name = event.button.id or ""
-        if name.startswith("nav-"):
+        if name == "diff-toggle":
+            await self.toggle_diff()
+        elif name.startswith("nav-"):
             self.tab = name[4:]
             await self.render_page()
         elif name.startswith("terminal-"):

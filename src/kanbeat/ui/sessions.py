@@ -11,11 +11,15 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from .modal import BackdropModal
 from textual.widgets import Button, Collapsible, Input, Select, Static, TextArea
 
+from .diff import DiffView
 from .options import HARNESS_LABELS, SESSION_HARNESS
 from .terminal import TerminalPane
 from .session_rows import SessionRow, SessionSection, TaskSessions
 
 EMBED_MIN_WIDTH = 114
+SIDE_MIN_WIDTH = 34
+DIFF_MIN_WIDTH = 44
+TERMINAL_MIN_WIDTH = 60
 SHELL = "shell"
 
 
@@ -501,6 +505,7 @@ class SessionsView(Horizontal):
                 yield Button("New group", id="new-group")
                 yield Button("New session", id="new-session", variant="primary")
         yield TerminalPane()
+        yield DiffView(self.app.project)
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "new-group":
@@ -520,9 +525,19 @@ class SessionsView(Horizontal):
             row.set_class(row.entry["id"] == terminal_id, "active-session")
 
     async def on_mount(self) -> None:
+        self.app.apply_diff_layout()
         terminal_id = self.app.embedded_terminal
         if terminal_id in self.snapshot.get("terminals", {}):
             self.show_terminal(terminal_id)
+
+    def diff_fits(self) -> bool:
+        page = self.size.width
+        side = max(SIDE_MIN_WIDTH, page * 20 // 100)
+        panel = max(DIFF_MIN_WIDTH, page * 30 // 100)
+        return page - side - panel >= TERMINAL_MIN_WIDTH
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.app.apply_diff_layout()
 
     @property
     def can_embed(self) -> bool:
