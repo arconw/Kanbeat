@@ -74,7 +74,7 @@ Use the shared app-server host in `src/kanbeat/codex_host.py`. The v2 protocol e
 Use the shared host in `src/kanbeat/opencode_host.py`; the server route root is `/session`. [O-SRC]
 
 - `GET /session/{sessionID}/message` returns `SessionV1.WithParts[]` (`{info, parts}`) in chronological order. With no `limit`, the server pages internally in blocks of 50 and returns the whole session; with `limit`, it returns the newest `limit` messages in chronological order and exposes an older-page cursor through the `X-Next-Cursor` response header and a `Link` header. [O-SRC]
-- `before` is an opaque cursor and is only valid together with `limit`. The cursor is a base64url JSON object containing the oldest message id and creation time of the returned page. [O-SRC]
+- `before` is an opaque cursor and is only valid together with `limit`. The cursor is a base64url JSON object containing the oldest message id and creation time of the returned page. A full read starts with the newest page, follows `X-Next-Cursor` while it is present and reassembles the pages oldest-first. An existing session with no messages returns an empty list, not 404; only a missing session returns 404. [O-SRC]
 - Parts carry the conversation: `text`, `reasoning`, `file`, `tool`, `step-start`, `step-finish`, `snapshot`, `patch`, `agent`, `retry`, `compaction` and `subtask`. Tool parts contain `callID`, `tool`, and a state with `status`, `input`, and for completed calls `output`, `title`, `metadata` and attachments. [O-SRC]
 - `time.completed` on an assistant message is not a run-completion signal. `SessionProcessor.cleanup` sets it at the end of every LLM step, and a message can get it from a completed subtask tool or shell command while the loop continues. The run exits only when the latest assistant message has `finish` set, `finish` is not `tool-calls` or `unknown`, it has no tool part that is neither provider-executed (`metadata.providerExecuted`) nor an orphaned interrupted tool, and its `parentID` is the latest user message id; a compaction stop or an error can also end it. The runner then goes idle, which removes the session from the status map. [O-SRC]
 - A synchronous `POST /session/{id}/message` returns after that loop; `prompt_async` returns as soon as the prompt is accepted. For async delivery, confirm completion from the message state and from the session's absence in `GET /session/status`: `SessionStatus.list` omits idle sessions and `SessionStatus.get` returns `idle` for an absent id. Absence from the status map is not evidence that the session is missing; use `GET /session/{id}` for existence. Do not use `time.completed` alone. [O-SRC]
@@ -82,7 +82,7 @@ Use the shared host in `src/kanbeat/opencode_host.py`; the server route root is 
 
 ### 2. Identifiers and ordering
 
-- Every message has an `id` beginning with `msg`; every part has an `id` beginning with `prt`. Both are stable. [O-SRC]
+- Every message has an `id` beginning with `msg`; every part has an `id` beginning with `prt`. Both are stable. A message can hold several parts, so the message id identifies the message, not every normalized event. The reader uses the message id for the message's first event and stable part ids for additional text and tool events. [O-SRC, K]
 - Message pages are ordered by `time_created` and then `id`; the page is reversed before it is returned, so the API result is chronological even though the database query is newest-first. Use the returned cursor for older pages rather than reimplementing the comparison. [O-SRC]
 - Sessions are persisted in `opencode.db`; the `message` and `part` tables store the JSON payload with `id`, `session_id`, `time_created` and `time_updated`. Do not read the database directly when the HTTP API is available. [O-DB]
 
@@ -103,6 +103,7 @@ Use the shared host in `src/kanbeat/opencode_host.py`; the server route root is 
 
 - Reasoning parts are stored, but hidden reasoning and provider signatures must not be transferred; report reasoning as a category rather than copying it. [O-SRC]
 - File parts and tool attachments are URLs, data URLs or base64 payloads. Export a reference or a filename, not binary content, and report attachments. [O-SRC]
+- Text parts may set `synthetic` or `ignored`. Both are harness bookkeeping and must be skipped rather than exported as conversation. [O-SRC]
 - `snapshot`, `patch`, `step-start`, `step-finish` and `retry` parts describe harness state or provider attempts, not conversation. `compaction` and `subtask` parts are context bookkeeping. Report them by type if they matter. [O-SRC]
 - A plugin can transform messages through the `chat.message` hook; the core itself does not rewrite text parts. Do not rely on marker survival if a third-party plugin is installed. [O-SRC]
 
@@ -198,7 +199,7 @@ Use the shared host in `src/kanbeat/opencode_host.py`; the server route root is 
 ## What later tickets should rely on
 
 - **Codex:** `thread/items/list` with item ids and `turn/start` with `clientUserMessageId`; treat `thread/inject_items` as an unverified silent alternative. [C-SCHEMA, C-SRC, C-TEST]
-- **OpenCode:** `GET /session/{id}/message` paging with `limit`/`before`; `POST /session/{id}/message` with `messageID`, `noReply: true`, a `system` note and a text part. [O-SRC]
+- **OpenCode:** `GET /session/{id}/message` paging with `limit`/`before`; the reader in `src/kanbeat/opencode_history.py` distinguishes available, missing and unreachable history; `POST /session/{id}/message` with `messageID`, `noReply: true`, a `system` note and a text part. [O-SRC, K]
 - **Claude:** transcript records with `uuid`/`parentUuid`; delivery through `claude --resume … -p` and a context file; recognize imports by marker and then record the user record's `uuid`. [CL-FILES, CLI]
 - **Pi:** session entries with `id`/`parentId`; delivery through the RPC `prompt` or `pi -p --session-id`; recognize imports by marker and then record the user entry's `id`. [P-DOCS]
 
