@@ -303,6 +303,37 @@ def test_review_header_mismatch_and_absence_are_missing(tmp_path):
     assert absent.missing and not absent.events
 
 
+def test_review_suffix_match_with_another_header_id_is_not_used(tmp_path):
+    longer = f"b_{SESSION}"
+    sessions, target = write_session(
+        tmp_path,
+        [
+            header(),
+            message("target-one", None, {"role": "user", "content": "Target"}),
+        ],
+    )
+    _, other = write_session(
+        tmp_path,
+        [
+            header(session_id=longer),
+            message("other-one", None, {"role": "user", "content": "Other"}),
+        ],
+        session_id=longer,
+    )
+    assert other.name.endswith(f"_{SESSION}.jsonl")
+
+    result = pi_history.read_pi_history(SESSION, sessions_dir=sessions)
+
+    assert result.available and result.complete
+    assert result.session_file == target
+    assert [event.event_id for event in result.events] == ["target-one"]
+
+    target.unlink()
+    absent = pi_history.read_pi_history(SESSION, sessions_dir=sessions)
+
+    assert absent.missing and not absent.events
+
+
 def test_review_file_change_during_read_is_incomplete(tmp_path, monkeypatch):
     records = [
         header(),
