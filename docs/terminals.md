@@ -63,15 +63,28 @@ Custom groups and session-management controls are implemented in
 
 Sessions shows each named group and Ungrouped as a collapsible section, matching Tasks, with its session count in the heading. Collapse choices, including Tasks, survive status refreshes, tab navigation and restarting the client. Choices are stored locally per project in `.kanbeat/.state/ui.json`; currently open clients keep their own view, while a newly opened client loads the last saved choices.
 
-Sessions provides New group and New session. Choose a native harness, a group,
-an optional initial prompt and, if available, an explicit native session ID.
-Independent sessions can start while the board is running. Board Play/Stop never
-stops them, and removing a board ticket does not affect them.
+Sessions provides New group and New session. Choose a native harness or a plain
+**Terminal**, a group, and for a harness an optional initial prompt and, if available,
+an explicit native session ID. Independent sessions can start while the board is
+running. Board Play/Stop never stops them, and removing a board ticket does not
+affect them.
 
-Actions lets you rename or move a session, explicitly stop it, restart it, or
-remove a stopped local record. Stop and removal require confirmation. Group
-removal requires an empty group; first move or remove its session records.
-Removing records does not delete native CLI history or retained local output logs.
+A **Terminal** session runs your `$SHELL` (or `/bin/sh`) in the project directory.
+The supervisor tracks the shell's current directory (from `/proc` on Linux, `lsof`
+on macOS) and stores it in `.kanbeat/.state/supervisor.json`, so after Stop or a
+supervisor restart, clicking the session starts a fresh shell in the directory you
+last `cd`-ed to. Shell history, variables and running programs are not restored.
+A saved directory that no longer exists falls back to the project directory. Stop
+hangs up the shell first, then escalates like any other session. Terminals exist only
+in Sessions: board task slots and hooks always use a native harness.
+
+Clicking a stopped session resumes it. The session menu offers Edit (title, group and,
+for harnesses, the native session ID), Stop, Delete (removes the workspace record) and
+Delete completely (also removes the native Codex, OpenCode, Claude or Pi session).
+Stop interrupts the process at once without confirmation; deleting asks for
+confirmation. Group removal requires an empty group; first move or remove its
+session records. Deleting a record does not remove native CLI history unless you
+choose Delete completely, and retained local output logs stay.
 
 Groups, session IDs, titles, prompts, ownership and known native IDs persist in
 `.state`. Restart after supervisor recovery reuses the same local session ID;

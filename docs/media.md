@@ -11,20 +11,38 @@ The GIFs in `docs/media/` are captured from the real Kanbeat TUI by [`tools/reco
 
 ## What is not real, and why
 
-- **No coding CLI and no model is ever started.** The supervisor of each demo runs with a restricted `PATH` that contains only a plain shell script named `codex`, `claude`, `opencode` and `pi`. That script prints a banner and echoes the lines you type. The banner is visible in the terminal frames. These recordings are not evidence of live vendor CLI execution; compatibility with real Codex CLI, Claude Code, OpenCode and Pi is still to be validated.
-- **Tickets are moved by hand.** In [`board.gif`](media/board.gif) a person moves the card through Progress and Review/QA to Done with the ticket actions dialog while the board is stopped. No agent does that work.
+- **Three of the four recordings start no coding CLI and no model.** The supervisor of each of those demos runs with a restricted `PATH` that contains only a plain shell script named `codex`, `claude`, `opencode` and `pi`. That script prints a banner and echoes the lines you type. The banner is visible in the terminal frames. Those recordings are not evidence of live vendor CLI execution.
+- **Tickets are moved by hand.** In [`board.gif`](media/board.gif) a person moves the card through Progress and Review/QA to Done with the card buttons (each manual step asks for confirmation) while the board is stopped. No agent does that work.
 - **Play/Stop never dispatches.** In [`play-stop.gif`](media/play-stop.gif) the Todo column is empty, so pressing Play starts nothing. The recorder verifies that no worker log or runtime entry exists afterwards.
 - **Time is compressed.** Frames are taken after each action settles; waiting times such as the 1.5 s refresh poll are not shown in real time.
 - **One path is rewritten.** The status bar shows the project path. In the frames it is replaced by `~/demo-project` so the recording machine's directories are not published. The recorder also refuses to render any frame containing the home directory, the user name or the demo work directory.
-- The ticket viewer and a few cards show real layout quirks of the current TUI (for example the wrapped `···` card menu). They are left as they are.
 
 ## The recordings
 
 | File | Shows |
 | --- | --- |
-| `board.gif` | Creating tickets from the TUI and from `kanbeat new` in a second terminal, ticket actions, manual moves to Done. |
+| `board.gif` | Creating tickets from the TUI and from `kanbeat new` in a second terminal, the card strip and column menu, dependencies, manual moves to Done. |
 | `play-stop.gif` | Play and Stop, task terminals disabled while the board runs, a second client joining, the first client closing without stopping anything. |
+| `agents.gif` | **Real** Claude Code, OpenCode, Pi and Codex sessions, one per tiny buggy module, each fixing its bug and running its test in a throwaway git project, switching between them in Sessions and detaching. |
 | `sessions.gif` | Session groups, a new independent session, the supervisor-owned terminal, detaching, Board Play/Stop not touching the session, a second client reopening it, confirmed stop and record removal. |
+
+## The real-agent recording
+
+`agents.gif` is different: it runs the installed `claude`, `opencode`, `pi` and `codex` CLIs with the recording machine's own logins and models, so it costs real usage and its content is not deterministic. The recorder creates a throwaway git project with four small modules that have a one-line bug and a unit test, opens one session per agent, pastes a short request ("fix the bug and run the test"), waits until the module has changed and the screen is quiet, and asserts that every module was changed. Trust prompts are answered automatically.
+
+Because real UIs print account details, the recorder rewrites and polices frames:
+
+- `--mask TEXT=REPLACEMENT` rewrites text in every frame (the project path and the home directory form of it are always replaced by `~/demo-project`).
+- `--forbid TEXT` makes the recorder refuse to render any frame that still contains `TEXT`. The home directory, the user name and the work directory are always forbidden.
+- The published GIF masks the account email, the plan name, the usage-limit banner and the list of installed skills, and forbids the author's name and email tokens. Every frame was also inspected by eye before publishing.
+- `--agent claude` (repeatable) records only some of the agents.
+
+```sh
+python tools/record_demos.py --workdir .tmp/demo --output .tmp/media --only agents \
+    --mask "you@example.org=dev@example.com" --forbid you --forbid example.org
+```
+
+Real recordings can stall on an unexpected prompt or fail if a model does not change the file; the recorder then saves the partial recording as `agents-failed.gif` in the work directory.
 
 ## Reproducing them
 
@@ -35,8 +53,8 @@ python -m pip install -e . pillow
 python tools/record_demos.py --workdir .tmp/demo --output docs/media
 ```
 
-`--only board`, `--only play-stop` or `--only sessions` records a single GIF. The work directory must not exist yet or must have been created by the recorder (it refuses to reuse any other directory); demo projects inside it are replaced on each run. The recorder stops every supervisor it started and fails if any supervisor it started is still running. Session Stop is also asserted against its runtime status.
+`--only board`, `--only play-stop`, `--only sessions` or `--only agents` records a single GIF (the default run records the first three; `agents` needs the real CLIs). The work directory must not exist yet or must have been created by the recorder (it refuses to reuse any other directory); demo projects inside it are replaced on each run. The recorder stops every supervisor it started and fails if any supervisor it started is still running. Session Stop is also asserted against its runtime status.
 
 The recorder unsets `NO_COLOR` for its own process; with `NO_COLOR` set, Textual would render the frames without colours.
 
-Recordings use a 128 by 30 cell terminal (128 by 46 for the sessions demo). Smaller widths make the six board columns scroll horizontally.
+Recordings use a 128 by 30 cell terminal (196 by 32 for the board demo, because the six board columns are at least 30 columns wide each, and 128 by 46 for the sessions demo). In the play/stop demo the board is narrower than six columns and scrolls sideways.

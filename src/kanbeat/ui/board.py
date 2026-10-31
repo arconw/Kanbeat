@@ -32,7 +32,7 @@ def link_summary(ticket: dict[str, Any]) -> str:
     parts = []
     blockers = waiting_links(ticket, "blocked_by")
     if blockers:
-        parts.append("⛔ blocked by " + " ".join(blockers))
+        parts.append("blocked by " + " ".join(blockers))
     blocked = waiting_links(ticket, "blocks")
     if blocked:
         parts.append("→ blocks " + " ".join(blocked))

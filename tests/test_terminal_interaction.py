@@ -521,3 +521,17 @@ async def test_terminal_wait_rejects_bad_numeric_fields(terminal, fields):
                 **fields,
             }
         )
+
+
+def test_ansi_blue_is_light_enough_to_read_on_the_dark_background():
+    display = TerminalDisplay()
+    colors = display.board.palette.colors
+    assert colors[4] == (95, 175, 255)
+    assert colors[12] == (135, 195, 255)
+    assert colors[1] == (205, 0, 0)
+
+    def luminance(rgb):
+        red, green, blue = (value / 255 for value in rgb)
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+    assert luminance(colors[4]) > 0.5

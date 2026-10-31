@@ -11,11 +11,12 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from .modal import BackdropModal
 from textual.widgets import Button, Collapsible, Input, Select, Static, TextArea
 
-from .options import HARNESS
+from .options import SESSION_HARNESS
 from .terminal import TerminalPane
 from .session_rows import SessionRow, SessionSection, TaskSessions
 
 EMBED_MIN_WIDTH = 114
+SHELL = "shell"
 
 
 def group_title(group, count):
@@ -79,21 +80,22 @@ class NewSession(BackdropModal[None]):
                 allow_blank=False,
                 id="session-group",
             )
-            yield Static("Native harness", classes="field")
+            yield Static("Native harness or a plain terminal", classes="field")
             with Horizontal(classes="field-row"):
                 yield Select(
-                    HARNESS,
+                    SESSION_HARNESS,
                     value=self.app.snapshot["config"]["default_harness"],
                     allow_blank=False,
                     id="session-harness",
                 )
                 yield Button("Open", id="open-harness")
-            yield Static(
-                "Native session ID (optional; empty starts fresh)", classes="field"
-            )
-            yield Input(id="session-native-id")
-            yield Static("Initial prompt (optional)", classes="field")
-            yield TextArea(id="session-prompt")
+            with Vertical(id="session-agent-fields"):
+                yield Static(
+                    "Native session ID (optional; empty starts fresh)", classes="field"
+                )
+                yield Input(id="session-native-id")
+                yield Static("Initial prompt (optional)", classes="field")
+                yield TextArea(id="session-prompt")
             yield Static(
                 "Independent sessions keep running on Board Stop and when you detach.",
                 classes="hint",
@@ -101,6 +103,12 @@ class NewSession(BackdropModal[None]):
             with Horizontal(classes="modal-actions"):
                 yield Button("Cancel", id="cancel")
                 yield Button("Start", id="session-start", variant="primary")
+
+    @on(Select.Changed, "#session-harness")
+    def show_harness_fields(self, event: Select.Changed) -> None:
+        agent = event.value != SHELL
+        self.query_one("#session-agent-fields").display = agent
+        self.query_one("#open-harness", Button).display = agent
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
@@ -116,16 +124,24 @@ class NewSession(BackdropModal[None]):
             self.starting = True
             event.button.disabled = True
             try:
+                harness = self.query_one("#session-harness", Select).value
+                agent = harness != SHELL
                 result = await self.app.rpc(
                     {
                         "op": "session_create",
                         "title": self.query_one("#session-title", Input).value,
-                        "harness": self.query_one("#session-harness", Select).value,
+                        "harness": harness,
                         "group": self.query_one("#session-group", Select).value,
-                        "native_session": self.query_one(
-                            "#session-native-id", Input
-                        ).value,
-                        "prompt": self.query_one("#session-prompt", TextArea).text,
+                        "native_session": (
+                            self.query_one("#session-native-id", Input).value
+                            if agent
+                            else ""
+                        ),
+                        "prompt": (
+                            self.query_one("#session-prompt", TextArea).text
+                            if agent
+                            else ""
+                        ),
                     }
                 )
                 app = self.app
@@ -216,12 +232,13 @@ class SessionEdit(BackdropModal[None]):
                 allow_blank=False,
                 id="session-group",
             )
-            yield Static("Native session ID (used to resume)", classes="field")
-            yield Input(
-                self.entry.get("native_session") or "",
-                placeholder="Empty: the next start creates a new session",
-                id="session-native-id",
-            )
+            if self.entry.get("harness") != SHELL:
+                yield Static("Native session ID (used to resume)", classes="field")
+                yield Input(
+                    self.entry.get("native_session") or "",
+                    placeholder="Empty: the next start creates a new session",
+                    id="session-native-id",
+                )
             with Horizontal(classes="modal-actions"):
                 yield Button("Cancel", id="cancel")
                 yield Button("Save", id="session-save", variant="primary")
@@ -237,9 +254,11 @@ class SessionEdit(BackdropModal[None]):
                     "terminal": self.entry["id"],
                     "title": self.query_one("#session-title", Input).value,
                     "group": self.query_one("#session-group", Select).value,
-                    "native_session": self.query_one(
-                        "#session-native-id", Input
-                    ).value.strip(),
+                    "native_session": (
+                        self.query_one("#session-native-id", Input).value.strip()
+                        if self.entry.get("harness") != SHELL
+                        else ""
+                    ),
                 }
             ):
                 self.dismiss(None)

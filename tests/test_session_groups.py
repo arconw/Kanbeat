@@ -991,3 +991,40 @@ async def test_fixed_width_menu_buttons_render_exactly_their_width(
                 assert [cell_len(strip.text) for strip in strips] == [width]
     finally:
         await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_new_session_can_be_a_plain_terminal(supervisor, monkeypatch):
+    from kanbeat.ui.sessions import SessionEdit
+
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    try:
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.3)
+            await pilot.click("#new-session")
+            await pilot.pause(0.3)
+            assert app.screen.query_one("#session-agent-fields").display
+            assert app.screen.query_one("#open-harness").display
+            await pilot.click("#session-title")
+            await pilot.press(*"Work")
+            app.screen.query_one("#session-harness", Select).value = "shell"
+            await pilot.pause(0.3)
+            assert not app.screen.query_one("#session-agent-fields").display
+            assert not app.screen.query_one("#open-harness").display
+            await pilot.click("#session-start")
+            await pilot.pause(0.8)
+            entry = next(iter(supervisor.terminals.entries.values()))
+            assert entry["harness"] == "shell"
+            assert not entry.get("native_session") and not entry.get("prompt")
+            row = app.query_one("#open-session-" + entry["id"], Button)
+            assert str(row.label) == "Work / terminal"
+            await pilot.click("#session-actions-" + entry["id"])
+            await pilot.pause(0.3)
+            assert not app.screen.query("#session-remove-all")
+            await pilot.click("#session-edit")
+            await pilot.pause(0.3)
+            assert isinstance(app.screen, SessionEdit)
+            assert not app.screen.query("#session-native-id")
+    finally:
+        await supervisor.terminals.stop()

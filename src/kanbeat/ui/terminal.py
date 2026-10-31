@@ -14,9 +14,13 @@ from textual.message import Message
 from textual.widget import Widget
 from .modal import BackdropModal
 from textual.widgets import Button, Static
+from bittty import Board
 from textual_tty.monitor import Monitor
 
 from .terminal_input import TerminalInput
+
+
+READABLE_BLUES = {4: (95, 175, 255), 12: (135, 195, 255)}
 
 
 class TerminalDisplay(Monitor):
@@ -24,6 +28,9 @@ class TerminalDisplay(Monitor):
     ALLOW_SELECT = False
 
     def __init__(self, *args, **kwargs):
+        kwargs.setdefault(
+            "board", Board(width=80, height=24, palette_overrides=READABLE_BLUES)
+        )
         super().__init__(*args, **kwargs)
         self.drag_anchor: tuple[int, int] | None = None
         self.drag_head: tuple[int, int] | None = None
@@ -494,7 +501,7 @@ class TerminalPane(TerminalSession, Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static(
-            "Select a session and press Open to attach its terminal here",
+            "Click a session to open its terminal here",
             id="terminal-empty",
         )
         with Vertical(id="terminal-body"):

@@ -4,3 +4,4 @@ HARNESS = [
     ("OpenCode", "opencode"),
     ("Pi", "pi"),
 ]
+SESSION_HARNESS = [*HARNESS, ("Terminal", "shell")]

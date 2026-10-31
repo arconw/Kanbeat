@@ -5,7 +5,9 @@ import codecs
 import fcntl
 import os
 import pty
+import signal
 import struct
+import sys
 import termios
 from typing import Any
 import uuid
@@ -13,13 +15,22 @@ import uuid
 from .terminal_history import HistoryBoard
 
 from .launcher import internal_environment, pty_child_command
-from .native import terminate_process, process_identity
+from .native import (
+    process_directory,
+    process_identity,
+    signal_owned_process,
+    terminate_process,
+)
 from .native_settings import NativeSettings, SettingsError, cli_args
 from .state import LocalState
 
 
 def framed_prompt(prompt: str | None) -> str:
     return "Kanbeat interactive instructions:\n" + prompt if prompt else ""
+
+
+SHELL_HARNESS = "shell"
+CWD_POLL_SECONDS = 1.0 if sys.platform.startswith("linux") else 3.0
 
 
 def interactive_command(
@@ -34,6 +45,8 @@ def interactive_command(
         or any(c.isspace() for c in session)
     ):
         raise ValueError("Invalid native session identifier")
+    if harness == SHELL_HARNESS:
+        return [os.environ.get("SHELL") or "/bin/sh"]
     prompt = framed_prompt(prompt)
     extra = cli_args(harness, settings, interactive=True)
     if harness == "codex":
@@ -73,6 +86,7 @@ class TerminalSession:
         )
         self.board.host.attach(self)
         self.process = None
+        self.cwd_task: asyncio.Task | None = None
         self.fd: int | None = None
         self.waiter = None
         self.pending = bytearray()
@@ -109,7 +123,7 @@ class TerminalSession:
             self.log = log_path.open("a", encoding="utf-8")
             self.process = await asyncio.create_subprocess_exec(
                 *pty_child_command(argv),
-                cwd=self.state.board.project,
+                cwd=self.start_directory(),
                 stdin=slave,
                 stdout=slave,
                 stderr=slave,
@@ -123,6 +137,8 @@ class TerminalSession:
             )
             asyncio.get_running_loop().add_reader(master, self.read)
             self.waiter = asyncio.create_task(self.wait())
+            if self.entry["harness"] == SHELL_HARNESS:
+                self.cwd_task = asyncio.create_task(self.track_directory())
             self.state.save()
         except BaseException:
             await self.stop()
@@ -130,6 +146,32 @@ class TerminalSession:
             raise
         finally:
             os.close(slave)
+
+    def start_directory(self):
+        saved = self.entry.get("cwd")
+        if (
+            self.entry["harness"] == SHELL_HARNESS
+            and isinstance(saved, str)
+            and os.path.isdir(saved)
+        ):
+            return saved
+        return self.state.board.project
+
+    def record_directory(self, directory: str | None) -> None:
+        if directory and directory != self.entry.get("cwd"):
+            self.entry["cwd"] = directory
+            self.state.save()
+
+    async def remember_directory(self) -> None:
+        if self.process is not None and self.process.returncode is None:
+            self.record_directory(
+                await asyncio.to_thread(process_directory, self.process.pid)
+            )
+
+    async def track_directory(self) -> None:
+        while self.process is not None and self.process.returncode is None:
+            await self.remember_directory()
+            await asyncio.sleep(CWD_POLL_SECONDS)
 
     def write(self, data: str) -> None:
         self.write_bytes(data.encode("utf-8"))
@@ -204,6 +246,8 @@ class TerminalSession:
                 status="stopped" if self.stop_requested else "exited", exit_code=code
             )
         finally:
+            if self.cwd_task is not None:
+                self.cwd_task.cancel()
             self.close()
             self.entry.pop("pid", None)
             self.entry.pop("process_identity", None)
@@ -213,6 +257,8 @@ class TerminalSession:
     async def stop(self) -> None:
         self.stop_requested = True
         stopping = self.process is not None and self.process.returncode is None
+        if stopping and self.entry["harness"] == SHELL_HARNESS:
+            await self.remember_directory()
         if stopping:
             self.pending_stops += 1
             self.entry["status"] = "stopping"
@@ -220,6 +266,12 @@ class TerminalSession:
             self.touch()
         try:
             if stopping:
+                if self.entry["harness"] == SHELL_HARNESS:
+                    signal_owned_process(self.process, signal.SIGHUP)
+                    try:
+                        await asyncio.wait_for(self.process.wait(), timeout=3)
+                    except asyncio.TimeoutError:
+                        pass
                 await terminate_process(self.process)
         except BaseException:
             if self.process.returncode is None and self.pending_stops == 1:
@@ -354,7 +406,7 @@ class Terminals:
             raise
 
     def stored_settings(self, entry: dict[str, Any]) -> NativeSettings | None:
-        if entry.get("native_session"):
+        if entry.get("native_session") or entry.get("harness") == SHELL_HARNESS:
             return None
         try:
             return NativeSettings.from_dict(
