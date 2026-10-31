@@ -260,7 +260,7 @@ flowchart TB
 - Sessions is the first tab. Groups and sessions sit in a list beside an embedded terminal; clicking a session switches to it.
 - Every independent session gets a native id (Codex thread, OpenCode session, Claude and Pi session id), so **clicking a stopped session resumes it** where it left off. The id can be set in Edit.
 - Besides a harness, a session can be a plain **Terminal** running your shell. Its working directory is remembered: after Stop or a restart, clicking the session opens a fresh shell in the directory you last `cd`-ed to.
-- The session menu has Edit, Stop, **Delete** (removes the workspace record, the vendor history stays) and **Delete completely** (also removes the native session).
+- The session menu has Edit, Stop, **Remove from Kanbeat** (the record goes, the conversation stays in the harness) and **Delete session and history** (also deletes the conversation in the harness).
 - Select text with a plain left drag; it is copied when you release. Shift+drag keeps your terminal's own selection.
 - Independent sessions keep running when you detach, close the TUI or press Board Stop. Board task slots can be attached live while the board runs (OpenCode, Codex and Claude; Pi needs Board Stop).
 

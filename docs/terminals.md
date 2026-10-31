@@ -79,12 +79,13 @@ hangs up the shell first, then escalates like any other session. Terminals exist
 in Sessions: board task slots and hooks always use a native harness.
 
 Clicking a stopped session resumes it. The session menu offers Edit (title, group and,
-for harnesses, the native session ID), Stop, Delete (removes the workspace record) and
-Delete completely (also removes the native Codex, OpenCode, Claude or Pi session).
-Stop interrupts the process at once without confirmation; deleting asks for
-confirmation. Group removal requires an empty group; first move or remove its
-session records. Deleting a record does not remove native CLI history unless you
-choose Delete completely, and retained local output logs stay.
+for harnesses, the native session ID), Stop, **Remove from Kanbeat** (removes the
+record; the conversation stays in the harness) and **Delete session and history**
+(also deletes the native Codex, OpenCode, Claude or Pi session). Stop interrupts the
+process at once without confirmation; removing and deleting ask for confirmation.
+Group removal requires an empty group; first move or remove its session records.
+Removing a record does not delete native CLI history unless you choose Delete session
+and history, and retained local output logs stay.
 
 Groups, session IDs, titles, prompts, ownership and known native IDs persist in
 `.state`. Restart after supervisor recovery reuses the same local session ID;

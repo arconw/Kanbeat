@@ -694,6 +694,12 @@ async def test_session_menu_offers_delete_and_complete_delete_without_resume(
             assert app.screen.query("#session-stop")
             assert app.screen.query("#session-remove")
             assert app.screen.query("#session-remove-all")
+            assert str(app.screen.query_one("#session-remove", Button).label) == (
+                "Remove from Kanbeat"
+            )
+            assert str(app.screen.query_one("#session-remove-all", Button).label) == (
+                "Delete session and history"
+            )
             assert not app.screen.query("#cancel")
             await pilot.mouse_down(offset=(130, 35))
             await pilot.pause()
@@ -1026,5 +1032,58 @@ async def test_new_session_can_be_a_plain_terminal(supervisor, monkeypatch):
             await pilot.pause(0.3)
             assert isinstance(app.screen, SessionEdit)
             assert not app.screen.query("#session-native-id")
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_removal_confirmations_say_what_stays_and_what_goes(
+    supervisor, monkeypatch
+):
+    codex = (
+        await supervisor.dispatch(
+            {"op": "session_create", "title": "Fixes [urgent]", "harness": "codex"}
+        )
+    )["terminal"]
+    shell = (
+        await supervisor.dispatch(
+            {"op": "session_create", "title": "Work", "harness": "shell"}
+        )
+    )["terminal"]
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    try:
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.4)
+            seen = {}
+            for terminal_id, button in (
+                (codex, "#session-remove"),
+                (codex, "#session-remove-all"),
+                (shell, "#session-remove"),
+            ):
+                await pilot.click("#session-actions-" + terminal_id)
+                await pilot.pause(0.3)
+                await pilot.click(button)
+                await pilot.pause(0.3)
+                assert isinstance(app.screen, Confirm)
+                seen[(terminal_id, button)] = str(
+                    app.screen.query_one(".modal-text").render()
+                )
+                await pilot.click("#cancel")
+                await pilot.pause(0.3)
+                if isinstance(app.screen, SessionActions):
+                    await pilot.press("escape")
+                    await pilot.pause(0.2)
+            assert seen[(codex, "#session-remove")] == (
+                "Remove Fixes [urgent] from Kanbeat? Its conversation stays in Codex."
+            )
+            assert seen[(codex, "#session-remove-all")] == (
+                "Delete Fixes [urgent] and its conversation in Codex? "
+                "This cannot be undone."
+            )
+            assert seen[(shell, "#session-remove")] == (
+                "Remove Work from Kanbeat? Its shell is closed."
+            )
+            assert codex in supervisor.terminals.entries
     finally:
         await supervisor.terminals.stop()
