@@ -242,3 +242,13 @@ async def test_file_change_keeps_operation_and_rename_destination():
     assert "update" in result.events[0].text
     assert "old.txt" in result.events[0].text
     assert "new.txt" in result.events[0].text
+
+
+@pytest.mark.asyncio
+async def test_repeated_page_cursor_fails_without_returning_duplicate_events():
+    repeated = page(user("user-1", "Fixture question"), cursor="same-cursor")
+    host = FakeHost(repeated, repeated, repeated)
+    result = await read_codex_history(host, THREAD, max_pages=3)
+    assert result.unreachable
+    assert not result.complete and not result.events
+    assert len(host.calls) == 2

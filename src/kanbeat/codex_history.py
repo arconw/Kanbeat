@@ -157,6 +157,7 @@ class CodexHistoryReader:
 
         entries: list[dict[str, Any]] = []
         cursor: str | None = None
+        seen_cursors: set[str] = set()
         complete = False
         error: str | None = None
         for _page in range(self.max_pages):
@@ -179,10 +180,13 @@ class CodexHistoryReader:
             page, next_cursor = _valid_page(response)
             if page is None:
                 return _failure(HISTORY_UNREACHABLE, INVALID_PAGE_MESSAGE)
+            if next_cursor is not None and next_cursor in seen_cursors:
+                return _failure(HISTORY_UNREACHABLE, INVALID_PAGE_MESSAGE)
             entries.extend(page)
             if next_cursor is None:
                 complete = True
                 break
+            seen_cursors.add(next_cursor)
             cursor = next_cursor
         else:
             error = PAGE_LIMIT_MESSAGE
