@@ -135,6 +135,12 @@ class OpenCodeSessionStatus:
     status: str
 
 
+@dataclass(frozen=True)
+class OpenCodeMessagePage:
+    messages: tuple[Any, ...]
+    next_cursor: str | None = None
+
+
 def parse_session_metadata(payload: Any) -> OpenCodeSessionMetadata:
     if not isinstance(payload, dict):
         raise OpenCodeHostError("OpenCode session response is malformed")
@@ -419,6 +425,37 @@ class OpenCodeServeHost:
         found = (await self.statuses()).get(validate_session_id(session_id))
         return found.status if found else "idle"
 
+    async def read_messages_page(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+        before: str | None = None,
+    ) -> OpenCodeMessagePage:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise OpenCodeHostError("Invalid OpenCode message page limit")
+        query = {"limit": str(limit)}
+        if before is not None:
+            if (
+                not isinstance(before, str)
+                or not before
+                or len(before) > 4 * MAX_VALUE_CHARS
+                or CONTROL.search(before)
+            ):
+                raise OpenCodeHostError("Invalid OpenCode message cursor")
+            query["before"] = before
+        payload, headers = await self._call_with_headers(
+            "GET",
+            f"/session/{validate_session_id(session_id)}/message",
+            query=query,
+        )
+        if not isinstance(payload, list):
+            raise OpenCodeHostError("OpenCode messages response is malformed")
+        cursor = headers.get("x-next-cursor")
+        if cursor is not None:
+            cursor = cursor.strip() or None
+        return OpenCodeMessagePage(tuple(payload), cursor)
+
     async def abort(self, session_id: str) -> None:
         await self._call("POST", f"/session/{validate_session_id(session_id)}/abort")
 
@@ -430,12 +467,25 @@ class OpenCodeServeHost:
         *,
         query: dict[str, str] | None = None,
     ) -> Any:
+        payload, _headers = await self._call_with_headers(
+            method, path, body, query=query
+        )
+        return payload
+
+    async def _call_with_headers(
+        self,
+        method: str,
+        path: str,
+        body: Any = None,
+        *,
+        query: dict[str, str] | None = None,
+    ) -> tuple[Any, dict[str, str]]:
         url = self.url + path
         if query:
             url += "?" + urllib.parse.urlencode(query)
         try:
             return await asyncio.wait_for(
-                asyncio.to_thread(self._blocking_call, method, url, body),
+                asyncio.to_thread(self._blocking_request, method, url, body),
                 self.request_timeout + 1,
             )
         except asyncio.TimeoutError as error:
@@ -443,7 +493,9 @@ class OpenCodeServeHost:
                 f"OpenCode request {method} {path} timed out"
             ) from error
 
-    def _blocking_call(self, method: str, url: str, body: Any) -> Any:
+    def _blocking_request(
+        self, method: str, url: str, body: Any
+    ) -> tuple[Any, dict[str, str]]:
         data = json.dumps(body).encode() if body is not None else None
         request = urllib.request.Request(url, data=data, method=method)
         request.add_header("Authorization", self._authorization)
@@ -453,6 +505,9 @@ class OpenCodeServeHost:
         try:
             with self._opener.open(request, timeout=self.request_timeout) as response:
                 raw = response.read(MAX_BODY_BYTES + 1)
+                headers = {
+                    name.lower(): value for name, value in response.headers.items()
+                }
         except urllib.error.HTTPError as error:
             error.close()
             raise OpenCodeHttpError(error.code) from None
@@ -463,8 +518,8 @@ class OpenCodeServeHost:
         if len(raw) > MAX_BODY_BYTES:
             raise OpenCodeHostError("OpenCode response is too large")
         if not raw.strip():
-            return None
+            return None, headers
         try:
-            return json.loads(raw)
+            return json.loads(raw), headers
         except ValueError:
             raise OpenCodeHostError("OpenCode response is not JSON") from None
