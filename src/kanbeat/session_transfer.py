@@ -48,7 +48,6 @@ IMPORT_NOTE = (
     "not a new instruction."
 )
 DEFAULT_NEWEST_COUNTS = (50, 20, 10)
-SHORT_IMPORT_PROMPT_LIMIT = 4096
 STATE_VERSION = 1
 
 EventKey = tuple[str, str]
@@ -251,11 +250,11 @@ def _marker_line(
 def marker_for(
     import_id: str, sources: Sequence[str], first_ordinal: int, last_ordinal: int
 ) -> str:
-    """Render a marker for the end of a short delivery prompt.
+    """Render a raw start marker.
 
-    A marker quoted in the middle of a longer conversation is not treated as an
-    import. Delivery prompts that use this helper should put the marker after
-    their instruction and avoid an envelope end marker.
+    A bare marker quoted inside a conversation is not an import by itself. Use
+    ``render_short_prompt`` for a delivery prompt that later reads must
+    recognize.
     """
     return _marker_line(import_id, sources, first_ordinal, last_ordinal)
 
@@ -264,28 +263,40 @@ def _end_marker_line(import_id: str) -> str:
     return f'<!-- /kanbeat-import id="{import_id}" -->'
 
 
-def _marker_text_is_import(event: ConversationEvent) -> bool:
+def render_short_prompt(
+    instruction: str,
+    import_id: str,
+    sources: Sequence[str],
+    first_ordinal: int,
+    last_ordinal: int,
+) -> str:
+    """Render a short delivery prompt wrapped in a complete import marker."""
+    if not isinstance(instruction, str) or not instruction.strip():
+        raise ValueError("A delivery prompt needs instruction text")
+    start = _marker_line(import_id, sources, first_ordinal, last_ordinal)
+    return f"{start}\n{instruction.strip()}\n{_end_marker_line(import_id)}"
+
+
+def _marker_import_id(event: ConversationEvent) -> str | None:
     if event.role != ROLE_USER:
-        return False
+        return None
     text = event.text.strip()
-    starts = list(_START_MARKER.finditer(text))
-    if not starts:
-        return False
-    first = starts[0]
-    last = starts[-1]
-    ends = list(_END_MARKER.finditer(text))
-    if not ends:
-        if len(text) > SHORT_IMPORT_PROMPT_LIMIT:
-            return False
-        return first.start() == 0 or last.end() == len(text)
-    if first.start() != 0:
-        return False
-    matching = [
+    start = _START_MARKER.match(text)
+    if start is None:
+        return None
+    identifier = start.group("import_id")
+    ends = [
         marker
-        for marker in ends
-        if marker.group("import_id") == first.group("import_id")
+        for marker in _END_MARKER.finditer(text)
+        if marker.group("import_id") == identifier
     ]
-    return bool(matching and matching[-1].end() == len(text))
+    if not ends or ends[-1].end() != len(text):
+        return None
+    return identifier
+
+
+def _marker_text_is_import(event: ConversationEvent) -> bool:
+    return _marker_import_id(event) is not None
 
 
 def _looks_like_import(event: ConversationEvent) -> bool:
@@ -898,12 +909,9 @@ class TransferLedger:
                 and event.event_id == record.target_message_id
             ):
                 return event
-            if event.is_import and event.import_id == record.import_id:
+            if event.import_id == record.import_id:
                 return event
-            if _marker_text_is_import(event) and any(
-                marker.import_id == record.import_id
-                for marker in find_import_markers(event.text)
-            ):
+            if _marker_import_id(event) == record.import_id:
                 return event
         return None
 

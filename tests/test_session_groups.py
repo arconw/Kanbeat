@@ -611,6 +611,34 @@ async def test_double_pressing_start_creates_a_single_session(supervisor, monkey
 
 
 @pytest.mark.asyncio
+async def test_embedded_terminal_controls_stay_on_base_screen_under_modal(
+    supervisor, monkeypatch
+):
+    from kanbeat.ui.app import NewTicket
+
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    async with app.run_test(size=(120, 50)) as pilot:
+        await pilot.pause()
+        base = app.screen
+        pane = base.query_one(TerminalPane)
+        live = base.query_one("#terminal-live", Button)
+        app.push_screen(NewTicket())
+        await pilot.pause()
+        assert app.screen is not base
+        assert pane.controls_root is base
+        assert pane.part("#terminal-live", Button) is live
+        pane.show_hint("Still attached beneath modal")
+        assert (
+            base.query_one("#terminal-detach", Button).tooltip
+            == "Still attached beneath modal"
+        )
+        await pilot.press("escape")
+        await pilot.pause()
+        assert pane.part("#terminal-live", Button) is live
+
+
+@pytest.mark.asyncio
 async def test_native_id_can_be_attached_to_a_stopped_session_and_is_resumed(
     supervisor,
 ):

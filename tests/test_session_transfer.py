@@ -10,6 +10,7 @@ from kanbeat.session_transfer import (
     find_import_markers,
     marker_for,
     render_envelope,
+    render_short_prompt,
 )
 
 
@@ -142,23 +143,24 @@ def test_only_actual_envelopes_and_short_prompts_count_as_imports():
         "codex",
         3,
         "user",
-        "Read the context file and continue.\n" + short_marker,
+        render_short_prompt(
+            "Read the private context file and continue.",
+            "short",
+            ["claude"],
+            0,
+            1,
+        ),
     )
-    short_prompt_first = event(
-        "codex",
-        4,
-        "user",
-        short_marker + "\nRead the context file and continue.",
-    )
+    bare_question = event("codex", 4, "user", "Explain this marker:\n" + short_marker)
     import_event = event("codex", 5, "user", full)
     assert not ledger.is_import_event(quoted_full)
     assert not ledger.is_import_event(tool_full)
     assert ledger.is_import_event(short_prompt)
-    assert ledger.is_import_event(short_prompt_first)
+    assert not ledger.is_import_event(bare_question)
     assert ledger.is_import_event(import_event)
     assert ledger.plan(
-        [quoted_full, tool_full, short_prompt, short_prompt_first], "opencode"
-    ).events == (quoted_full, tool_full)
+        [quoted_full, tool_full, short_prompt, bare_question], "opencode"
+    ).events == (quoted_full, tool_full, bare_question)
 
 
 def test_large_plan_reports_exact_sizes_and_explicit_reductions():
@@ -288,3 +290,27 @@ def test_duplicate_event_keys_are_sent_once_and_position_is_stable():
     assert plan.events == (original,)
     ledger.commit_delivery(plan)
     assert not ledger.plan([history], "claude")
+
+
+def test_marker_quoted_at_end_of_user_question_stays_transferable():
+    ledger = TransferLedger()
+    marker = marker_for("example", ["pi"], 0, 1)
+    question = event("codex", 2, "user", "Explain this marker:\n" + marker)
+    assert ledger.plan([question], "claude").events == (question,)
+
+
+def test_nested_marker_cannot_confirm_an_unrelated_import():
+    ledger = TransferLedger()
+    original = event("codex", 0, text="The undelivered request")
+    pending = ledger.plan([original], "pi")
+    ledger.begin_delivery(pending)
+    quoted_marker = marker_for(pending.import_id, ["codex"], 0, 0)
+    tool_output = event("claude", 1, "tool_result", "File dump:\n" + quoted_marker)
+    unrelated = render_envelope([tool_output], import_id="different-import")
+    target_message = event("pi", 2, "user", unrelated.text)
+    result = ledger.reconcile("pi", [target_message])
+    assert not result.confirmed
+    assert len(result.uncertain) == 1
+    assert not ledger.delivered("pi")
+    with pytest.raises(UncertainDeliveryError):
+        ledger.plan([original], "pi")
