@@ -32,8 +32,9 @@ Read it only when explicitly asked to create or modify Kanbeat tickets.
 - The slug is descriptive. Preserve the ID when renaming or moving a ticket.
 - Ticket content is plain Markdown: one `# Title`, then task description and
   optional acceptance criteria. No frontmatter or internal runtime metadata.
-- Use unused IDs. Never modify `.state/`, `config.json` or files belonging
-  to another active ticket. Do not write completion/status markers to tickets.
+- Use unused IDs. Never modify `.state/` or files belonging to another active
+  ticket, and change settings with `kanbeat config`, not by editing
+  `config.json`. Do not write completion/status markers to tickets.
 - To queue work, move the file to `todo/`.
 - Existing ticket content is user-owned. Do not insert harness transcripts.
 
@@ -58,10 +59,37 @@ time, so declare a dependency whenever one ticket needs the result of another
 - A chain (`003` blocked by `002`, `002` blocked by `001`) is picked one ticket
   at a time, from the first. Never create cycles.
 - Prefer few, real dependencies. Unneeded ones remove parallelism.
+
+## Managing the board
+
+A ticket's status is the folder it sits in, so you can run the board with plain
+files and the `kanbeat` command. Run the command from the project directory.
+
+- See the board: `kanbeat status` (add `--json` for a machine-readable form) or
+  `kanbeat list`.
+- Queue work by moving a ticket from `backlog/` to `todo/` (`mv`, or
+  `kanbeat move 004 todo`). While the board is running Kanbeat moves it on
+  through `progress/`, `review/` and `done/` itself. Do not move a ticket that
+  is in `progress/` or `review/`, and do not create `done/` entries by hand.
+- `kanbeat play` starts the board and `kanbeat stop` stops it.
+- Never edit `.kanbeat/.state/`. It is the supervisor's private runtime state,
+  kept in memory and rewritten from there, so a hand edit is lost or corrupts
+  it. Status never lives there; it is the folder.
+- Settings: `kanbeat config get [key]`, `kanbeat config set <key> <value>`
+  (`--file PATH` or `-` for a long prompt), `kanbeat config history` and
+  `kanbeat config revert <id>`. The keys are `default_harness`, `max_parallel`,
+  `global_cp`, `developer_prompt`, `reviewer_prompt`, `transition_hook.harness`
+  and `transition_hook.prompt`. A change takes effect at once, shows as a
+  notice in the TUI and can be undone from Settings or with `config revert`.
+  Change only what you were asked to change.
+- To follow ticket changes, run `kanbeat watch --json` as a background process:
+  it prints one line per event (`created`, `moved`, `deleted`, `execution`)
+  until you stop it.
 """
 
 LEGACY_INSTRUCTION_HASHES = frozenset(
     {
+        "91b1a7999b9b6d3ee5f282ba786da785d85e4fc8876d39bfc493f78aed3626c1",
         "cca0e0df29cef497c96fce72141ccba86438f8c902f8d433b74383d510167584",
         "a101523d49b881ab841947b74e4de997bb98d93e1978acd7aafb44a1061713a2",
     }

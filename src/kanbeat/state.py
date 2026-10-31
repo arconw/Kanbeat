@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any
 
+from .config_keys import HARNESSES, coerce, flatten, read_key, write_key
 from .filesystem import atomic_json, Board
+
+HISTORY_LIMIT = 100
+HISTORY_PREVIEW = 600
 
 DEFAULT_CONFIG = {
     "default_harness": "codex",
@@ -16,6 +21,12 @@ DEFAULT_CONFIG = {
     "reviewer_prompt": "Review and test the implementation. Prefer headless tests if possible.",
     "transition_hook": {"harness": "", "prompt": ""},
 }
+
+
+def preview(value: Any) -> Any:
+    if isinstance(value, str) and len(value) > HISTORY_PREVIEW:
+        return value[:HISTORY_PREVIEW] + "…"
+    return value
 
 
 class LocalState:
@@ -58,7 +69,7 @@ class LocalState:
     def validate_hook(hook: Any) -> dict[str, str]:
         if not isinstance(hook, dict):
             raise ValueError("Transition hook must be an object")
-        if hook.get("harness", "") not in ("", "codex", "claude", "opencode", "pi"):
+        if hook.get("harness", "") not in ("", *HARNESSES):
             raise ValueError("Invalid transition hook harness")
         if not isinstance(hook.get("prompt", ""), str):
             raise ValueError("Transition hook prompt must be text")
@@ -70,11 +81,71 @@ class LocalState:
                 **values,
                 "transition_hook": self.validate_hook(values["transition_hook"]),
             }
-        editable = set(DEFAULT_CONFIG)
-        for key in editable:
-            if key in values:
-                self.config[key] = values[key]
-        atomic_json(self.config_path, self.config)
+        self.change_config(flatten(values), "tui")
+
+    def config_history(self) -> list[dict[str, Any]]:
+        return self.data.setdefault("config_history", [])
+
+    def change_config(
+        self, changes: dict[str, Any], source: str
+    ) -> dict[str, Any] | None:
+        updated = deepcopy(self.config)
+        rows = []
+        for key, value in changes.items():
+            value = coerce(key, value)
+            old = read_key(self.config, key)
+            if value != old:
+                rows.append({"key": key, "old": old, "new": value})
+                write_key(updated, key, value)
+        if not rows:
+            return None
+        atomic_json(self.config_path, updated)
+        self.config = updated
+        serial = int(self.data.get("config_seq", 0)) + 1
+        self.data["config_seq"] = serial
+        entry = {
+            "id": serial,
+            "time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source": source,
+            "changes": rows,
+        }
+        history = self.config_history()
+        history.append(entry)
+        del history[:-HISTORY_LIMIT]
+        self.save()
+        return entry
+
+    def revert_config(self, entry_id: int, source: str) -> dict[str, Any]:
+        entry = next(
+            (row for row in self.config_history() if row["id"] == entry_id), None
+        )
+        if entry is None:
+            raise ValueError(f"No config change #{entry_id} in the history")
+        restored = self.change_config(
+            {row["key"]: row["old"] for row in entry["changes"]}, source
+        )
+        if restored is None:
+            raise ValueError(f"Change #{entry_id} is already undone")
+        return restored
+
+    def history_view(self, limit: int) -> dict[str, Any]:
+        history = self.config_history()
+        rows = []
+        for entry in reversed(history[-max(1, min(limit, HISTORY_LIMIT)) :]):
+            rows.append(
+                {
+                    **entry,
+                    "changes": [
+                        {
+                            "key": change["key"],
+                            "old": preview(change["old"]),
+                            "new": preview(change["new"]),
+                        }
+                        for change in entry["changes"]
+                    ],
+                }
+            )
+        return {"history": rows, "total": len(history)}
 
     def ticket(self, ticket_id: str) -> dict[str, Any]:
         return self.data["tickets"].setdefault(

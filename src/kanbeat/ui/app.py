@@ -1014,6 +1014,10 @@ class KanbeatApp(App[None], inherit_bindings=False):
             await self.open_harness_config(
                 self.query_one("#cfg-hook-harness", Select).value
             )
+        elif name.startswith("cfg-revert-"):
+            await self.execute(
+                {"op": "config_revert", "id": int(name[len("cfg-revert-") :])}
+            )
         elif name == "settings-save":
             config = {"default_harness": self.query_one("#cfg-harness", Select).value}
             for field in ("global_cp", "developer_prompt", "reviewer_prompt"):

@@ -31,6 +31,7 @@ from .native_settings import NativeSettings, SettingsError, from_codex_thread
 from .claude_runtime import ClaudeRun, ClaudeRuntime
 from .codex_host import CodexAppServerHost, CodexHostError
 from .codex_runtime import CodexRun
+from .config_keys import check_key, read_key
 from .state import LocalState
 from .hooks import TransitionHooks
 from .terminals import Terminals
@@ -1277,6 +1278,7 @@ class Supervisor:
             "errors": errors,
             "notices": self.runtime.data.get("notices", []),
             "config": self.runtime.config,
+            "config_seq": self.runtime.data.get("config_seq", 0),
             "custom": self.runtime.data.get("custom", {}),
             "hooks": self.hooks.entries,
             "terminals": self.terminals.snapshot(),
@@ -1304,10 +1306,47 @@ class Supervisor:
                 raise RuntimeError("Supervisor is shutting down")
             return await self._dispatch(request)
 
+    def config_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        op = request.get("op")
+        source = str(request.get("source") or "tui")
+        if op == "config_get":
+            key = request.get("key")
+            if key in (None, ""):
+                return {"config": self.runtime.config}
+            return {"key": key, "value": read_key(self.runtime.config, check_key(key))}
+        if op == "config_history":
+            return self.runtime.history_view(int(request.get("limit") or 5))
+        if op == "config_set":
+            changes = request.get("changes")
+            if not isinstance(changes, dict) or not changes:
+                raise ValueError("Expected settings to change")
+            entry = self.runtime.change_config(changes, source)
+        elif op == "config_revert":
+            entry = self.runtime.revert_config(
+                int(request.get("id")), f"{source} revert"
+            )
+        else:
+            raise ValueError("Unsupported config command")
+        if entry is None:
+            return {"entry": None}
+        if source == "cli":
+            keys = ", ".join(row["key"] for row in entry["changes"])
+            self.notice(
+                f"Config changed from the command line: {keys}. "
+                f"Undo: kanbeat config revert {entry['id']}, or Settings, History.",
+                "warning",
+            )
+            self.save()
+        return {
+            "entry": {"id": entry["id"], "keys": [r["key"] for r in entry["changes"]]}
+        }
+
     async def _dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         op = request.get("op")
         if op == "snapshot":
             return self.snapshot()
+        if str(op).startswith("config_"):
+            return self.config_request(request)
         if str(op).startswith(("session_", "group_")):
             return await self.session_groups.dispatch(request)
         if str(op).startswith("terminal_"):
