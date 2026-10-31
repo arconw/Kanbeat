@@ -235,8 +235,13 @@ def _read_transcript(
     complete = True
     ledger = TransferLedger()
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for position, line in enumerate(handle):
+        with path.open("rb") as handle:
+            for position, raw in enumerate(handle):
+                try:
+                    line = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    complete = False
+                    continue
                 if not line.strip():
                     continue
                 try:
