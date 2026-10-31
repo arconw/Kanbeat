@@ -204,7 +204,37 @@ def read_pi_history(
         )
     if not matches:
         return _missing(session)
-    return _read_session_file(matches[0], session, ordinal_start)
+
+    unreadable: OSError | None = None
+    unreachable: PiHistoryResult | None = None
+    for path in matches:
+        try:
+            candidate = _header_id(path)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            if unreadable is None:
+                unreadable = error
+            continue
+        if candidate != session:
+            continue
+        result = _read_session_file(path, session, ordinal_start)
+        if result is None or result.missing:
+            continue
+        if result.unreachable:
+            if unreachable is None:
+                unreachable = result
+            continue
+        return result
+    if unreachable is not None:
+        return unreachable
+    if unreadable is not None:
+        return _unreachable(session, "Could not read a Pi session file", unreadable)
+    if listing_error is not None:
+        return _unreachable(
+            session, "Could not list a Pi session directory", listing_error
+        )
+    return _missing(session)
 
 
 def _session_matches(base: Path, session: str) -> tuple[list[Path], OSError | None]:
@@ -240,6 +270,28 @@ def _session_matches(base: Path, session: str) -> tuple[list[Path], OSError | No
     return matches, listing_error
 
 
+def _header_id(path: Path) -> str | None:
+    with path.open("rb") as handle:
+        for raw in handle:
+            try:
+                line = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except (ValueError, RecursionError):
+                return None
+            if not isinstance(record, dict):
+                return None
+            if record.get("type") != "session":
+                return None
+            identifier = record.get("id")
+            return identifier if isinstance(identifier, str) else None
+    return None
+
+
 def _validate_session_id(value: Any) -> str:
     if not isinstance(value, str) or SESSION_ID.fullmatch(value) is None:
         raise ValueError("Invalid Pi session identifier")
@@ -267,7 +319,7 @@ def _unreachable(
 
 def _read_session_file(
     path: Path, session_id: str, ordinal_start: int
-) -> PiHistoryResult:
+) -> PiHistoryResult | None:
     try:
         before = path.stat()
     except FileNotFoundError:
@@ -278,6 +330,7 @@ def _read_session_file(
         return _missing(session_id)
 
     header: dict[str, Any] | None = None
+    header_first = False
     records: list[tuple[int, dict[str, Any]]] = []
     complete = True
     expect_header = True
@@ -302,6 +355,7 @@ def _read_session_file(
                 if record.get("type") == "session":
                     if header is None:
                         header = record
+                        header_first = expect_header
                         if not expect_header:
                             complete = False
                     else:
@@ -333,10 +387,8 @@ def _read_session_file(
         ):
             complete = False
 
-    if header is None:
-        complete = False
-    elif header.get("id") != session_id:
-        complete = False
+    if header is None or not header_first or header.get("id") != session_id:
+        return None
 
     entries, positions, complete = _entry_index(records, complete)
     chain, complete = _active_branch(entries, complete)

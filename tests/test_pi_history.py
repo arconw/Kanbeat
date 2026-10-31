@@ -315,7 +315,7 @@ def test_bash_execution_bookkeeping_and_unknown_entries_are_explicit(tmp_path):
     assert set(result.unsupported) == {"truncated bash output", "unknown content"}
 
 
-def test_a_session_header_after_the_first_record_is_incomplete(tmp_path):
+def test_a_session_header_after_the_first_record_is_not_a_match(tmp_path):
     records = [
         message("user-one", None, {"role": "user", "content": "Fixture question"}),
         header(),
@@ -324,5 +324,35 @@ def test_a_session_header_after_the_first_record_is_incomplete(tmp_path):
 
     result = pi_history.read_pi_history(SESSION, sessions_dir=sessions)
 
-    assert result.available and not result.complete
-    assert [event.event_id for event in result.events] == ["user-one"]
+    assert result.missing and not result.events
+
+
+def test_session_header_id_disambiguates_suffix_matches(tmp_path):
+    longer = f"b_{SESSION}"
+    sessions, target = session_file(
+        tmp_path,
+        [
+            header(),
+            message("target-one", None, {"role": "user", "content": "Target"}),
+        ],
+    )
+    _, other = session_file(
+        tmp_path,
+        [
+            header(session_id=longer),
+            message("other-one", None, {"role": "user", "content": "Other"}),
+        ],
+        session_id=longer,
+    )
+    assert other.name.endswith(f"_{SESSION}.jsonl")
+
+    result = pi_history.read_pi_history(SESSION, sessions_dir=sessions)
+
+    assert result.available and result.complete
+    assert result.session_file == target
+    assert [event.event_id for event in result.events] == ["target-one"]
+
+    target.unlink()
+    missing = pi_history.read_pi_history(SESSION, sessions_dir=sessions)
+
+    assert missing.missing and not missing.events

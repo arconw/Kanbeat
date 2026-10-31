@@ -283,7 +283,7 @@ def test_review_malformed_history_is_available_but_incomplete(tmp_path):
     ]
 
 
-def test_review_header_mismatch_and_absence_are_incomplete(tmp_path):
+def test_review_header_mismatch_and_absence_are_missing(tmp_path):
     sessions, _ = write_session(
         tmp_path,
         [
@@ -292,8 +292,7 @@ def test_review_header_mismatch_and_absence_are_incomplete(tmp_path):
         ],
     )
     mismatch = pi_history.read_pi_history(SESSION, sessions_dir=sessions)
-    assert mismatch.available and not mismatch.complete
-    assert [event.event_id for event in mismatch.events] == ["user-one"]
+    assert mismatch.missing and not mismatch.events
 
     sessions, _ = write_session(
         tmp_path,
@@ -301,8 +300,7 @@ def test_review_header_mismatch_and_absence_are_incomplete(tmp_path):
         session_id="no-header",
     )
     absent = pi_history.read_pi_history("no-header", sessions_dir=sessions)
-    assert absent.available and not absent.complete
-    assert [event.event_id for event in absent.events] == ["user-one"]
+    assert absent.missing and not absent.events
 
 
 def test_review_file_change_during_read_is_incomplete(tmp_path, monkeypatch):
