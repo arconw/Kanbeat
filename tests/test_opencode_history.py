@@ -30,7 +30,10 @@ def text_part(part_id, message_id, text, **kwargs):
 
 
 def message(message_id, role, parts):
-    return {"info": {"id": message_id, "sessionID": SESSION, "role": role}, "parts": parts}
+    return {
+        "info": {"id": message_id, "sessionID": SESSION, "role": role},
+        "parts": parts,
+    }
 
 
 class FakeHost:
@@ -66,6 +69,7 @@ def test_maps_text_tools_imports_and_unsupported_parts():
                     "messageID": "msg_user",
                     "type": "file",
                     "mime": "image/png",
+                    "filename": "fixture-diagram.png",
                     "url": "data:image/png;base64,AAAA",
                 },
             ],
@@ -103,7 +107,9 @@ def test_maps_text_tools_imports_and_unsupported_parts():
                 },
             ],
         ),
-        message("msg_import", "user", [text_part("prt_import", "msg_import", import_text)]),
+        message(
+            "msg_import", "user", [text_part("prt_import", "msg_import", import_text)]
+        ),
         message(
             "msg_known_import",
             "user",
@@ -116,9 +122,7 @@ def test_maps_text_tools_imports_and_unsupported_parts():
         ),
     ]
 
-    mapped = map_opencode_messages(
-        messages, import_message_ids={"msg_known_import"}
-    )
+    mapped = map_opencode_messages(messages, import_message_ids={"msg_known_import"})
 
     assert [event.role for event in mapped.events] == [
         "user",
@@ -141,7 +145,8 @@ def test_maps_text_tools_imports_and_unsupported_parts():
     assert [event.ordinal for event in mapped.events] == list(range(7))
     assert mapped.events[2].tool_name == "bash"
     assert mapped.events[3].tool_name == "bash"
-    assert mapped.events[0].text == "Hello"
+    assert mapped.events[0].text == "Hello\n[File: fixture-diagram.png]"
+    assert "AAAA" not in mapped.events[0].text
     assert mapped.events[1].text == "Answer"
     assert mapped.events[2].text == '{"command": "pwd"}'
     assert mapped.events[3].text == "/work"
@@ -150,9 +155,7 @@ def test_maps_text_tools_imports_and_unsupported_parts():
     assert not mapped.events[6].is_import
     assert set(mapped.unsupported) == {"file", "reasoning", "step-start"}
 
-    again = map_opencode_messages(
-        messages, import_message_ids={"msg_known_import"}
-    )
+    again = map_opencode_messages(messages, import_message_ids={"msg_known_import"})
     assert [event.key for event in again.events] == [
         event.key for event in mapped.events
     ]
@@ -190,6 +193,7 @@ def test_skips_synthetic_and_ignored_text_and_reports_attachments():
                                 "messageID": "msg_assistant",
                                 "type": "file",
                                 "mime": "image/png",
+                                "filename": "notes-preview.png",
                                 "url": "data:image/png;base64,AAAA",
                             }
                         ],
@@ -206,8 +210,9 @@ def test_skips_synthetic_and_ignored_text_and_reports_attachments():
     assert [event.text for event in mapped.events] == [
         "Visible",
         '{"path": "notes.txt"}',
-        "notes",
+        "notes\n[File: notes-preview.png]",
     ]
+    assert "AAAA" not in "\n".join(event.text for event in mapped.events)
     assert set(mapped.unsupported) == {"attachments", "ignored", "synthetic"}
 
 
@@ -247,14 +252,31 @@ async def test_empty_history_is_available_and_complete():
 
 
 @pytest.mark.asyncio
+async def test_missing_parts_are_reported_as_malformed_history():
+    broken = {"info": {"id": "msg_broken", "sessionID": SESSION, "role": "user"}}
+    host = FakeHost({None: ([broken], None)})
+
+    result = await read_opencode_history(host, SESSION)
+
+    assert result.outcome == HISTORY_UNREACHABLE
+    assert result.detail == "malformed_history"
+    assert not result.complete
+    assert result.events == ()
+
+
+@pytest.mark.asyncio
 async def test_missing_session_and_temporary_failure_stay_distinct():
-    missing = await read_opencode_history(FakeHost(error=OpenCodeHttpError(404)), SESSION)
+    missing = await read_opencode_history(
+        FakeHost(error=OpenCodeHttpError(404)), SESSION
+    )
     assert missing.outcome == HISTORY_MISSING
     assert missing.detail == "not_found"
     assert not missing.complete
     assert missing.events == ()
 
-    timeout = await read_opencode_history(FakeHost(error=OpenCodeTimeout("slow")), SESSION)
+    timeout = await read_opencode_history(
+        FakeHost(error=OpenCodeTimeout("slow")), SESSION
+    )
     assert timeout.outcome == HISTORY_UNREACHABLE
     assert timeout.detail == "timeout"
     assert not timeout.complete

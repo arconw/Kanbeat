@@ -218,8 +218,37 @@ def _part_event_id(part: Mapping[str, Any], suffix: str) -> str | None:
     return f"{identifier}:{suffix}" if identifier is not None else None
 
 
+def _file_reference(part: Mapping[str, Any]) -> str:
+    label = part.get("filename")
+    if not isinstance(label, str) or not label.strip():
+        source = part.get("source")
+        if isinstance(source, Mapping):
+            path = source.get("path")
+            if isinstance(path, str) and path.strip():
+                label = path
+    if not isinstance(label, str) or not label.strip():
+        mime = part.get("mime")
+        label = mime if isinstance(mime, str) and mime.strip() else "attachment"
+    return "[File: " + " ".join(str(label).split()) + "]"
+
+
+def _with_attachment_references(text: str, attachments: Any) -> str:
+    if not isinstance(attachments, list) or not attachments:
+        return text
+    references = [
+        _file_reference(attachment)
+        for attachment in attachments
+        if isinstance(attachment, Mapping)
+    ]
+    if not references:
+        return text
+    return "\n".join(([text] if text else []) + references)
+
+
 def _message_parts(message: Mapping[str, Any]) -> Sequence[Any]:
-    parts = message.get("parts", ())
+    if "parts" not in message:
+        raise ValueError("OpenCode message parts are malformed")
+    parts = message["parts"]
     if isinstance(parts, (str, bytes)) or not isinstance(parts, Sequence):
         raise ValueError("OpenCode message parts are malformed")
     return parts
@@ -317,9 +346,7 @@ def map_opencode_messages(
                     state = {}
                 tool_name = _tool_name(part.get("tool"))
                 call_id = (
-                    message_id
-                    if not message_id_used
-                    else _part_event_id(part, "call")
+                    message_id if not message_id_used else _part_event_id(part, "call")
                 )
                 message_id_used = True
                 add(
@@ -335,14 +362,18 @@ def map_opencode_messages(
                 if status == "completed":
                     add(
                         ROLE_TOOL_RESULT,
-                        _tool_output_text(state.get("output")),
+                        _with_attachment_references(
+                            _tool_output_text(state.get("output")), attachments
+                        ),
                         _part_event_id(part, "result"),
                         tool_name=tool_name,
                     )
                 elif status == "error":
                     add(
                         ROLE_TOOL_RESULT,
-                        _tool_result_text(state),
+                        _with_attachment_references(
+                            _tool_result_text(state), attachments
+                        ),
                         _part_event_id(part, "result"),
                         tool_name=tool_name,
                     )
@@ -353,12 +384,23 @@ def map_opencode_messages(
                 continue
             if part_type == "file":
                 unsupported.append("file")
+                reference = _file_reference(part)
+                if role == ROLE_USER:
+                    user_texts.append(reference)
+                    continue
+                event_id = (
+                    message_id if not message_id_used else _identifier(part.get("id"))
+                )
+                message_id_used = True
+                add(ROLE_ASSISTANT, reference, event_id)
                 continue
             if isinstance(part_type, str) and part_type in _BOOKKEEPING_PARTS:
                 unsupported.append(part_type)
                 continue
             unsupported.append(
-                part_type if isinstance(part_type, str) and part_type else "unknown part"
+                part_type
+                if isinstance(part_type, str) and part_type
+                else "unknown part"
             )
 
         if role == ROLE_USER and user_texts:
