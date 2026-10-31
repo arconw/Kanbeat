@@ -654,18 +654,14 @@ class TransferLedger:
         _check_harness(target, "target harness")
         return frozenset(self.checkpoints.get(target, ()))
 
-    def mark_delivered(
-        self, target: str, events: Iterable[ConversationEvent]
-    ) -> None:
+    def mark_delivered(self, target: str, events: Iterable[ConversationEvent]) -> None:
         """Record events as delivered to a target without an import record."""
         _check_harness(target, "target harness")
         rows = tuple(events)
         for event in rows:
             if not isinstance(event, ConversationEvent):
                 raise ValueError("Delivered events must be ConversationEvent objects")
-        self.checkpoints.setdefault(target, set()).update(
-            event.key for event in rows
-        )
+        self.checkpoints.setdefault(target, set()).update(event.key for event in rows)
 
     def reset_checkpoint(self, target: str) -> None:
         """Forget delivered source events, for example after a fresh session."""
@@ -683,9 +679,7 @@ class TransferLedger:
         """Imports whose delivery started but has not been confirmed."""
         records = self.import_records(target)
         return tuple(
-            record
-            for record in records
-            if record.status == IMPORT_STATUS_UNCERTAIN
+            record for record in records if record.status == IMPORT_STATUS_UNCERTAIN
         )
 
     def is_import_event(self, event: ConversationEvent) -> bool:
@@ -713,9 +707,7 @@ class TransferLedger:
                 target, [record.import_id for record in uncertain]
             )
         events, unsupported = self._collect(histories, target)
-        imports = {
-            event.key for event in events if self.is_import_event(event)
-        }
+        imports = {event.key for event in events if self.is_import_event(event)}
         delivered = self.checkpoints.get(target, set())
         unique: dict[EventKey, ConversationEvent] = {}
         for event in events:
@@ -781,7 +773,10 @@ class TransferLedger:
         if target_message_id is not None:
             _check_identifier(target_message_id, "target_message_id")
         identifier = target_message_id or record.target_message_id
-        if record.status != IMPORT_STATUS_CONFIRMED or identifier != record.target_message_id:
+        if (
+            record.status != IMPORT_STATUS_CONFIRMED
+            or identifier != record.target_message_id
+        ):
             record = replace(
                 record,
                 status=IMPORT_STATUS_CONFIRMED,
@@ -897,8 +892,7 @@ class TransferLedger:
                 for target, keys in sorted(self.checkpoints.items())
             },
             "imports": [
-                self.imports[import_id].to_dict()
-                for import_id in sorted(self.imports)
+                self.imports[import_id].to_dict() for import_id in sorted(self.imports)
             ],
         }
 
