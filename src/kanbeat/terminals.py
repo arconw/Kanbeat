@@ -7,6 +7,7 @@ import os
 import pty
 import signal
 import struct
+import sys
 import termios
 from typing import Any
 import uuid
@@ -29,7 +30,7 @@ def framed_prompt(prompt: str | None) -> str:
 
 
 SHELL_HARNESS = "shell"
-CWD_POLL_SECONDS = 1.0
+CWD_POLL_SECONDS = 1.0 if sys.platform.startswith("linux") else 3.0
 
 
 def interactive_command(
@@ -156,17 +157,20 @@ class TerminalSession:
             return saved
         return self.state.board.project
 
-    def remember_directory(self) -> None:
-        if self.process is None or self.process.returncode is not None:
-            return
-        directory = process_directory(self.process.pid)
+    def record_directory(self, directory: str | None) -> None:
         if directory and directory != self.entry.get("cwd"):
             self.entry["cwd"] = directory
             self.state.save()
 
+    async def remember_directory(self) -> None:
+        if self.process is not None and self.process.returncode is None:
+            self.record_directory(
+                await asyncio.to_thread(process_directory, self.process.pid)
+            )
+
     async def track_directory(self) -> None:
         while self.process is not None and self.process.returncode is None:
-            await asyncio.to_thread(self.remember_directory)
+            await self.remember_directory()
             await asyncio.sleep(CWD_POLL_SECONDS)
 
     def write(self, data: str) -> None:
@@ -254,7 +258,7 @@ class TerminalSession:
         self.stop_requested = True
         stopping = self.process is not None and self.process.returncode is None
         if stopping and self.entry["harness"] == SHELL_HARNESS:
-            await asyncio.to_thread(self.remember_directory)
+            await self.remember_directory()
         if stopping:
             self.pending_stops += 1
             self.entry["status"] = "stopping"

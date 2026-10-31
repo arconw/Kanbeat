@@ -67,8 +67,9 @@ async def test_terminal_session_starts_in_the_project_and_keeps_its_directory(
         await supervisor.dispatch({"op": "session_restart", "terminal": terminal_id})
         again = supervisor.terminals.get(terminal_id)
         await type_line(supervisor, terminal_id, "pwd")
+        squeeze = lambda text: "".join(text.split())
         await eventually(
-            lambda: str(target) in again.snapshot()["text"],
+            lambda: squeeze(str(target)) in squeeze(again.snapshot()["text"]),
             "the restarted shell opens in the saved directory",
         )
     finally:
@@ -130,3 +131,32 @@ async def test_terminal_sessions_take_no_prompt_or_native_id(supervisor):
     finally:
         await supervisor.terminals.stop()
         assert Path(supervisor.board.project).exists()
+
+
+@pytest.mark.asyncio
+async def test_directory_tracking_saves_state_only_on_the_event_loop_thread(
+    supervisor, tmp_path, monkeypatch
+):
+    import threading
+
+    loop_thread = threading.get_ident()
+    save_threads = []
+    original = supervisor.runtime.save
+
+    def save():
+        save_threads.append(threading.get_ident())
+        original()
+
+    monkeypatch.setattr(supervisor.runtime, "save", save)
+    target = (tmp_path / "elsewhere").resolve()
+    target.mkdir()
+    terminal_id = (
+        await supervisor.dispatch({"op": "session_create", "harness": "shell"})
+    )["terminal"]
+    entry = supervisor.terminals.entries[terminal_id]
+    try:
+        await type_line(supervisor, terminal_id, f"cd '{target}'")
+        await eventually(lambda: entry.get("cwd") == str(target), "cd is tracked")
+        assert save_threads and set(save_threads) == {loop_thread}
+    finally:
+        await supervisor.terminals.stop()
