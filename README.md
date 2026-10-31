@@ -16,7 +16,8 @@ A ticket is a Markdown file, its status is the directory it lives in, and one pe
 [Tickets and dependencies](#tickets-and-dependencies) ·
 [Sessions](#sessions) ·
 [Limitations](#limitations) ·
-[Docs](#documentation)
+[Docs](#documentation) ·
+[YouTube](https://www.youtube.com/@arco9-lab)
 
 </div>
 
@@ -25,6 +26,13 @@ A ticket is a Markdown file, its status is the directory it lives in, and one pe
 ![Kanbeat board: dependencies between tickets, the card strip and manual moves](docs/media/board.gif)
 
 *Recorded from the real TUI against a real supervisor. The tickets are moved by hand; no agent ran. See [how the demos are made](docs/media.md).*
+
+<div align="center">
+
+<a href="https://www.youtube.com/@arco9-lab"><img src="docs/media/channel-icon.png" alt="Arco9 Lab" width="30" align="absmiddle"></a>&nbsp;
+<a href="https://www.youtube.com/@arco9-lab"><b>Arco9 Lab on YouTube</b></a>
+
+</div>
 
 ## Why Kanbeat
 
