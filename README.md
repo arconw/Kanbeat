@@ -20,7 +20,7 @@ A ticket is a Markdown file, its status is the directory it lives in, and one pe
 
 </div>
 
-> **Early release, not production-ready.** The board, supervisor, structured worker flow, transition hooks, persistent terminals and session groups are implemented and covered by automated tests. Codex, Claude and OpenCode protocol paths were exercised against deterministic local fake APIs, but not against real remote models or every vendor CLI version, and agents edit your working tree. Read [Limitations](#limitations) first.
+> **Beta.** Kanbeat is still under active development, so you may meet rough edges, but the happy path works: it has been tried by hand with several of the supported CLIs. The automated tests run against deterministic local fake APIs rather than real models, and agents edit your working tree, so read [Limitations](#limitations) before letting them run unattended.
 
 ![Kanbeat board: dependencies between tickets, the card strip and manual moves](docs/media/board.gif)
 
@@ -270,7 +270,7 @@ flowchart TB
 
 ## Limitations
 
-- Early release. Behaviour, file layout and configuration may still change. **0.9.0 renamed tickets to `<id>-<slug>.md`**; files named in the old `<order>-<id>-<slug>.md` form are reported as invalid and must be renamed by hand. The old `.tasks` layout is not migrated.
+- Beta. Behaviour, file layout and configuration may still change. **0.9.0 renamed tickets to `<id>-<slug>.md`**; files named in the old `<order>-<id>-<slug>.md` form are reported as invalid and must be renamed by hand. The old `.tasks` layout is not migrated.
 - Only Linux and macOS are supported. WSL is untested and native Windows does not work.
 - Live vendor protocols were exercised against local deterministic fake APIs, not against every real remote provider, login mode or CLI version. Event formats and session resume can change between vendor releases; check your installed CLI versions before running unattended.
 - Live task attach is available for OpenCode, Codex and Claude. Pi task terminals still require Board Stop, and Pi model/effort capture is not implemented.
