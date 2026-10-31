@@ -67,7 +67,7 @@ kanbeat --version
 
 The script picks the archive for your system, downloads it and `SHA256SUMS` from the latest published [release](https://github.com/arconw/Kanbeat/releases), verifies the checksum, unpacks it to `~/.local/opt/kanbeat-<version>` and links `~/.local/bin/kanbeat` to it. The archive carries its own Python runtime, so nothing else is needed. The script does not use `sudo` and never edits your shell profile or any project; if `~/.local/bin` is not on your `PATH` it prints the line to add.
 
-- **Pin a version or move the install:** `KANBEAT_VERSION=0.10.0 KANBEAT_PREFIX=/opt/tools sh install.sh`.
+- **Pin a version or move the install:** `KANBEAT_VERSION=1.0.0 KANBEAT_PREFIX=/opt/tools sh install.sh`.
 - **Inspect it first:** `curl -fsSLO https://raw.githubusercontent.com/arconw/Kanbeat/main/install.sh`, read it, then `sh install.sh`. Every release also carries the same script as an asset.
 - **Update:** run `kanbeat shutdown` in each project that has a supervisor, then run the installer again. Older versions stay next to the new one in `~/.local/opt`.
 - **Remove:** `sh install.sh --uninstall` removes the links and the unpacked versions. Your projects' `.kanbeat/` directories are not touched.
@@ -83,7 +83,7 @@ These need **Python 3.11 or newer** and **Git**. Pick one; the tag in the comman
 ```sh
 # once: install uv (https://docs.astral.sh/uv/) and make sure Git is present
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv tool install git+https://github.com/arconw/Kanbeat.git@v0.10.0
+uv tool install git+https://github.com/arconw/Kanbeat.git@v1.0.0
 kanbeat --version
 ```
 
@@ -92,7 +92,7 @@ If `kanbeat` is not found afterwards, run `uv tool update-shell` and reopen the 
 **pipx:**
 
 ```sh
-pipx install git+https://github.com/arconw/Kanbeat.git@v0.10.0
+pipx install git+https://github.com/arconw/Kanbeat.git@v1.0.0
 pipx ensurepath
 ```
 
@@ -100,7 +100,7 @@ pipx ensurepath
 
 ```sh
 python3 -m venv ~/.venvs/kanbeat
-~/.venvs/kanbeat/bin/python -m pip install git+https://github.com/arconw/Kanbeat.git@v0.10.0
+~/.venvs/kanbeat/bin/python -m pip install git+https://github.com/arconw/Kanbeat.git@v1.0.0
 ~/.venvs/kanbeat/bin/kanbeat --help
 ```
 
@@ -119,7 +119,7 @@ Run `~/.venvs/kanbeat/bin/kanbeat`, or add that `bin` directory to your `PATH`.
 Prefer to do it by hand? Download the archive for your system and `SHA256SUMS` from the [Releases page](https://github.com/arconw/Kanbeat/releases):
 
 ```sh
-VERSION=0.10.0
+VERSION=1.0.0
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)  TARGET=linux-x86_64 ;;
   Linux-aarch64) TARGET=linux-arm64 ;;
