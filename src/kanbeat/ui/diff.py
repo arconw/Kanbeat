@@ -369,7 +369,7 @@ class DiffView(Vertical):
     async def poll(self, force: bool = False) -> None:
         source = self.source
         changes = await collect(self.project, "" if force else self.signature, source)
-        if source != self.source or changes.unchanged:
+        if source != self.source or changes.unchanged or changes.failed:
             return
         await self.show_changes(changes)
 

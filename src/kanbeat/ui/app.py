@@ -854,6 +854,8 @@ class KanbeatApp(App[None], inherit_bindings=False):
         self._diff_updating = True
         try:
             changes = await collect(self.project, "" if force else self._diff_signature)
+            if changes.failed:
+                return
             if not changes.unchanged:
                 self._diff_signature = changes.signature
                 self.changes = changes

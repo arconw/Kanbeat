@@ -5,6 +5,7 @@ import difflib
 import hashlib
 import os
 import re
+import shutil
 import stat
 import subprocess
 from dataclasses import dataclass, field
@@ -94,6 +95,7 @@ class Changes:
     available: bool = False
     signature: str = ""
     unchanged: bool = False
+    failed: bool = False
     files: list[FileDiff] = field(default_factory=list)
 
     @property
@@ -340,10 +342,20 @@ def read_untracked(project: Path, relative: str) -> FileDiff:
     return file
 
 
-def git(project: Path, *args: str) -> bytes | None:
+SAFE_CONFIG = (
+    "core.quotepath=off",
+    "core.fsmonitor=false",
+    "core.untrackedCache=false",
+)
+
+
+def run_git(project: Path, *args: str) -> subprocess.CompletedProcess | None:
+    command = ["git"]
+    for setting in SAFE_CONFIG:
+        command += ["-c", setting]
     try:
-        result = subprocess.run(
-            ["git", "-c", "core.quotepath=off", *args],
+        return subprocess.run(
+            [*command, *args],
             cwd=project,
             capture_output=True,
             timeout=GIT_TIMEOUT,
@@ -351,7 +363,13 @@ def git(project: Path, *args: str) -> bytes | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return result.stdout if result.returncode == 0 else None
+
+
+def git(project: Path, *args: str) -> bytes | None:
+    result = run_git(project, *args)
+    if result is None or result.returncode != 0:
+        return None
+    return result.stdout
 
 
 def split_names(output: bytes | None) -> list[str]:
@@ -404,14 +422,18 @@ def source_arguments(project: Path, source: str) -> tuple[list[str], bool] | Non
 def collect_changes(
     project: Path, previous: str = "", source: str = "current"
 ) -> Changes:
-    inside = git(project, "rev-parse", "--is-inside-work-tree")
-    if inside is None or inside.strip() != b"true":
+    probe = run_git(project, "rev-parse", "--is-inside-work-tree")
+    if probe is None:
+        if shutil.which("git") is None:
+            return Changes(signature="unavailable")
+        return Changes(failed=True)
+    if probe.returncode != 0 or probe.stdout.strip() != b"true":
         return Changes(signature="unavailable")
     arguments = source_arguments(project, source)
     if arguments is None:
         return Changes(available=True, signature="empty:" + source)
     command, with_untracked = arguments
-    raw = git(
+    result = run_git(
         project,
         *command,
         "--no-color",
@@ -425,8 +447,9 @@ def collect_changes(
         ".",
         EXCLUDE_STATE,
     )
-    if raw is None:
-        return Changes(signature="unavailable")
+    if result is None or result.returncode != 0:
+        return Changes(failed=True)
+    raw = result.stdout
     names = untracked_names(project) if with_untracked else []
     digest = hashlib.sha1(source.encode() + b"\0" + raw)
     digest.update(untracked_signature(project, names))

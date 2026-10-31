@@ -573,3 +573,22 @@ async def test_a_failing_save_does_not_stop_the_panel_from_opening_or_closing(
         await until(pilot, lambda: not view.display)
         saves = [n for n in app._notifications if "Could not save" in n.message]
         assert len(saves) >= 3
+
+
+@pytest.mark.asyncio
+async def test_a_failed_poll_keeps_the_previous_changes_on_screen(repo, monkeypatch):
+    app = make_app(repo, monkeypatch)
+    async with app.run_test(size=(170, 40)) as pilot:
+        view = await opened(app, pilot)
+        button = app.query_one("#diff-toggle", Button)
+        before = (button.label.plain, list_paths(view), app.changes)
+
+        async def failing(project, previous="", source="current"):
+            return Changes(failed=True)
+
+        monkeypatch.setattr("kanbeat.ui.app.collect", failing)
+        monkeypatch.setattr("kanbeat.ui.diff.collect", failing)
+        await app.refresh_changes(True)
+        await view.poll(force=True)
+        await pilot.pause()
+        assert (button.label.plain, list_paths(view), app.changes) == before

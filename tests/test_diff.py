@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import kanbeat.diff as diff_module
 from kanbeat.diff import (
     collect_changes,
     header_path,
@@ -373,3 +374,41 @@ def test_untracked_odd_names_are_listed_exactly(repo):
         path.write_text("x\n")
     listed = {file.path for file in collect_changes(repo).files}
     assert set(ODD_NAMES) <= listed
+
+
+def test_a_repository_cannot_run_its_own_command_through_fsmonitor(repo):
+    marker = repo / "fsmonitor-ran"
+    hook = repo / "hook.sh"
+    hook.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 0\n")
+    hook.chmod(0o755)
+    git(repo, "config", "core.fsmonitor", str(hook))
+    (repo / "README.md").write_text("changed\n")
+    subprocess.run(["git", "diff"], cwd=repo, capture_output=True)
+    if not marker.exists():
+        pytest.skip("this Git does not run the fsmonitor hook")
+    marker.unlink()
+    changes = collect_changes(repo)
+    assert "README.md" in [file.path for file in changes.files]
+    assert not marker.exists()
+
+
+def test_a_failing_diff_is_a_failure_not_an_unavailable_project(repo, monkeypatch):
+    real = diff_module.run_git
+
+    def flaky(project, *args):
+        if args and args[0] == "diff":
+            return subprocess.CompletedProcess(args, 128, b"", b"index.lock exists")
+        return real(project, *args)
+
+    monkeypatch.setattr(diff_module, "run_git", flaky)
+    changes = collect_changes(repo)
+    assert changes.failed and not changes.available and changes.files == []
+
+
+def test_git_that_cannot_start_is_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setattr(diff_module, "run_git", lambda *args: None)
+    monkeypatch.setattr(diff_module.shutil, "which", lambda name: None)
+    changes = collect_changes(tmp_path)
+    assert not changes.available and not changes.failed
+    monkeypatch.setattr(diff_module.shutil, "which", lambda name: "/usr/bin/git")
+    assert collect_changes(tmp_path).failed
