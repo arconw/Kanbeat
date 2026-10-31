@@ -4,6 +4,7 @@ StartupScreen { background: #0b1019; align: center middle; }
 #startup-subtitle { width: auto; height: 1; color: #8d9fb4; text-align: center; }
 #root { height: 100%; width: 100%; }
 Button { height: 1; min-width: 8; border: none; padding: 0 1; }
+Button:focus { text-style: bold; background-tint: #ffffff 10%; }
 #nav {
     height: 2;
     padding: 0 1;

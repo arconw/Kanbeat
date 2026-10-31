@@ -30,6 +30,13 @@ from .preferences import ViewPreferences
 from .settings import Settings
 from .startup import StartupScreen
 
+Static.ALLOW_SELECT = False
+
+
+class SelectableText(Static):
+    ALLOW_SELECT = True
+
+
 COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed")
 FREE_STEPS = {("backlog", "todo"), ("todo", "backlog")}
 
@@ -69,7 +76,7 @@ class LogView(BackdropModal[None]):
                 )
                 yield Button("×", id="close")
             with VerticalScroll(id="log-scroll"):
-                yield Static("Loading...", id="log-text")
+                yield SelectableText("Loading...", id="log-text")
             yield Button("Refresh", id="refresh")
 
     async def on_mount(self) -> None:
@@ -80,7 +87,7 @@ class LogView(BackdropModal[None]):
             response = await self.app.rpc(
                 {"op": "log", "ticket": self.ticket, "slot": self.slot}
             )
-            self.query_one("#log-text", Static).update(
+            self.query_one("#log-text", SelectableText).update(
                 response.get("log") or "No log yet."
             )
         except RuntimeError as exc:
