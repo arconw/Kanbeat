@@ -424,11 +424,15 @@ def _failure_detail(error: OpenCodeHostError) -> str:
         return "timeout"
     if isinstance(error, OpenCodeHttpError):
         return f"http_{error.status}"
-    if "too large" in str(error):
+    if _response_too_large(error):
         return "response_too_large"
     if "malformed" in str(error) or "not JSON" in str(error):
         return "malformed_response"
     return "unreachable"
+
+
+def _response_too_large(error: OpenCodeHostError) -> bool:
+    return "too large" in str(error).lower()
 
 
 async def read_opencode_history(
@@ -453,10 +457,11 @@ async def read_opencode_history(
     pages: list[tuple[Any, ...]] = []
     seen_cursors: set[str] = set()
     before: str | None = None
+    current_limit = page_size
     while True:
         try:
             page = await host.read_messages_page(
-                session_id, limit=page_size, before=before
+                session_id, limit=current_limit, before=before
             )
         except OpenCodeHttpError as error:
             if error.status == 404:
@@ -471,6 +476,9 @@ async def read_opencode_history(
                 detail=_failure_detail(error),
             )
         except OpenCodeHostError as error:
+            if _response_too_large(error) and current_limit > 1:
+                current_limit = max(1, current_limit // 2)
+                continue
             return OpenCodeHistoryResult(
                 session_id,
                 HISTORY_UNREACHABLE,

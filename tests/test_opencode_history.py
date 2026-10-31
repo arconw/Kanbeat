@@ -239,6 +239,66 @@ async def test_reader_pages_backwards_and_returns_chronological_events():
 
 
 @pytest.mark.asyncio
+async def test_oversized_page_retries_smaller_limit_on_the_same_cursor():
+    class SizeLimitedHost:
+        def __init__(self):
+            self.calls = []
+
+        async def read_messages_page(self, session_id, *, limit, before):
+            self.calls.append((limit, before))
+            if limit > 1:
+                raise OpenCodeHostError("OpenCode response is too large")
+            if before is None:
+                return OpenCodeMessagePage(
+                    (
+                        message(
+                            "msg_new",
+                            "assistant",
+                            [text_part("prt_new", "msg_new", "Newest")],
+                        ),
+                    ),
+                    "older",
+                )
+            return OpenCodeMessagePage(
+                (
+                    message(
+                        "msg_old",
+                        "user",
+                        [text_part("prt_old", "msg_old", "Oldest")],
+                    ),
+                )
+            )
+
+    host = SizeLimitedHost()
+
+    result = await read_opencode_history(host, SESSION)
+
+    assert result.available and result.complete
+    assert [event.event_id for event in result.events] == ["msg_old", "msg_new"]
+    assert host.calls[-2:] == [(1, None), (1, "older")]
+
+
+@pytest.mark.asyncio
+async def test_one_oversized_message_is_an_explicit_failure():
+    class AlwaysTooLargeHost:
+        def __init__(self):
+            self.limits = []
+
+        async def read_messages_page(self, session_id, *, limit, before):
+            self.limits.append(limit)
+            raise OpenCodeHostError("OpenCode response is too large")
+
+    host = AlwaysTooLargeHost()
+
+    result = await read_opencode_history(host, SESSION, page_size=4)
+
+    assert result.unreachable and not result.complete
+    assert result.detail == "response_too_large"
+    assert result.events == ()
+    assert host.limits == [4, 2, 1]
+
+
+@pytest.mark.asyncio
 async def test_empty_history_is_available_and_complete():
     host = FakeHost({None: ([], None)})
 
