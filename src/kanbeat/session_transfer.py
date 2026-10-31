@@ -277,22 +277,29 @@ def render_short_prompt(
     return f"{start}\n{instruction.strip()}\n{_end_marker_line(import_id)}"
 
 
-def _marker_import_id(event: ConversationEvent) -> str | None:
-    if event.role != ROLE_USER:
+def import_id_for_text(text: str) -> str | None:
+    """Return the import id when text is exactly one complete import envelope."""
+    if not isinstance(text, str):
         return None
-    text = event.text.strip()
-    start = _START_MARKER.match(text)
+    stripped = text.strip()
+    start = _START_MARKER.match(stripped)
     if start is None:
         return None
     identifier = start.group("import_id")
     ends = [
         marker
-        for marker in _END_MARKER.finditer(text)
+        for marker in _END_MARKER.finditer(stripped)
         if marker.group("import_id") == identifier
     ]
-    if not ends or ends[-1].end() != len(text):
+    if not ends or ends[-1].end() != len(stripped):
         return None
     return identifier
+
+
+def _marker_import_id(event: ConversationEvent) -> str | None:
+    if event.role != ROLE_USER:
+        return None
+    return import_id_for_text(event.text)
 
 
 def _marker_text_is_import(event: ConversationEvent) -> bool:
