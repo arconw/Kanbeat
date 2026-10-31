@@ -509,7 +509,8 @@ class TerminalPane(TerminalSession, Vertical):
 
     @property
     def controls_root(self) -> Widget:
-        return self.screen
+        stack = self.app.screen_stack
+        return stack[0] if stack else self.screen
 
     def heading_text(self, text: str) -> str:
         return "| " + text if text else ""
