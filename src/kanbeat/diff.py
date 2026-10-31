@@ -120,11 +120,64 @@ def expand_tabs(text: str) -> str:
     return text.expandtabs(TAB_WIDTH)
 
 
+C_ESCAPES = {
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "\\": "\\",
+    '"': '"',
+}
+
+
+def unquote_c(text: str) -> tuple[str, str]:
+    data = bytearray()
+    index = 1
+    while index < len(text):
+        char = text[index]
+        if char == '"':
+            return data.decode("utf-8", "replace"), text[index + 1 :]
+        if char == "\\" and index + 1 < len(text):
+            following = text[index + 1]
+            if following in "01234567":
+                digits = text[index + 1 : index + 4]
+                data.append(int(digits, 8) & 0xFF)
+                index += 1 + len(digits)
+                continue
+            data += C_ESCAPES.get(following, following).encode()
+            index += 2
+            continue
+        data += char.encode()
+        index += 1
+    return data.decode("utf-8", "replace"), ""
+
+
+def git_name(value: str, prefix: str = "") -> str:
+    if value.startswith('"'):
+        name = unquote_c(value)[0]
+    else:
+        name = value.split("\t")[0]
+    return name[len(prefix) :] if prefix and name.startswith(prefix) else name
+
+
 def header_path(line: str) -> str:
     rest = line[len("diff --git ") :]
-    index = rest.rfind(" b/")
-    name = rest[index + 3 :] if index != -1 else rest
-    return name.strip('"')
+    if '"' not in rest:
+        size = (len(rest) - 5) // 2
+        name = rest[2 : 2 + size]
+        if size > 0 and rest == f"a/{name} b/{name}":
+            return name
+        index = rest.rfind(" b/")
+        return rest[index + 3 :] if index != -1 else rest
+    if rest.startswith('"'):
+        remainder = unquote_c(rest)[1].lstrip(" ")
+    else:
+        cut = rest.find(' "b/')
+        remainder = rest[cut + 1 :] if cut != -1 else ""
+    return git_name(remainder, "b/") if remainder else rest
 
 
 def word_offsets(words: list[str]) -> list[int]:
@@ -228,13 +281,13 @@ def parse_diff(text: str) -> list[FileDiff]:
                 current.status = "D"
             elif line.startswith("rename from "):
                 current.status = "R"
-                current.old_path = line[len("rename from ") :]
+                current.old_path = git_name(line[len("rename from ") :])
             elif line.startswith("rename to "):
-                current.path = line[len("rename to ") :]
+                current.path = git_name(line[len("rename to ") :])
             elif line.startswith("Binary files") or line.startswith("GIT binary patch"):
                 current.binary = True
-            elif line.startswith("+++ b/"):
-                current.path = line[len("+++ b/") :].split("\t")[0]
+            elif line.startswith("+++ ") and not line.startswith("+++ /dev/null"):
+                current.path = git_name(line[len("+++ ") :], "b/")
     for file in files:
         for item in file.hunks:
             mark_words(item.lines)

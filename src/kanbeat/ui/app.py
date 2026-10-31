@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -410,6 +411,14 @@ class ColumnMenu(PopupMenu):
             app.confirm_archive(ticket_id)
         else:
             app.move_by_hand(ticket_id, target)
+
+
+def file_reference(entry: dict[str, Any], path: str) -> str:
+    if entry.get("harness") == "shell":
+        return shlex.quote(path)
+    if any(char.isspace() for char in path) and '"' not in path:
+        return f'@"{path}"'
+    return "@" + path
 
 
 class SourceMenu(PopupMenu):
@@ -870,9 +879,18 @@ class KanbeatApp(App[None], inherit_bindings=False):
         if terminal_id is None or pane is None:
             self.notify("Open a session first, then press ask", severity="warning")
             return
+        if any(ord(char) < 32 or ord(char) == 127 for char in path):
+            self.notify(
+                "This file name has control characters, so it is not inserted",
+                severity="warning",
+            )
+            return
         entry = self.snapshot.get("terminals", {}).get(terminal_id) or {}
-        reference = path if entry.get("harness") == "shell" else "@" + path
-        self.run_worker(pane.send_input({"kind": "paste", "text": reference + " "}))
+        self.run_worker(
+            pane.send_input(
+                {"kind": "paste", "text": file_reference(entry, path) + " "}
+            )
+        )
         pane.query_one(TerminalDisplay).focus()
 
     async def show_diff(self, focus: bool = False) -> None:

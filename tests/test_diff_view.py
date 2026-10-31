@@ -1,3 +1,4 @@
+import asyncio
 import json
 import shutil
 import subprocess
@@ -6,9 +7,9 @@ from pathlib import Path
 import pytest
 from textual.widgets import Button
 
-from kanbeat.diff import Changes, FileDiff
+from kanbeat.diff import Changes, FileDiff, collect_changes
 from kanbeat.supervisor import Supervisor
-from kanbeat.ui.app import DIFF_HIDDEN_KEY, KanbeatApp, SourceMenu
+from kanbeat.ui.app import DIFF_HIDDEN_KEY, KanbeatApp, SourceMenu, file_reference
 from kanbeat.ui.diff import DiffView
 from kanbeat.ui.sessions import SessionsView
 from kanbeat.ui.terminal import TerminalPane
@@ -466,3 +467,65 @@ async def test_navigation_fits_with_terminal_controls_and_big_counts(
             assert app.query_one(name).region.right <= width, name
         label = app.query_one("#diff-toggle", Button).label.plain
         assert label == ("12 files | +36 -12" if width >= 160 else "12 +36 -12")
+
+
+@pytest.mark.parametrize(
+    "harness,path,expected",
+    [
+        ("claude", "src/a.py", "@src/a.py"),
+        ("codex", "my file.txt", '@"my file.txt"'),
+        ("claude", 'we"ird name.txt', '@we"ird name.txt'),
+        ("shell", "src/a.py", "src/a.py"),
+        ("shell", "my file.txt", "'my file.txt'"),
+        ("shell", "$(rm -rf ~).txt", "'$(rm -rf ~).txt'"),
+        ("shell", "it's.txt", "'it'\"'\"'s.txt'"),
+    ],
+)
+def test_file_references_are_quoted_for_the_target(harness, path, expected):
+    assert file_reference({"harness": harness}, path) == expected
+
+
+@pytest.mark.asyncio
+async def test_ask_refuses_names_with_control_characters(repo, monkeypatch):
+    app = make_app(repo, monkeypatch)
+    async with app.run_test(size=(170, 40)) as pilot:
+        await opened(app, pilot)
+        sent = []
+
+        async def record(values):
+            sent.append(values)
+
+        monkeypatch.setattr(app.query_one(TerminalPane), "send_input", record)
+        app.embedded_terminal = "t1"
+        app.snapshot = {"terminals": {"t1": {"harness": "shell"}}}
+        app.ask_about("x\nrm -rf ~")
+        app.ask_about("bell\x07.txt")
+        await pilot.pause()
+        assert sent == []
+        assert sum("control characters" in n.message for n in app._notifications) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_slow_result_for_the_old_source_is_dropped(repo, monkeypatch):
+    app = make_app(repo, monkeypatch)
+    async with app.run_test(size=(170, 40)) as pilot:
+        view = await opened(app, pilot)
+        release = asyncio.Event()
+        real = collect_changes
+
+        async def slow(project, previous="", source="current"):
+            if source == "current":
+                await release.wait()
+            return real(project, previous, source)
+
+        monkeypatch.setattr("kanbeat.ui.diff.collect", slow)
+        stale = asyncio.create_task(view.poll(force=True))
+        await pilot.pause()
+        await view.set_source("staged")
+        await until(pilot, lambda: view.changes is not None and view.source == "staged")
+        staged = list_paths(view)
+        release.set()
+        await stale
+        await pilot.pause()
+        assert view.source == "staged"
+        assert list_paths(view) == staged == []

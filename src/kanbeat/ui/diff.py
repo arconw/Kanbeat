@@ -272,6 +272,7 @@ class DiffView(Vertical):
         self.changes: Changes | None = None
         self.signature = ""
         self.show_generated = False
+        self.generation = 0
         self.restore_focus: Widget | None = None
         self.display = False
 
@@ -327,9 +328,13 @@ class DiffView(Vertical):
         await self.apply()
 
     async def apply(self) -> None:
+        self.generation += 1
+        generation = self.generation
         changes = self.changes
         visible = self.visible_files()
         renders = await asyncio.to_thread(render_files, visible)
+        if generation != self.generation:
+            return
         if changes is None:
             message = LOADING
         elif not changes.available:
@@ -362,11 +367,11 @@ class DiffView(Vertical):
             await self.poll(force=True)
 
     async def poll(self, force: bool = False) -> None:
-        changes = await collect(
-            self.project, "" if force else self.signature, self.source
-        )
-        if not changes.unchanged:
-            await self.show_changes(changes)
+        source = self.source
+        changes = await collect(self.project, "" if force else self.signature, source)
+        if source != self.source or changes.unchanged:
+            return
+        await self.show_changes(changes)
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         name = event.button.id

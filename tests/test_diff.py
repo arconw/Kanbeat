@@ -7,6 +7,7 @@ import pytest
 
 from kanbeat.diff import (
     collect_changes,
+    header_path,
     is_generated,
     parse_diff,
     read_untracked,
@@ -318,3 +319,56 @@ def test_syntax_colours_never_look_like_the_red_or_green_highlights():
     ]
     assert clashing == []
     assert ADD_COLOR != REMOVE_COLOR
+
+
+ODD_NAMES = [
+    'we"ird.txt',
+    "tab\there.txt",
+    "new\nline.txt",
+    "back\\slash.txt",
+    "with space.txt",
+    "dir b/in.txt",
+    "naïve ünï.txt",
+    "bell\x07.txt",
+]
+
+
+def test_header_path_understands_quoted_and_ambiguous_names():
+    assert header_path('diff --git "a/we\\"ird" "b/we\\"ird"') == 'we"ird'
+    assert header_path('diff --git "a/tab\\there" "b/tab\\there"') == "tab\there"
+    assert header_path('diff --git "a/\\303\\251" "b/\\303\\251"') == "é"
+    assert header_path("diff --git a/x b/y b/x b/y") == "x b/y"
+    assert header_path('diff --git a/plain "b/ta\\tb"') == "ta\tb"
+    assert header_path('diff --git "a/ta\\tb" b/plain') == "plain"
+
+
+@pytest.mark.parametrize("name", ODD_NAMES)
+def test_odd_file_names_keep_their_exact_path_for_every_kind_of_change(repo, name):
+    path = repo / name
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("one\n")
+    git(repo, "add", name)
+    git(repo, "commit", "-qm", "odd")
+    path.write_text("two\n")
+    assert [file.path for file in collect_changes(repo).files] == [name]
+    path.unlink()
+    [deleted] = collect_changes(repo).files
+    assert (deleted.path, deleted.status) == (name, "D")
+    path.write_bytes(b"\x00\x01")
+    [binary] = collect_changes(repo).files
+    assert binary.path == name and binary.binary
+    path.unlink()
+    git(repo, "mv", "README.md", name + ".moved")
+    paths = {file.path for file in collect_changes(repo).files}
+    assert name + ".moved" in paths or name + ".moved" in {
+        file.old_path for file in collect_changes(repo).files
+    }
+
+
+def test_untracked_odd_names_are_listed_exactly(repo):
+    for name in ODD_NAMES:
+        path = repo / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("x\n")
+    listed = {file.path for file in collect_changes(repo).files}
+    assert set(ODD_NAMES) <= listed
