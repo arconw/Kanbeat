@@ -27,7 +27,7 @@ async def test_ipc(tmp_path):
             tmp_path, {"op": "move", "ticket": ticket["id"], "column": "todo"}
         )
         assert moved["tickets"][0]["column"] == "todo"
-        assert moved["hooks"]["1"]["status"] == "pending"
+        assert "hooks" not in moved and "event_seq" in moved
         with pytest.raises(RuntimeError, match="Invalid transition hook harness"):
             await request(
                 tmp_path,

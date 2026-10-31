@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .config_keys import CONFIG_KEYS
+from .events import format_event
 
 Send = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 COLUMN_ORDER = ("backlog", "todo", "progress", "review", "done", "failed", "archive")
 LINE_PREVIEW = 60
 WATCH_RETRIES = 120
+EVENT_BATCH = 200
 
 
 def one_line(value: Any) -> str:
@@ -119,92 +121,46 @@ async def status_command(send: Send, as_json: bool) -> None:
             print(f"  #{ticket['id']} {ticket['title']}{waiting}")
 
 
-def watch_index(snapshot: dict[str, Any]) -> tuple[dict[str, tuple[str, str]], str]:
-    tickets = {
-        ticket["id"]: (ticket["column"], ticket["title"])
-        for ticket in snapshot.get("tickets", [])
-    }
-    return tickets, snapshot.get("execution", "stopped")
-
-
-def diff_events(
-    before: tuple[dict[str, tuple[str, str]], str],
-    after: tuple[dict[str, tuple[str, str]], str],
-) -> list[dict[str, Any]]:
-    old, old_execution = before
-    new, new_execution = after
-    events: list[dict[str, Any]] = []
-    for ticket_id in sorted(set(old) | set(new)):
-        if ticket_id not in old:
-            column, title = new[ticket_id]
-            events.append(
-                {
-                    "event": "created",
-                    "ticket": ticket_id,
-                    "column": column,
-                    "title": title,
-                }
-            )
-        elif ticket_id not in new:
-            events.append(
-                {"event": "deleted", "ticket": ticket_id, "title": old[ticket_id][1]}
-            )
-        elif old[ticket_id][0] != new[ticket_id][0]:
-            events.append(
-                {
-                    "event": "moved",
-                    "ticket": ticket_id,
-                    "from": old[ticket_id][0],
-                    "to": new[ticket_id][0],
-                    "title": new[ticket_id][1],
-                }
-            )
-    if old_execution != new_execution:
-        events.append(
-            {"event": "execution", "from": old_execution, "to": new_execution}
-        )
-    return events
-
-
-def format_event(event: dict[str, Any]) -> str:
-    kind = event["event"]
-    if kind == "created":
-        return f"created #{event['ticket']} in {event['column']}  {event['title']}"
-    if kind == "deleted":
-        return f"deleted #{event['ticket']}  {event['title']}"
-    if kind == "moved":
-        return (
-            f"moved #{event['ticket']} {event['from']} -> {event['to']}  "
-            f"{event['title']}"
-        )
-    if kind in ("connected", "disconnected"):
-        return f"supervisor {kind}"
-    return f"execution {event['from']} -> {event['to']}"
-
-
 def emit(event: dict[str, Any], as_json: bool) -> None:
     if as_json:
-        event = {
-            "time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            **event,
-        }
+        if "time" not in event:
+            event = {
+                "time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                **event,
+            }
         print(json.dumps(event, ensure_ascii=False), flush=True)
     else:
         print(format_event(event), flush=True)
+
+
+async def events_command(
+    send: Send, as_json: bool, since: int | None, limit: int
+) -> int:
+    if since is None:
+        reply = await send({"op": "events", "tail": limit})
+    else:
+        reply = await send({"op": "events", "since": since, "limit": limit})
+    if reply.get("missed"):
+        emit({"event": "gap", "missed": reply["missed"]}, as_json)
+    for event in reply["events"]:
+        emit(event, as_json)
+    return reply["last"]
 
 
 async def watch_command(
     send: Send,
     as_json: bool,
     interval: float,
+    since: int | None = None,
     rounds: int | None = None,
     retries: int = WATCH_RETRIES,
 ) -> None:
-    before = None
+    cursor = since
     failures = polls = 0
     while True:
         try:
-            after = watch_index(await send({"op": "snapshot"}))
+            reply = await send({"op": "events", "since": cursor, "limit": EVENT_BATCH})
+            events, last = reply["events"], reply["last"]
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):
             failures += 1
             if failures == 1:
@@ -215,10 +171,13 @@ async def watch_command(
             if failures:
                 emit({"event": "connected"}, as_json)
                 failures = 0
-            if before is not None:
-                for event in diff_events(before, after):
-                    emit(event, as_json)
-            before = after
+            if cursor is None or last < cursor:
+                cursor = last
+            elif reply.get("missed"):
+                emit({"event": "gap", "missed": reply["missed"]}, as_json)
+            for event in events:
+                emit(event, as_json)
+                cursor = event["seq"]
         if rounds is not None and polls >= rounds:
             return
         polls += 1

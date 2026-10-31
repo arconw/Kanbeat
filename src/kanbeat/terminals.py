@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import codecs
 import fcntl
 import os
@@ -95,10 +96,15 @@ class TerminalSession:
         self.stop_requested = False
         self.pending_stops = 0
         self.revision = 0
+        self.last_output = time.monotonic()
         self.changed = asyncio.Event()
+
+    def quiet_for(self) -> float:
+        return time.monotonic() - self.last_output
 
     def touch(self) -> None:
         self.revision += 1
+        self.last_output = time.monotonic()
         self.changed.set()
         self.changed = asyncio.Event()
 

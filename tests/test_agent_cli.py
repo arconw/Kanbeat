@@ -6,12 +6,10 @@ import pytest
 
 from kanbeat.agent_cli import (
     config_command,
-    diff_events,
-    format_event,
+    events_command,
     read_value,
     status_command,
     watch_command,
-    watch_index,
 )
 from kanbeat.supervisor import Supervisor
 
@@ -103,84 +101,96 @@ def test_status_lists_columns_with_blockers_and_json_form(supervisor, capsys):
     assert data["columns"]["backlog"][0]["blocked_by"] == [first.id]
 
 
-def snapshot(execution="stopped", **tickets):
-    return {
-        "execution": execution,
-        "tickets": [
-            {"id": ticket_id, "column": column, "title": "Title " + ticket_id}
-            for ticket_id, column in tickets.items()
-        ],
-    }
+def event(seq, kind="moved", **fields):
+    base = {"seq": seq, "time": "2026-10-31T10:00:00Z", "event": kind}
+    return {**base, **fields}
 
 
-def test_events_describe_created_moved_deleted_and_execution_changes():
-    before = watch_index(snapshot(t001="todo", t002="progress", t003="done"))
-    after = watch_index(
-        snapshot("running", t001="progress", t002="progress", t004="backlog")
-    )
-    events = diff_events(before, after)
-    assert [event["event"] for event in events] == [
-        "moved",
-        "deleted",
-        "created",
-        "execution",
-    ]
-    assert [format_event(event) for event in events] == [
-        "moved #t001 todo -> progress  Title t001",
-        "deleted #t003  Title t003",
-        "created #t004 in backlog  Title t004",
-        "execution stopped -> running",
-    ]
-    assert diff_events(before, before) == []
-
-
-def test_watch_prints_one_line_per_event_as_text_or_json(capsys):
-    states = iter(
-        [
-            snapshot(a="todo"),
-            snapshot(a="todo"),
-            snapshot("running", a="progress"),
-        ]
+def moved(seq, ticket="a"):
+    return event(
+        seq,
+        ticket=ticket,
+        **{"from": "todo", "to": "progress"},
+        title="Title " + ticket,
     )
 
+
+def test_events_prints_what_came_after_a_number_and_returns_the_last(capsys):
     async def send(request):
-        return next(states)
+        assert request == {"op": "events", "since": 4, "limit": 50}
+        return {
+            "events": [
+                moved(5),
+                event(6, "execution", **{"from": "stopped", "to": "running"}),
+            ],
+            "last": 6,
+        }
 
-    asyncio.run(watch_command(send, False, 0, rounds=2))
+    assert asyncio.run(events_command(send, False, 4, 50)) == 6
     assert capsys.readouterr().out.splitlines() == [
         "moved #a todo -> progress  Title a",
         "execution stopped -> running",
     ]
-    states = iter([snapshot(a="todo"), snapshot(a="done")])
-    asyncio.run(watch_command(send, True, 0, rounds=1))
-    [line] = capsys.readouterr().out.splitlines()
-    event = json.loads(line)
-    assert event["event"] == "moved" and event["to"] == "done"
-    assert event["time"].endswith("Z")
 
 
-def test_watch_reports_a_lost_supervisor_and_picks_up_after_it_returns(capsys):
-    calls = iter(
+def test_watch_starts_now_then_prints_new_events_as_text_or_json(capsys):
+    replies = iter(
         [
-            snapshot(a="todo"),
-            RuntimeError("down"),
-            OSError("gone"),
-            snapshot("running", a="progress"),
+            {"events": [], "last": 7},
+            {"events": [], "last": 7},
+            {"events": [moved(8)], "last": 8},
         ]
     )
+    asked = []
 
     async def send(request):
-        item = next(calls)
+        asked.append(request["since"])
+        return next(replies)
+
+    asyncio.run(watch_command(send, False, 0, rounds=2))
+    assert asked == [None, 7, 7]
+    assert capsys.readouterr().out.splitlines() == [
+        "moved #a todo -> progress  Title a"
+    ]
+    replies = iter(
+        [{"events": [moved(3)], "last": 3}, {"events": [moved(4, "b")], "last": 4}]
+    )
+    asyncio.run(watch_command(send, True, 0, since=2, rounds=1))
+    first, second = (json.loads(line) for line in capsys.readouterr().out.splitlines())
+    assert (first["seq"], first["ticket"], second["seq"], second["ticket"]) == (
+        3,
+        "a",
+        4,
+        "b",
+    )
+    assert first["time"] == "2026-10-31T10:00:00Z"
+
+
+def test_watch_reports_a_lost_supervisor_and_continues_from_its_cursor(capsys):
+    steps = iter(
+        [
+            {"events": [], "last": 2},
+            RuntimeError("down"),
+            OSError("gone"),
+            {"events": [moved(3), moved(4, "b")], "last": 4},
+        ]
+    )
+    asked = []
+
+    async def send(request):
+        asked.append(request["since"])
+        item = next(steps)
         if isinstance(item, Exception):
             raise item
         return item
 
     asyncio.run(watch_command(send, False, 0, rounds=3))
+    assert asked == [None, 2, 2, 2]
     assert capsys.readouterr().out.splitlines() == [
         "supervisor disconnected",
         "supervisor connected",
         "moved #a todo -> progress  Title a",
-        "execution stopped -> running",
+        "moved #b todo -> progress  Title b",
     ]
 
 
@@ -191,21 +201,22 @@ def test_watch_gives_up_when_the_supervisor_never_comes_back(capsys):
         state["calls"] += 1
         if state["calls"] > 1:
             raise OSError("gone")
-        return snapshot(a="todo")
+        return {"events": [], "last": 0}
 
     with pytest.raises(RuntimeError, match="stopped answering"):
         asyncio.run(watch_command(send, True, 0, retries=3))
-    lines = capsys.readouterr().out.splitlines()
-    assert [json.loads(line)["event"] for line in lines] == ["disconnected"]
+    assert [
+        json.loads(line)["event"] for line in capsys.readouterr().out.splitlines()
+    ] == ["disconnected"]
 
 
 def test_watch_retries_when_the_first_answer_fails_or_is_malformed(capsys):
     steps = iter(
         [
             OSError("not up yet"),
-            {"tickets": "broken"},
-            snapshot(a="todo"),
-            snapshot(a="progress"),
+            {"nope": 1},
+            {"events": [], "last": 5},
+            {"events": [moved(6)], "last": 6},
         ]
     )
 
@@ -221,3 +232,57 @@ def test_watch_retries_when_the_first_answer_fails_or_is_malformed(capsys):
         "supervisor connected",
         "moved #a todo -> progress  Title a",
     ]
+
+
+def test_watch_starts_over_when_the_supervisor_numbers_events_from_scratch(capsys):
+    steps = iter(
+        [
+            {"events": [], "last": 40},
+            {"events": [], "last": 2},
+            {"events": [moved(3)], "last": 3},
+        ]
+    )
+
+    async def send(request):
+        return next(steps)
+
+    asyncio.run(watch_command(send, False, 0, rounds=2))
+    assert capsys.readouterr().out.splitlines() == [
+        "moved #a todo -> progress  Title a"
+    ]
+
+
+def test_events_without_a_number_asks_for_the_newest_ones(capsys):
+    async def send(request):
+        assert request == {"op": "events", "tail": 3}
+        return {"events": [moved(8), moved(9, "b")], "last": 9}
+
+    assert asyncio.run(events_command(send, False, None, 3)) == 9
+    assert capsys.readouterr().out.splitlines() == [
+        "moved #a todo -> progress  Title a",
+        "moved #b todo -> progress  Title b",
+    ]
+
+
+def test_commands_say_when_older_events_are_gone(capsys):
+    async def send(request):
+        return {"events": [moved(9)], "last": 9, "missed": 4}
+
+    asyncio.run(events_command(send, False, 2, 10))
+    assert capsys.readouterr().out.splitlines() == [
+        "4 earlier events are no longer available",
+        "moved #a todo -> progress  Title a",
+    ]
+    replies = iter(
+        [
+            {"events": [], "last": 20},
+            {"events": [moved(30)], "last": 30, "missed": 9},
+        ]
+    )
+
+    async def watching(request):
+        return next(replies)
+
+    asyncio.run(watch_command(watching, True, 0, since=None, rounds=1))
+    gap, event = (json.loads(line) for line in capsys.readouterr().out.splitlines())
+    assert gap["event"] == "gap" and gap["missed"] == 9 and event["seq"] == 30

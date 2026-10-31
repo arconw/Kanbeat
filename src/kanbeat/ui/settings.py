@@ -104,8 +104,9 @@ class Settings(VerticalScroll):
             classes="settings-editor",
         )
         yield Static(
-            "Empty prompt disables hooks. Hooks run after moves on Play. "
-            "Failures never revert tickets; interrupted hooks are not replayed.",
+            "The hook is a session called Transition hook (Sessions, Ungrouped). "
+            "When tickets change or the board starts or stops, Kanbeat wakes it and "
+            "tells it what happened. An empty prompt turns the hook off.",
             classes="hint",
         )
         yield Button("Save settings", id="settings-save", variant="primary")

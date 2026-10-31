@@ -82,13 +82,18 @@ files and the `kanbeat` command. Run the command from the project directory.
   and `transition_hook.prompt`. A change takes effect at once, shows as a
   notice in the TUI and can be undone from Settings or with `config revert`.
   Change only what you were asked to change.
-- To follow ticket changes, run `kanbeat watch --json` as a background process:
-  it prints one line per event (`created`, `moved`, `deleted`, `execution`)
-  until you stop it.
+- Ticket changes are numbered events (`created`, `moved`, `deleted`,
+  `execution`) that Kanbeat records itself, including changes made by hand.
+  `kanbeat events --since N` prints the ones after number N and exits, and
+  `kanbeat watch --json` keeps printing new ones until you stop it; `--since N`
+  starts from N so nothing is missed. If a Transition hook is configured,
+  Kanbeat wakes the session called "Transition hook" with the new events
+  instead; that session does not need to run `watch`.
 """
 
 LEGACY_INSTRUCTION_HASHES = frozenset(
     {
+        "034a3439a1fc6bb21c2c4e6fa1f61b290e3910265b1669858f5f483cfc0937cb",
         "91b1a7999b9b6d3ee5f282ba786da785d85e4fc8876d39bfc493f78aed3626c1",
         "cca0e0df29cef497c96fce72141ccba86438f8c902f8d433b74383d510167584",
         "a101523d49b881ab841947b74e4de997bb98d93e1978acd7aafb44a1061713a2",

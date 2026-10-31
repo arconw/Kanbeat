@@ -44,8 +44,8 @@ A ticket is a Markdown file, its status is the directory it lives in, and one pe
 - **Developer, then Review/QA.** A developer turn moves a ticket to Review/QA, where zero or more reviewer slots with isolated contexts approve it or send it back with feedback.
 - **Native terminals and sessions.** Attach to a running harness live, or keep independent sessions in groups. Every session has a native id, so it resumes where it stopped.
 - **Changes panel.** A button next to Detach shows `3 files | +35 -11` and opens the project's uncommitted diff beside the terminal, with a clickable file list, wrapped lines, highlighted words and an `[ ask ]` button that drops a file reference into the open session.
-- **Agents can run the board.** A ticket's status is its folder, and `kanbeat status`, `watch`, `config get/set` (with a history you can revert in Settings) and `INSTRUCTIONS.md` let an agent manage tickets and settings without an extra server.
-- **Transition hooks.** Optionally run a prompt in a fresh native session after each column change Kanbeat makes.
+- **Agents can run the board.** A ticket's status is its folder, and `kanbeat status`, `events`, `watch`, `config get/set` (with a history you can revert in Settings) and `INSTRUCTIONS.md` let an agent manage tickets and settings without an extra server.
+- **Transition hook.** Optionally keep one session, "Transition hook", that Kanbeat wakes with the numbered board events (ticket created, moved, deleted, board started or stopped), including when it is stopped.
 
 ## Installation
 
@@ -293,7 +293,7 @@ flowchart TB
 - Kanbeat does not manage Git: no worktrees, branches, resets or cleanups. Parallel tickets all edit the same working tree, so declare a dependency whenever two tickets touch the same files.
 - The TUI shows ticket Markdown read-only; edit the files externally.
 - Attached views are monitor-only while a structured worker turn is active, so Kanbeat never runs two writers against one native session.
-- Transition hooks are not exactly-once; make their actions safe to repeat.
+- The transition hook is woken by typing into its terminal when it is quiet, so it can misread a message sent while the harness waits for an answer; keep its prompt specific and its actions safe to repeat.
 - Native terminals do not forward mouse reporting or clipboard requests.
 - A terminal of at least 80 × 24 is required; about 190 columns show all six board columns without scrolling, narrower terminals scroll the board sideways.
 

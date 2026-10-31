@@ -661,6 +661,7 @@ class SessionGroups:
                 group=group_id,
                 title=title,
                 prompt=prompt,
+                role="hook" if request.get("role") == "hook" else "",
                 native_session=draft["native_session"],
                 argv=launch[0] if launch else None,
                 env=launch[1] if launch else None,

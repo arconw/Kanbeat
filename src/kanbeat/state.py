@@ -135,10 +135,21 @@ class LocalState:
                 atomic_json(self.history_path, {"entries": self.history})
             raise
         self.history = history
+        self.track_hook(rows)
         self.config = updated
         self.data["config_seq"] = serial
         self.save()
         return entry
+
+    def track_hook(self, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            if row["key"] != "transition_hook.prompt":
+                continue
+            hook = self.data.setdefault("hook", {})
+            if str(row["new"]).strip() and not str(row["old"] or "").strip():
+                hook["cursor"] = int(self.data.get("event_seq", 0))
+            elif not str(row["new"]).strip():
+                hook.pop("cursor", None)
 
     def revert_config(
         self, entry_id: int, source: str
