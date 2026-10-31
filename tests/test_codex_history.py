@@ -211,7 +211,17 @@ async def test_empty_history_and_page_limit_are_explicit():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("response", [None, {}, {"data": "invalid"}, page({})])
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        {},
+        {"data": "invalid"},
+        page({}),
+        page(entry("item-1", "")),
+        page(entry("item-1", "  ")),
+    ],
+)
 async def test_malformed_history_is_not_reported_as_complete(response):
     result = await read_codex_history(FakeHost(response), THREAD)
     assert result.unreachable and not result.complete and not result.events

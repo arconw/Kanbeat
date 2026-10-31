@@ -295,7 +295,12 @@ def _event(
 ) -> ConversationEvent | None:
     kind = item.get("type")
     item_id = item.get("id")
-    if not isinstance(kind, str) or not isinstance(item_id, str) or not item_id:
+    if (
+        not isinstance(kind, str)
+        or not kind.strip()
+        or not isinstance(item_id, str)
+        or not item_id
+    ):
         raise ValueError("Codex history item has no type or id")
 
     if kind == "userMessage":
