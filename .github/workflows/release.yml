@@ -12,6 +12,7 @@ on:
       - 'tools/release_notices.py'
       - 'tools/smoke_release.py'
       - 'tools/frozen_entry.py'
+      - 'install.sh'
       - 'docs/releases.md'
   workflow_dispatch:
 
@@ -114,13 +115,18 @@ jobs:
         run: |
           mkdir -p .tmp/assets
           cp .tmp/artifacts/archive-*/*.tar.gz .tmp/artifacts/distributions/* .tmp/assets/
+          cp install.sh .tmp/assets/
           cd .tmp/assets
-          sha256sum -- *.tar.gz *.whl > SHA256SUMS
+          sha256sum -- *.tar.gz *.whl install.sh > SHA256SUMS
           cat SHA256SUMS
       - name: Write release notes
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           {
             echo "Unsigned standalone onedir archives for the platforms listed below, plus the wheel and sdist."
+            echo
+            echo "Quick install on Linux or macOS, no Python needed: curl -fsSL https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/install.sh | KANBEAT_VERSION=${TAG#v} sh"
             echo
             echo "Verify downloads with SHA256SUMS. macOS archives are not signed or notarized."
             echo "See docs/releases.md for install, update and removal steps and for platform limits."

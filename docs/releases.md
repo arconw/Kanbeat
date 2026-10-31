@@ -34,6 +34,14 @@ Linux archives are built on Ubuntu 22.04 (glibc 2.35) and need a distribution wi
 
 macOS archives are **unsigned and not notarized**. Gatekeeper may block browser-downloaded copies; the manual trust step below is available after you verify the archive. Signing/notarization credentials are not configured by this workflow.
 
+## Install with the script
+
+`install.sh` automates everything below: it detects the system and CPU, resolves the latest published release (or `KANBEAT_VERSION`), downloads the archive and `SHA256SUMS`, verifies the checksum, unpacks to `<prefix>/opt/kanbeat-<version>` (default prefix `~/.local`, override with `KANBEAT_PREFIX`), points `<prefix>/opt/kanbeat` and `<prefix>/bin/kanbeat` at it and runs `kanbeat --version`. It needs only `curl`, `tar` and `sha256sum` or `shasum`. `sh install.sh --uninstall` removes what it installed and leaves projects alone. Every release carries the script as an asset and lists it in `SHA256SUMS`; releases published before the script existed (up to 0.9.0) do not, so fetch it from the repository instead:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/arconw/Kanbeat/main/install.sh | sh
+```
+
 ## Install from an archive
 
 Download the archive for your platform and `SHA256SUMS` from the release page, then verify and unpack:
