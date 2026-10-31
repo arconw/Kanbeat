@@ -160,7 +160,78 @@ Build the site and publish it once the API docs are written.
 - The "blocks" side is derived and never written. The TUI shows `blocked by #002` and `→ blocks #003` on the cards and BLOCKED BY / BLOCKS lists in the open ticket; each entry opens that ticket.
 - Every card has a strip: `[=]` opens a column menu (Archive last), `[<]` and `[>]` move the ticket one column. Backlog and Todo moves are immediate; every other manual move, and every archive, asks for confirmation.
 
+### A chain, drawn
+
+Nine tickets from a real run, their `Blocked by` lines, and the order Kanbeat works through them once they are all in **Todo**:
+
+```mermaid
+flowchart LR
+    t2["#002<br/>download errors"]:::go
+    t3["#003<br/>dedupe int helpers"]:::go
+    t5["#005<br/>comfy constants"]:::go
+    t4["#004<br/>dedupe http + save"]
+    t7["#007<br/>request timeout"]
+    t6["#006<br/>unit tests"]
+    t8["#008<br/>metadata sidecar"]
+    t9["#009<br/>batch prompts"]
+    t10["#010<br/>split into modules"]:::last
+    t2 --> t4
+    t2 --> t7
+    t4 --> t8
+    t4 --> t9
+    t3 --> t6
+    t5 --> t6
+    t6 --> t10
+    t8 --> t10
+    t9 --> t10
+    classDef go fill:#1f6f43,stroke:#5ee08a,color:#fff
+    classDef last fill:#6b3fa0,stroke:#b0a0ff,color:#fff
+```
+
+Green tickets have no blockers, so they start **at once and in parallel**; everything else waits in Todo and starts by itself as its blockers reach Done. The longest chain (`#002 → #004 → #008 → #010`) runs one ticket at a time, from the first.
+
+```text
+time ──────────────────────────────────────────▶
+#002 ██████████
+#003 ██████
+#005 ████████
+#004           ████████                   after #002
+#007           ██████                     after #002
+#006         ██████                       after #003 and #005
+#008                   ████████           after #004
+#009                   ██████             after #004
+#010                           ██████████ after #006, #008, #009
+```
+
+*An illustration of the order with made-up durations, not a measurement. With the default `max_parallel` of 3 no more than three tickets are active at once.*
+
 `.kanbeat/INSTRUCTIONS.md` explains this format to an agent that you ask to write tickets. See the [Guide](docs/guide.md#dependencies) for the full rules.
+
+## Where the harness shows up
+
+The same native CLIs appear in two places, and they never mix:
+
+```mermaid
+flowchart TB
+    subgraph board["Board: tickets"]
+        direction LR
+        tk["#004 ticket<br/>.kanbeat/progress/004-….md"] --> dev["developer slot<br/>harness: codex"]
+        tk --> rv1["reviewer-1 slot<br/>harness: claude"]
+        tk --> rv2["reviewer-2 slot<br/>harness: opencode"]
+    end
+    subgraph sessions["Sessions: your own terminals"]
+        direction LR
+        g1["group: Fixes"] --> s1["Fix average.py<br/>claude"]
+        g1 --> s2["Fix slugify.py<br/>codex"]
+        g2["Ungrouped"] --> s3["Scratch<br/>pi"]
+        g2 --> s4["Work<br/>terminal ($SHELL)"]
+    end
+    play(["Play / Stop"]) -.->|controls| board
+    play -.->|does not touch| sessions
+```
+
+- **Board:** each ticket has a developer slot and optional reviewer slots; every slot has its own harness, resumed by its session. They run only while the board is playing, and you can attach to a live slot from the ticket dialog or the Sessions page (Tasks).
+- **Sessions:** terminals you start by hand, each with a harness (Codex, Claude Code, OpenCode, Pi) **or a plain terminal**, organised into groups. They keep running when you detach, close the TUI or press Stop.
 
 ## Sessions
 
@@ -168,8 +239,13 @@ Build the site and publish it once the API docs are written.
 
 *Sessions: groups on the left, the terminal on the right, switching by click, detaching, and the same session opened from a second client. The process in the terminal is a stand-in shell script, not a vendor CLI.*
 
+![Real Claude Code, Codex, OpenCode and Pi sessions fixing four small bugs](docs/media/agents.gif)
+
+*Real Claude Code, OpenCode, Pi and Codex sessions, started from Sessions and run on the author's own accounts in a throwaway project (four tiny buggy modules, one agent each). The account name, email, plan and usage lines are masked in the recording; everything else is the agents' real output.*
+
 - Sessions is the first tab. Groups and sessions sit in a list beside an embedded terminal; clicking a session switches to it.
 - Every independent session gets a native id (Codex thread, OpenCode session, Claude and Pi session id), so **clicking a stopped session resumes it** where it left off. The id can be set in Edit.
+- Besides a harness, a session can be a plain **Terminal** running your shell. Its working directory is remembered: after Stop or a restart, clicking the session opens a fresh shell in the directory you last `cd`-ed to.
 - The session menu has Edit, Stop, **Delete** (removes the workspace record, the vendor history stays) and **Delete completely** (also removes the native session).
 - Select text with a plain left drag; it is copied when you release. Shift+drag keeps your terminal's own selection.
 - Independent sessions keep running when you detach, close the TUI or press Board Stop. Board task slots can be attached live while the board runs (OpenCode, Codex and Claude; Pi needs Board Stop).

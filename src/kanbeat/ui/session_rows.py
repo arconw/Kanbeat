@@ -80,17 +80,21 @@ class SessionRow(Horizontal):
         self.entry = deepcopy(entry)
 
     @staticmethod
+    def kind(entry):
+        return "terminal" if entry["harness"] == "shell" else entry["harness"]
+
+    @staticmethod
     def label(entry):
         status = (
             worker_status_label(entry)
             if entry.get("activity")
             else lifecycle_label(entry)
         )
-        return f"{entry['title']} / {entry['harness']} / {status}"
+        return f"{entry['title']} / {SessionRow.kind(entry)} / {status}"
 
     @staticmethod
     def title(entry):
-        return f"{entry['title']} / {entry['harness']}"
+        return f"{entry['title']} / {SessionRow.kind(entry)}"
 
     @staticmethod
     def state_kind(entry):

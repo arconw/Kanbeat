@@ -262,6 +262,26 @@ def process_identity(pid: int) -> str | None:
         return None
 
 
+def process_directory(pid: int) -> str | None:
+    """Current working directory of a running process, or None if unknown."""
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        pass
+    try:
+        output = subprocess.check_output(
+            ["lsof", "-a", "-d", "cwd", "-p", str(pid), "-Fn"],
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return next(
+        (line[1:] for line in output.splitlines() if line.startswith("n")), None
+    )
+
+
 def signal_owned_process(proc: asyncio.subprocess.Process, signum: int) -> None:
     """Signal only the current child-led group, otherwise the child itself."""
     if proc.returncode is not None:

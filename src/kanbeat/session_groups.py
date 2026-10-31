@@ -14,7 +14,7 @@ from .native import available, process_identity
 from .native_settings import cli_args
 from .opencode_host import OpenCodeHostError, OpenCodeHttpError, OpenCodeModel
 from .state import LocalState
-from .terminals import Terminals, framed_prompt
+from .terminals import SHELL_HARNESS, Terminals, framed_prompt
 
 
 def display_name(value: Any) -> str:
@@ -634,8 +634,12 @@ class SessionGroups:
             harness = str(
                 request.get("harness") or self.state.config["default_harness"]
             )
-            if not available(harness):
+            if harness != SHELL_HARNESS and not available(harness):
                 raise ValueError("Independent session harness unavailable: " + harness)
+            if harness == SHELL_HARNESS and (
+                request.get("prompt") or request.get("native_session")
+            ):
+                raise ValueError("A terminal takes no prompt or native session ID")
             prompt = request.get("prompt") or ""
             native_session = request.get("native_session") or None
             if not isinstance(prompt, str) or len(prompt.encode()) > 16000:
@@ -672,6 +676,8 @@ class SessionGroups:
                 title = display_name(request.get("title"))
                 group_id = self.group(str(request.get("group") or ""))
                 native = self.native_id(request.get("native_session"))
+                if entry.get("harness") == SHELL_HARNESS and native is not None:
+                    raise ValueError("A terminal has no native session ID")
                 if "native_session" in request and native != entry.get(
                     "native_session"
                 ):
@@ -685,7 +691,9 @@ class SessionGroups:
                 entry.update(title=title, group=group_id)
             elif op == "session_restart":
                 self.inactive(entry)
-                if not available(entry["harness"]):
+                if entry["harness"] != SHELL_HARNESS and not available(
+                    entry["harness"]
+                ):
                     raise ValueError(
                         "Independent session harness unavailable: " + entry["harness"]
                     )

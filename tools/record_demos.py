@@ -29,19 +29,32 @@ done
 
 
 class Demo:
-    def __init__(self, workdir: Path):
+    def __init__(self, workdir: Path, real_agents: bool = False):
         self.workdir = workdir.resolve()
         self.bin = self.workdir / "bin"
+        self.real_agents = real_agents
         self.processes: dict[Path, subprocess.Popen] = {}
         self.started: list[subprocess.Popen] = []
         self.env = {
-            "PATH": f"{self.bin}:/usr/bin:/bin",
+            "PATH": self.path(),
             "HOME": os.environ["HOME"],
             "LANG": "C.UTF-8",
             "TERM": "xterm-256color",
+            "SHELL": "/bin/sh",
             "TMPDIR": str(self.workdir),
             "PYTHONDONTWRITEBYTECODE": "1",
         }
+
+    def path(self) -> str:
+        if not self.real_agents:
+            return f"{self.bin}:/usr/bin:/bin"
+        found = {}
+        for name in HARNESS_NAMES:
+            location = shutil.which(name)
+            if location is None:
+                raise SystemExit(f"The {name} CLI is not on PATH")
+            found[str(Path(location).parent)] = None
+        return ":".join([*found, "/usr/bin", "/bin"])
 
     def prepare(self) -> None:
         marker = self.workdir / MARKER
@@ -52,7 +65,7 @@ class Demo:
         self.workdir.mkdir(parents=True, exist_ok=True)
         marker.touch()
         self.bin.mkdir(exist_ok=True)
-        for name in HARNESS_NAMES:
+        for name in () if self.real_agents else HARNESS_NAMES:
             script = self.bin / name
             script.write_text(STAND_IN, encoding="utf-8")
             script.chmod(0o755)
@@ -132,11 +145,29 @@ class Demo:
 
 
 class Recording:
-    def __init__(self, name: str, renderer: FrameRenderer, project: Path):
+    def __init__(
+        self,
+        name: str,
+        renderer: FrameRenderer,
+        project: Path,
+        masks: dict[str, str] | None = None,
+        forbidden: tuple[str, ...] = (),
+    ):
         self.name = name
         self.renderer = renderer
-        self.hidden = {str(project): PATH_PLACEHOLDER}
-        self.forbidden = (str(Path.home()), getpass.getuser(), str(project.parent))
+        home = str(Path.home())
+        shown = "~" + str(project)[len(home) :] if str(project).startswith(home) else ""
+        self.hidden = {
+            str(project): PATH_PLACEHOLDER,
+            **({shown: PATH_PLACEHOLDER} if shown else {}),
+            **(masks or {}),
+        }
+        self.forbidden = (
+            home,
+            getpass.getuser(),
+            str(project.parent),
+            *forbidden,
+        )
         self.frames: list = []
 
     def capture(self, client: "Client", caption: str, hold: float = 1.8) -> None:
@@ -423,7 +454,27 @@ async def sessions_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
                         "A second session. The first one keeps running in the background.",
                         2.6,
                     )
+            (project / "src").mkdir()
+            await one.click("#new-session")
+            await one.click("#session-title")
+            await one.type("Shell")
+            one.app.screen.query_one("#session-harness").value = "shell"
+            await one.settle(0.3)
+            one.shot(
+                "A session can also be a plain terminal. Choosing Terminal hides the harness-only fields.",
+                3.0,
+            )
+            await one.click("#session-start", 1.5)
+            await one.type("cd src")
+            await one.press("enter", settle=0.6)
+            await one.type("pwd")
+            await one.press("enter", settle=1.8)
+            one.shot(
+                "A terminal runs your shell. The supervisor remembers its working directory.",
+                3.0,
+            )
             state = await snapshot(project)
+            shell = terminal_titled(state, "Shell")
             notes = terminal_titled(state, "Notes shell")
             assert {entry["status"] for entry in state["terminals"].values()} == {
                 "running"
@@ -477,6 +528,18 @@ async def sessions_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
                     "Clicking a stopped session resumes it under the same native session id.",
                     3.0,
                 )
+                await two.click(f"#open-session-{shell}", 1.2)
+                await two.click("#terminal-stop", 1.5)
+                assert (await snapshot(project))["terminals"][shell]["status"] == (
+                    "stopped"
+                )
+                await two.click(f"#session-row-{shell}", 1.5)
+                await two.type("pwd")
+                await two.press("enter", settle=1.2)
+                two.shot(
+                    "Stop the terminal and click it again: a fresh shell opens in the same directory.",
+                    3.2,
+                )
                 await two.press("ctrl+backslash")
                 await two.click(f"#session-actions-{notes}")
                 two.shot(
@@ -495,26 +558,238 @@ async def sessions_demo(demo: Demo, renderer: FrameRenderer) -> Recording:
     return recording
 
 
+AGENT_TASKS = (
+    (
+        "claude",
+        "Claude Code",
+        "average.py",
+        "def average(numbers):\n    return sum(numbers) / (len(numbers) + 1)\n",
+        "test_average.py",
+        "import unittest\nfrom average import average\n\n\nclass AverageTest(unittest.TestCase):\n"
+        "    def test_values(self):\n        self.assertEqual(average([2, 4, 6]), 4)\n"
+        "        self.assertEqual(average([10]), 10)\n\n\nif __name__ == '__main__':\n    unittest.main()\n",
+        "The test in test_average.py fails. Find the bug in average.py, fix it and run the test to confirm.",
+    ),
+    (
+        "opencode",
+        "OpenCode",
+        "fizzbuzz.py",
+        "def fizzbuzz(n):\n    if n % 3 == 0:\n        return 'Fizz'\n    if n % 5 == 0:\n        return 'Buzz'\n"
+        "    if n % 15 == 0:\n        return 'FizzBuzz'\n    return str(n)\n",
+        "test_fizzbuzz.py",
+        "import unittest\nfrom fizzbuzz import fizzbuzz\n\n\nclass FizzBuzzTest(unittest.TestCase):\n"
+        "    def test_fifteen(self):\n        self.assertEqual(fizzbuzz(15), 'FizzBuzz')\n\n\n"
+        "if __name__ == '__main__':\n    unittest.main()\n",
+        "fizzbuzz(15) returns the wrong word. Fix fizzbuzz.py and run test_fizzbuzz.py.",
+    ),
+    (
+        "pi",
+        "Pi",
+        "clamp.py",
+        "def clamp(value, low, high):\n    return max(high, min(value, low))\n",
+        "test_clamp.py",
+        "import unittest\nfrom clamp import clamp\n\n\nclass ClampTest(unittest.TestCase):\n"
+        "    def test_inside(self):\n        self.assertEqual(clamp(5, 0, 10), 5)\n"
+        "        self.assertEqual(clamp(-3, 0, 10), 0)\n\n\nif __name__ == '__main__':\n    unittest.main()\n",
+        "clamp(5, 0, 10) should be 5 but the test fails. Fix clamp.py and run test_clamp.py.",
+    ),
+    (
+        "codex",
+        "Codex",
+        "slugify.py",
+        "def slugify(text):\n    return text.lower().replace(' ', '-')\n",
+        "test_slugify.py",
+        "import unittest\nfrom slugify import slugify\n\n\nclass SlugifyTest(unittest.TestCase):\n"
+        "    def test_punctuation(self):\n        self.assertEqual(slugify('Hello, World!'), 'hello-world')\n\n\n"
+        "if __name__ == '__main__':\n    unittest.main()\n",
+        "test_slugify.py fails because slugify keeps punctuation. Fix slugify.py and run the test.",
+    ),
+)
+TRUST_ANSWERS = (
+    ("Yes, I trust this folder", ("down", "enter")),
+    ("Do you trust", ("enter",)),
+    ("trust the contents", ("enter",)),
+)
+
+
+async def screen_text(project: Path, terminal: str) -> str:
+    return (await request(project, {"op": "terminal_snapshot", "terminal": terminal}))[
+        "text"
+    ]
+
+
+async def settled(
+    project: Path,
+    terminal: str,
+    quiet: float = 6.0,
+    minimum: float = 4.0,
+    timeout: float = 240.0,
+) -> str:
+    started = time.monotonic()
+    last, changed = "", time.monotonic()
+    while time.monotonic() - started < timeout:
+        text = await screen_text(project, terminal)
+        if text != last:
+            last, changed = text, time.monotonic()
+        elif (
+            time.monotonic() - changed >= quiet
+            and time.monotonic() - started >= minimum
+        ):
+            return text
+        await asyncio.sleep(1.0)
+    raise RuntimeError("Terminal did not settle within the timeout")
+
+
+async def say(one: "Client", text: str, typed: bool = False) -> None:
+    from textual import events
+    from kanbeat.ui.terminal import TerminalDisplay
+
+    if typed:
+        await one.type(text, settle=0.8)
+    else:
+        one.app.screen.query_one(TerminalDisplay).post_message(events.Paste(text))
+        await one.settle(0.8)
+    await one.press("enter", settle=0.8)
+
+
+async def agents_demo(
+    demo: Demo,
+    renderer: FrameRenderer,
+    masks: dict[str, str] | None = None,
+    forbidden: tuple[str, ...] = (),
+    agents: tuple[str, ...] = (),
+) -> Recording:
+    tasks = [task for task in AGENT_TASKS if not agents or task[0] in agents]
+    project = demo.project("agents-demo")
+    for _, _, source, code, test, test_code, _ in tasks:
+        (project / source).write_text(code, encoding="utf-8")
+        (project / test).write_text(test_code, encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=project, check=True)
+    recording = Recording("agents", renderer, project, masks, forbidden)
+    size = (128, 46)
+    try:
+        async with demo.supervisor(project):
+            async with Client("Terminal 1 · TUI", project, recording, size) as one:
+                await one.click("#new-group")
+                await one.click("#group-name")
+                await one.type("Fixes")
+                await one.click("#group-save")
+                ids: dict[str, str] = {}
+                for harness, label, source, code, test, _, prompt in tasks:
+                    await one.click("#new-session")
+                    await one.click("#session-title")
+                    await one.type(f"Fix {source}")
+                    await one.choose("#session-group", 1)
+                    one.app.screen.query_one("#session-harness").value = harness
+                    await one.settle(0.3)
+                    await one.click("#session-start", 2.0)
+                    state = await snapshot(project)
+                    terminal = next(
+                        key
+                        for key, entry in state["terminals"].items()
+                        if entry["title"] == f"Fix {source}"
+                    )
+                    ids[harness] = terminal
+                    text = await settled(project, terminal, quiet=4.0, minimum=6.0)
+                    for phrase, keys in TRUST_ANSWERS:
+                        if phrase in text:
+                            await one.press(*keys, settle=1.0)
+                            text = await settled(
+                                project, terminal, quiet=4.0, minimum=4.0
+                            )
+                            break
+                    one.shot(f"{label} starts in its own native terminal.", 2.4)
+                    for attempt in range(3):
+                        await say(one, prompt, typed=attempt == 2)
+                        for _ in range(45):
+                            if (project / source).read_text(encoding="utf-8") != code:
+                                break
+                            await asyncio.sleep(1.0)
+                        else:
+                            continue
+                        break
+                    else:
+                        import json
+
+                        info = await request(
+                            project, {"op": "terminal_snapshot", "terminal": terminal}
+                        )
+                        keep = {
+                            key: value
+                            for key, value in info.items()
+                            if key not in ("screen", "text")
+                        }
+                        (demo.workdir / f"agents-{harness}-debug.json").write_text(
+                            json.dumps(keep, indent=1, default=str), encoding="utf-8"
+                        )
+                    await one.settle(1.0)
+                    one.shot(
+                        f"{label} reads the code, edits it and runs the test. Its own UI, its own account.",
+                        2.6,
+                    )
+                for harness, label, source, code, *_ in tasks:
+                    for _ in range(240):
+                        if (project / source).read_text(encoding="utf-8") != code:
+                            break
+                        await asyncio.sleep(1.0)
+                    await settled(project, ids[harness], quiet=10.0, minimum=5.0)
+                    (demo.workdir / f"agents-{harness}.txt").write_text(
+                        await screen_text(project, ids[harness]), encoding="utf-8"
+                    )
+                for harness, label, source, code, test, test_code, prompt in tasks:
+                    await one.click(f"#session-row-{ids[harness]}", 1.5)
+                    one.shot(
+                        f"{label}: finished. Click a session to switch between agents.",
+                        3.0,
+                    )
+                for harness, label, source, code, test, test_code, prompt in tasks:
+                    fixed = (project / source).read_text(encoding="utf-8")
+                    assert fixed != code, f"{label} did not change {source}"
+                await one.press("ctrl+backslash")
+                one.shot(
+                    "Detach: all four agents stay available under their group.", 2.6
+                )
+    except Exception:
+        recording.name = "agents-failed"
+        recording.save(demo.workdir)
+        raise
+    return recording
+
+
 SCENARIOS = {
     "board": board_demo,
     "play-stop": play_stop_demo,
     "sessions": sessions_demo,
+    "agents": agents_demo,
 }
+REAL_SCENARIOS = {"agents"}
 
 
 async def run(arguments: argparse.Namespace) -> None:
-    demo = Demo(arguments.workdir)
+    selected = arguments.only or [
+        name for name in SCENARIOS if name not in REAL_SCENARIOS
+    ]
+    demo = Demo(arguments.workdir, real_agents=bool(REAL_SCENARIOS & set(selected)))
     demo.prepare()
     renderer = FrameRenderer(
         font_file(arguments.mono_font),
         font_file(arguments.mono_font + ":bold"),
         font_file(arguments.sans_font + ":bold"),
     )
-    selected = arguments.only or list(SCENARIOS)
+    masks = dict(item.split("=", 1) for item in arguments.mask)
     try:
         for name in selected:
             started = time.monotonic()
-            recording = await SCENARIOS[name](demo, renderer)
+            if name in REAL_SCENARIOS:
+                recording = await SCENARIOS[name](
+                    demo,
+                    renderer,
+                    masks,
+                    tuple(arguments.forbid),
+                    tuple(arguments.agent),
+                )
+            else:
+                recording = await SCENARIOS[name](demo, renderer)
             path = recording.save(arguments.output)
             print(
                 f"{name}: {len(recording.frames)} frames, {path.stat().st_size // 1024} KiB, {time.monotonic() - started:.0f}s"
@@ -535,6 +810,27 @@ def main() -> None:
     parser.add_argument("--workdir", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("docs/media"))
     parser.add_argument("--only", action="append", choices=sorted(SCENARIOS))
+    parser.add_argument(
+        "--mask",
+        action="append",
+        default=[],
+        metavar="TEXT=REPLACEMENT",
+        help="rewrite text in every frame (real-agent demos)",
+    )
+    parser.add_argument(
+        "--agent",
+        action="append",
+        default=[],
+        choices=[task[0] for task in AGENT_TASKS],
+        help="record only these agents in the real-agent demo",
+    )
+    parser.add_argument(
+        "--forbid",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="refuse to render a frame that still contains TEXT",
+    )
     parser.add_argument("--mono-font", default="Adwaita Mono")
     parser.add_argument("--sans-font", default="Noto Sans")
     asyncio.run(run(parser.parse_args()))
