@@ -17,6 +17,8 @@ START_QUIET = 3.0
 START_TIMEOUT = 90.0
 RETRY_DELAY = 60.0
 WAKE_EVENTS = 30
+WAKE_WINDOW = 300.0
+WAKE_LIMIT = 8
 PROMPT_BYTES = 16000
 PASTE_BYTES = 12000
 TITLE_CHARS = 120
@@ -85,6 +87,7 @@ class HookSubscriber:
         self.last_wake = 0.0
         self.retry_at = 0.0
         self.reported: set[str] = set()
+        self.wake_times: list[float] = []
 
     @property
     def state(self) -> dict[str, Any]:
@@ -121,8 +124,8 @@ class HookSubscriber:
             await self.step()
         except asyncio.CancelledError:
             raise
-        except (ValueError, RuntimeError, OSError) as exc:
-            self.fail(str(exc))
+        except Exception as exc:
+            self.fail(str(exc) or type(exc).__name__)
 
     async def step(self) -> None:
         if self.supervisor.shutdown_requested.is_set():
@@ -142,6 +145,14 @@ class HookSubscriber:
         missed = events.missed(self.state["cursor"])
         now = time.monotonic()
         if not pending or now < self.retry_at or now - self.last_wake < WAKE_GAP:
+            return
+        self.wake_times = [t for t in self.wake_times if now - t < WAKE_WINDOW]
+        if len(self.wake_times) >= WAKE_LIMIT:
+            self.fail(
+                f"woken {WAKE_LIMIT} times in {int(WAKE_WINDOW // 60)} minutes, "
+                "waiting before the next wake. If the hook changes tickets "
+                "itself, check its prompt"
+            )
             return
         entry = self.session_entry()
         if entry is None:
@@ -223,6 +234,7 @@ class HookSubscriber:
     def delivered(self, pending: list[dict[str, Any]]) -> None:
         self.state["cursor"] = pending[-1]["seq"]
         self.last_wake = time.monotonic()
+        self.wake_times.append(self.last_wake)
         self.retry_at = 0.0
         self.reported.clear()
         self.supervisor.save()

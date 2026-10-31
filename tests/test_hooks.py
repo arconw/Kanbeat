@@ -405,3 +405,44 @@ async def test_a_problem_that_comes_back_after_a_success_is_reported_again(
     await wake(supervisor)
     messages = [n["message"] for n in supervisor.runtime.data["notices"]]
     assert messages.count("Transition hook: harness claude is unavailable") == 2
+
+
+@pytest.mark.asyncio
+async def test_a_hook_that_keeps_waking_itself_is_slowed_down_and_it_says_so(
+    supervisor, monkeypatch
+):
+    monkeypatch.setattr(hooks, "WAKE_LIMIT", 2)
+    ticket, entry = await started(supervisor)
+    await asyncio.sleep(0.4)
+    for number in range(4):
+        supervisor.board.create(f"Loop {number}")
+        supervisor.subscriber.retry_at = 0.0
+        await wake(supervisor)
+        await asyncio.sleep(0.3)
+    cursor = supervisor.runtime.data["hook"]["cursor"]
+    assert cursor == 2 and supervisor.events.last == 5
+    notes = [n["message"] for n in supervisor.runtime.data["notices"]]
+    assert len(notes) == 1 and "woken 2 times in 5 minutes" in notes[0]
+    supervisor.subscriber.wake_times.clear()
+    supervisor.subscriber.retry_at = 0.0
+    await wake(supervisor)
+    assert supervisor.runtime.data["hook"]["cursor"] == supervisor.events.last
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_error_is_reported_once_and_backed_off(
+    supervisor, monkeypatch
+):
+    await wake(supervisor)
+
+    async def broken(request):
+        raise KeyError("vanished")
+
+    supervisor.board.create("Task")
+    await supervisor.reconcile()
+    monkeypatch.setattr(supervisor, "dispatch", broken)
+    for _ in range(3):
+        await supervisor.subscriber.guarded_step()
+    notes = [n["message"] for n in supervisor.runtime.data["notices"]]
+    assert notes == ["Transition hook: 'vanished'"]
+    assert supervisor.subscriber.retry_at > 0
