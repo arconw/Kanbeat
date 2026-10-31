@@ -104,8 +104,16 @@ def test_the_events_operation_pages_forward_from_a_cursor(supervisor):
     assert [e["seq"] for e in reply["events"]] == [1, 2] and reply["last"] == 2
     reply = run(supervisor, op="events", since=2)
     assert [e["seq"] for e in reply["events"]] == [3] and reply["last"] == 3
-    assert run(supervisor, op="events", since=3) == {"events": [], "last": 3}
-    assert run(supervisor, op="events", since=40) == {"events": [], "last": 3}
+    assert run(supervisor, op="events", since=3) == {
+        "events": [],
+        "last": 3,
+        "missed": 0,
+    }
+    assert run(supervisor, op="events", since=40) == {
+        "events": [],
+        "last": 3,
+        "missed": 0,
+    }
     with pytest.raises(ValueError, match="limit must be between"):
         run(supervisor, op="events", since=0, limit=0)
     with pytest.raises(ValueError, match="since must be a whole number"):
@@ -163,3 +171,20 @@ def test_the_tail_mode_returns_the_newest_events(supervisor):
     ]
     with pytest.raises(ValueError, match="tail must be between"):
         run(supervisor, op="events", tail=0)
+
+
+def test_a_cursor_older_than_the_log_reports_how_many_events_are_gone(
+    supervisor, monkeypatch
+):
+    monkeypatch.setattr("kanbeat.events.EVENT_LIMIT", 5)
+    for number in range(8):
+        supervisor.board.create(f"Task {number}")
+        tick(supervisor)
+    assert [e["seq"] for e in supervisor.events.events] == [4, 5, 6, 7, 8]
+    assert supervisor.events.missed(0) == 3
+    assert supervisor.events.missed(2) == 1
+    assert supervisor.events.missed(3) == 0
+    assert supervisor.events.missed(8) == 0
+    reply = run(supervisor, op="events", since=0)
+    assert reply["missed"] == 3 and reply["events"][0]["seq"] == 4
+    assert run(supervisor, op="events", since=6)["missed"] == 0

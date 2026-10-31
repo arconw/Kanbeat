@@ -262,3 +262,27 @@ def test_events_without_a_number_asks_for_the_newest_ones(capsys):
         "moved #a todo -> progress  Title a",
         "moved #b todo -> progress  Title b",
     ]
+
+
+def test_commands_say_when_older_events_are_gone(capsys):
+    async def send(request):
+        return {"events": [moved(9)], "last": 9, "missed": 4}
+
+    asyncio.run(events_command(send, False, 2, 10))
+    assert capsys.readouterr().out.splitlines() == [
+        "4 earlier events are no longer available",
+        "moved #a todo -> progress  Title a",
+    ]
+    replies = iter(
+        [
+            {"events": [], "last": 20},
+            {"events": [moved(30)], "last": 30, "missed": 9},
+        ]
+    )
+
+    async def watching(request):
+        return next(replies)
+
+    asyncio.run(watch_command(watching, True, 0, since=None, rounds=1))
+    gap, event = (json.loads(line) for line in capsys.readouterr().out.splitlines())
+    assert gap["event"] == "gap" and gap["missed"] == 9 and event["seq"] == 30

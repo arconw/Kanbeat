@@ -69,6 +69,8 @@ def format_event(event: dict[str, Any]) -> str:
         )
     if kind in ("connected", "disconnected"):
         return f"supervisor {kind}"
+    if kind == "gap":
+        return f"{event['missed']} earlier events are no longer available"
     return f"execution {event['from']} -> {event['to']}"
 
 
@@ -98,6 +100,10 @@ class EventLog:
         self.events.extend(added)
         del self.events[:-EVENT_LIMIT]
         return added
+
+    def missed(self, cursor: int) -> int:
+        oldest = self.events[0]["seq"] if self.events else self.last + 1
+        return max(0, oldest - 1 - cursor)
 
     def since(self, cursor: int, limit: int = EVENT_LIMIT) -> list[dict[str, Any]]:
         return [event for event in self.events if event["seq"] > cursor][:limit]

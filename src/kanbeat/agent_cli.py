@@ -140,6 +140,8 @@ async def events_command(
         reply = await send({"op": "events", "tail": limit})
     else:
         reply = await send({"op": "events", "since": since, "limit": limit})
+    if reply.get("missed"):
+        emit({"event": "gap", "missed": reply["missed"]}, as_json)
     for event in reply["events"]:
         emit(event, as_json)
     return reply["last"]
@@ -171,6 +173,8 @@ async def watch_command(
                 failures = 0
             if cursor is None or last < cursor:
                 cursor = last
+            elif reply.get("missed"):
+                emit({"event": "gap", "missed": reply["missed"]}, as_json)
             for event in events:
                 emit(event, as_json)
                 cursor = event["seq"]

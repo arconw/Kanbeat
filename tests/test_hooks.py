@@ -357,3 +357,20 @@ async def test_a_long_prompt_in_a_wide_script_still_starts_the_session(superviso
     [entry] = hook_entries(supervisor)
     assert prompt in entry["prompt"] and "created #" in entry["prompt"]
     assert supervisor.runtime.data["notices"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_subscriber_that_fell_far_behind_is_told_events_were_lost(
+    supervisor, monkeypatch, pastes
+):
+    ticket, entry = await started(supervisor)
+    monkeypatch.setattr("kanbeat.events.EVENT_LIMIT", 5)
+    for number in range(9):
+        supervisor.board.create(f"Task {number}")
+        await supervisor.reconcile()
+    await asyncio.sleep(0.4)
+    await wake(supervisor)
+    [text] = pastes
+    assert "4 earlier events are no longer available." in text
+    assert supervisor.runtime.data["hook"]["cursor"] == 10
+    assert "#6 created" in text or "#7 created" in text
