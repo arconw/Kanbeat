@@ -283,13 +283,16 @@ def test_max_parallel_accepts_whole_numbers(supervisor, value, expected):
 
 def test_a_revert_from_the_settings_page_is_silent_unless_it_kept_something(supervisor):
     first = run(supervisor, op="config_set", changes={"global_cp": "B"}, source="tui")
-    run(supervisor, op="config_revert", id=first["entry"]["id"])
+    run(supervisor, op="config_revert", id=first["entry"]["id"], source="tui")
     assert supervisor.runtime.data.get("notices", []) == []
     both = run(
-        supervisor, op="config_set", changes={"global_cp": "B", "max_parallel": 4}
+        supervisor,
+        op="config_set",
+        changes={"global_cp": "B", "max_parallel": 4},
+        source="tui",
     )
-    run(supervisor, op="config_set", changes={"global_cp": "C"})
-    run(supervisor, op="config_revert", id=both["entry"]["id"])
+    run(supervisor, op="config_set", changes={"global_cp": "C"}, source="tui")
+    run(supervisor, op="config_revert", id=both["entry"]["id"], source="tui")
     [note] = supervisor.runtime.data["notices"]
     assert (
         note["message"].startswith("Config change #")
@@ -352,3 +355,26 @@ def test_a_failed_write_leaves_the_settings_and_the_history_as_they_were(
         state.change_config({"max_parallel": 7}, "cli")
     assert state.config["max_parallel"] == 2
     assert json.loads(state.config_path.read_text())["max_parallel"] == 2
+
+
+def test_a_client_that_names_no_source_is_treated_as_outside_the_settings_page(
+    supervisor,
+):
+    run(supervisor, op="config_set", changes={"transition_hook.prompt": "Do things"})
+    [note] = supervisor.runtime.data["notices"]
+    assert note["message"].startswith("Config changed from outside the Settings page")
+    assert "transition_hook.prompt" in note["message"]
+    assert supervisor.runtime.config_history()[-1]["source"] == "external"
+    run(supervisor, op="config_set", changes={"global_cp": "x"}, source="tui")
+    assert len(supervisor.runtime.data["notices"]) == 1
+
+
+def test_a_revert_restores_a_recorded_value_that_would_not_pass_today(supervisor):
+    state = supervisor.runtime
+    state.config["max_parallel"] = 99
+    state.config["global_cp"] = "x" * 25000
+    changed = state.change_config({"max_parallel": 5, "global_cp": "short"}, "cli")
+    restored, skipped = state.revert_config(changed["id"], "cli revert")
+    assert skipped == []
+    assert state.config["max_parallel"] == 99
+    assert len(state.config["global_cp"]) == 25000

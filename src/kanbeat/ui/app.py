@@ -1023,7 +1023,11 @@ class KanbeatApp(App[None], inherit_bindings=False):
             )
         elif name.startswith("cfg-revert-"):
             await self.execute(
-                {"op": "config_revert", "id": int(name[len("cfg-revert-") :])}
+                {
+                    "op": "config_revert",
+                    "id": int(name[len("cfg-revert-") :]),
+                    "source": "tui",
+                }
             )
         elif name == "settings-save":
             config = {"default_harness": self.query_one("#cfg-harness", Select).value}

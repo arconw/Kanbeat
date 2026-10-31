@@ -1318,7 +1318,7 @@ class Supervisor:
 
     def config_request(self, request: dict[str, Any]) -> dict[str, Any]:
         op = request.get("op")
-        source = str(request.get("source") or "tui")
+        source = str(request.get("source") or "external")
         if op == "config_get":
             key = request.get("key")
             if key in (None, ""):
@@ -1343,15 +1343,16 @@ class Supervisor:
         if entry is None:
             return {"entry": None}
         keys = ", ".join(row["key"] for row in entry["changes"])
+        where = "the command line" if source == "cli" else "outside the Settings page"
         message = ""
-        if undone is None and source == "cli":
+        if undone is None and source != "tui":
             message = (
-                f"Config changed from the command line: {keys}. "
+                f"Config changed from {where}: {keys}. "
                 f"Undo: kanbeat config revert {entry['id']}, or Settings, History."
             )
-        elif undone is not None and (source == "cli" or skipped):
-            where = " from the command line" if source == "cli" else ""
-            message = f"Config change #{undone} reverted{where}: {keys}."
+        elif undone is not None and (source != "tui" or skipped):
+            origin = f" from {where}" if source != "tui" else ""
+            message = f"Config change #{undone} reverted{origin}: {keys}."
             if skipped:
                 message += f" Kept {', '.join(skipped)}, which changed again later."
             message += (

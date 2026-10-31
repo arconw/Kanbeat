@@ -106,12 +106,12 @@ class LocalState:
         return self.history
 
     def change_config(
-        self, changes: dict[str, Any], source: str
+        self, changes: dict[str, Any], source: str, trusted: bool = False
     ) -> dict[str, Any] | None:
         updated = deepcopy(self.config)
         rows = []
         for key, value in changes.items():
-            value = coerce(key, value)
+            value = value if trusted else coerce(key, value)
             old = read_key(self.config, key)
             if value != old:
                 rows.append({"key": key, "old": old, "new": value})
@@ -160,7 +160,7 @@ class LocalState:
                 f"Change #{entry_id} cannot be reverted: {', '.join(skipped)} "
                 "changed again later. Revert the later change first"
             )
-        restored = self.change_config(applicable, source)
+        restored = self.change_config(applicable, source, trusted=True)
         if restored is None:
             raise ValueError(f"Change #{entry_id} is already undone")
         return restored, skipped
