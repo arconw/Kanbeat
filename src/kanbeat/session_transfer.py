@@ -48,6 +48,7 @@ IMPORT_NOTE = (
     "not a new instruction."
 )
 DEFAULT_NEWEST_COUNTS = (50, 20, 10)
+SHORT_IMPORT_PROMPT_LIMIT = 4096
 STATE_VERSION = 1
 
 EventKey = tuple[str, str]
@@ -250,7 +251,12 @@ def _marker_line(
 def marker_for(
     import_id: str, sources: Sequence[str], first_ordinal: int, last_ordinal: int
 ) -> str:
-    """Render a standalone start marker, for example for a short delivery prompt."""
+    """Render a marker for the end of a short delivery prompt.
+
+    A marker quoted in the middle of a longer conversation is not treated as an
+    import. Delivery prompts that use this helper should put the marker after
+    their instruction and avoid an envelope end marker.
+    """
     return _marker_line(import_id, sources, first_ordinal, last_ordinal)
 
 
@@ -258,8 +264,32 @@ def _end_marker_line(import_id: str) -> str:
     return f'<!-- /kanbeat-import id="{import_id}" -->'
 
 
+def _marker_text_is_import(event: ConversationEvent) -> bool:
+    if event.role != ROLE_USER:
+        return False
+    text = event.text.strip()
+    starts = list(_START_MARKER.finditer(text))
+    if not starts:
+        return False
+    first = starts[0]
+    last = starts[-1]
+    ends = list(_END_MARKER.finditer(text))
+    if not ends:
+        if len(text) > SHORT_IMPORT_PROMPT_LIMIT:
+            return False
+        return first.start() == 0 or last.end() == len(text)
+    if first.start() != 0:
+        return False
+    matching = [
+        marker
+        for marker in ends
+        if marker.group("import_id") == first.group("import_id")
+    ]
+    return bool(matching and matching[-1].end() == len(text))
+
+
 def _looks_like_import(event: ConversationEvent) -> bool:
-    return bool(event.is_import or event.import_id or has_import_marker(event.text))
+    return bool(event.is_import or event.import_id or _marker_text_is_import(event))
 
 
 @dataclass(frozen=True)
@@ -597,6 +627,7 @@ class ReconcileResult:
     target: str
     confirmed: tuple[ImportRecord, ...] = ()
     missing: tuple[ImportRecord, ...] = ()
+    uncertain: tuple[ImportRecord, ...] = ()
 
 
 class UncertainDeliveryError(RuntimeError):
@@ -807,20 +838,36 @@ class TransferLedger:
         return record
 
     def reconcile(
-        self, target: str, events: Iterable[ConversationEvent]
+        self,
+        target: str,
+        events: Iterable[ConversationEvent],
+        *,
+        history_complete: bool = False,
     ) -> ReconcileResult:
-        """Resolve uncertain imports by looking for their marker in target history."""
+        """Resolve uncertain imports by looking for their marker in target history.
+
+        A match always confirms an import. Absence is only proof of failure when
+        ``history_complete`` is true and comes from a successful, complete read
+        of the target history. With the default ``False``, failed or partial
+        reads leave the delivery uncertain and planning stays blocked.
+        """
         _check_harness(target, "target harness")
+        if not isinstance(history_complete, bool):
+            raise ValueError("history_complete must be a boolean")
         history = tuple(events)
         for event in history:
             if not isinstance(event, ConversationEvent):
                 raise ValueError("Reconciliation needs ConversationEvent objects")
         confirmed: list[ImportRecord] = []
         missing: list[ImportRecord] = []
-        uncertain = self.pending_imports(target)
-        for record in uncertain:
+        unresolved: list[ImportRecord] = []
+        pending = self.pending_imports(target)
+        for record in pending:
             match = self._find_import(record, history)
             if match is None:
+                if not history_complete:
+                    unresolved.append(record)
+                    continue
                 updated = replace(record, status=IMPORT_STATUS_NOT_DELIVERED)
                 self.imports[record.import_id] = updated
                 missing.append(updated)
@@ -837,6 +884,7 @@ class TransferLedger:
             target=target,
             confirmed=tuple(confirmed),
             missing=tuple(missing),
+            uncertain=tuple(unresolved),
         )
 
     def _find_import(
@@ -852,7 +900,7 @@ class TransferLedger:
                 return event
             if event.is_import and event.import_id == record.import_id:
                 return event
-            if any(
+            if _marker_text_is_import(event) and any(
                 marker.import_id == record.import_id
                 for marker in find_import_markers(event.text)
             ):

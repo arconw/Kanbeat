@@ -120,6 +120,47 @@ def test_marker_parser_finds_multiple_and_short_prompt_markers():
     ]
 
 
+@pytest.mark.parametrize("role", ["user", "tool_result"])
+def test_quoted_marker_text_stays_original_conversation(role):
+    ledger = TransferLedger()
+    marker = marker_for("quoted", ["codex"], 2, 5)
+    quoted = event("codex", 0, role, f"File dump:\n{marker}\nEnd of dump")
+    assert not ledger.is_import_event(quoted)
+    assert ledger.plan([quoted], "opencode").events == (quoted,)
+    envelope = render_envelope([quoted], import_id="next")
+    assert marker in envelope.text
+
+
+def test_only_actual_envelopes_and_short_prompts_count_as_imports():
+    ledger = TransferLedger()
+    source = event("claude", 0)
+    full = render_envelope([source], import_id="full").text
+    quoted_full = event("codex", 1, "user", f"File dump:\n{full}")
+    tool_full = event("codex", 2, "tool_result", full)
+    short_marker = marker_for("short", ["claude"], 0, 1)
+    short_prompt = event(
+        "codex",
+        3,
+        "user",
+        "Read the context file and continue.\n" + short_marker,
+    )
+    short_prompt_first = event(
+        "codex",
+        4,
+        "user",
+        short_marker + "\nRead the context file and continue.",
+    )
+    import_event = event("codex", 5, "user", full)
+    assert not ledger.is_import_event(quoted_full)
+    assert not ledger.is_import_event(tool_full)
+    assert ledger.is_import_event(short_prompt)
+    assert ledger.is_import_event(short_prompt_first)
+    assert ledger.is_import_event(import_event)
+    assert ledger.plan(
+        [quoted_full, tool_full, short_prompt, short_prompt_first], "opencode"
+    ).events == (quoted_full, tool_full)
+
+
 def test_large_plan_reports_exact_sizes_and_explicit_reductions():
     ledger = TransferLedger()
     rows = tuple(
@@ -171,6 +212,7 @@ def test_uncertain_delivery_survives_restart_and_reconciles(recognition):
     result = ledger.reconcile("pi", [imported])
     assert len(result.confirmed) == 1
     assert not result.missing
+    assert not result.uncertain
     assert ledger.delivered("pi") == frozenset([original.key])
     assert not ledger.pending_imports()
     assert not ledger.plan([original, imported], "pi")
@@ -182,8 +224,11 @@ def test_absent_import_allows_retry_without_checkpointing():
     original = event("claude", 0)
     plan = ledger.plan([original], "codex")
     ledger.begin_delivery(plan)
-    result = ledger.reconcile("codex", [event("pi", 1, text=plan.text)])
+    result = ledger.reconcile(
+        "codex", [event("pi", 1, text=plan.text)], history_complete=True
+    )
     assert len(result.missing) == 1
+    assert not result.uncertain
     assert not ledger.delivered("codex")
     retry = ledger.plan([original], "codex")
     assert retry.events == plan.events
@@ -192,13 +237,34 @@ def test_absent_import_allows_retry_without_checkpointing():
     assert not ledger.plan([original], "codex")
 
 
+@pytest.mark.parametrize(
+    "history",
+    [
+        (),
+        (event("codex", 1, "assistant", "unrelated history"),),
+    ],
+)
+def test_incomplete_history_keeps_uncertainty_and_blocks_retry(history):
+    ledger = TransferLedger()
+    original = event("claude", 0)
+    plan = ledger.plan([original], "codex")
+    ledger.begin_delivery(plan)
+    result = ledger.reconcile("codex", history)
+    assert not result.confirmed
+    assert not result.missing
+    assert len(result.uncertain) == 1
+    assert ledger.pending_imports("codex")[0].status == "uncertain"
+    with pytest.raises(UncertainDeliveryError):
+        ledger.plan([original], "codex")
+
+
 def test_ledger_json_round_trip_includes_all_delivery_statuses_and_positions():
     ledger = TransferLedger()
     original = event("codex", 0, event_id=None, position=0)
     ledger.commit_delivery(ledger.plan([original], "pi"), "confirmed-id")
     ledger.begin_delivery(ledger.plan([original], "claude"), "pending-id")
     ledger.begin_delivery(ledger.plan([original], "opencode"))
-    ledger.reconcile("opencode", [])
+    ledger.reconcile("opencode", [], history_complete=True)
     plain = json.loads(json.dumps(ledger.to_dict()))
     restored = TransferLedger.from_dict(plain)
     assert restored == ledger
