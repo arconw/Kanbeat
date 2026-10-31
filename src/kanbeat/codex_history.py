@@ -8,6 +8,7 @@ the thread, and no conversation content is logged.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 import json
 import re
@@ -139,7 +140,11 @@ class CodexHistoryReader:
         self.max_pages = max_pages
 
     async def read(
-        self, thread_id: str, *, ordinal_start: int = 0
+        self,
+        thread_id: str,
+        *,
+        import_message_ids: Iterable[str] = (),
+        ordinal_start: int = 0,
     ) -> CodexHistoryResult:
         thread_id = validate_thread_id(thread_id)
         if (
@@ -148,6 +153,7 @@ class CodexHistoryReader:
             or ordinal_start < 0
         ):
             raise ValueError("ordinal_start must be a non-negative integer")
+        known_imports = _import_ids(import_message_ids)
 
         entries: list[dict[str, Any]] = []
         cursor: str | None = None
@@ -182,7 +188,7 @@ class CodexHistoryReader:
             error = PAGE_LIMIT_MESSAGE
 
         try:
-            events, unsupported = _normalize(entries, ordinal_start)
+            events, unsupported = _normalize(entries, ordinal_start, known_imports)
         except (TypeError, ValueError):
             return _failure(HISTORY_UNREACHABLE, INVALID_ITEM_MESSAGE)
         return CodexHistoryResult(
@@ -197,13 +203,18 @@ async def read_codex_history(
     host: Any,
     thread_id: str,
     *,
+    import_message_ids: Iterable[str] = (),
     ordinal_start: int = 0,
     page_size: int = DEFAULT_PAGE_SIZE,
     max_pages: int = DEFAULT_MAX_PAGES,
 ) -> CodexHistoryResult:
     """Read one Codex thread through ``host`` and return normalized history."""
     reader = CodexHistoryReader(host, page_size=page_size, max_pages=max_pages)
-    return await reader.read(thread_id, ordinal_start=ordinal_start)
+    return await reader.read(
+        thread_id,
+        import_message_ids=import_message_ids,
+        ordinal_start=ordinal_start,
+    )
 
 
 def _failure(outcome: str, error: str) -> CodexHistoryResult:
@@ -218,6 +229,17 @@ def _failure(outcome: str, error: str) -> CodexHistoryResult:
 def _error_text(error: BaseException) -> str:
     message = str(error)[:200]
     return f"{UNREACHABLE_MESSAGE}: {message}" if message else UNREACHABLE_MESSAGE
+
+
+def _import_ids(values: Iterable[str]) -> frozenset[str]:
+    if isinstance(values, str):
+        raise ValueError("Import message ids must be a collection")
+    identifiers: set[str] = set()
+    for value in values:
+        if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
+            raise ValueError("Import message ids must be stable identifiers")
+        identifiers.add(value)
+    return frozenset(identifiers)
 
 
 def _valid_page(
@@ -242,7 +264,9 @@ def _valid_page(
 
 
 def _normalize(
-    entries: list[dict[str, Any]], ordinal_start: int
+    entries: list[dict[str, Any]],
+    ordinal_start: int,
+    known_imports: frozenset[str],
 ) -> tuple[tuple[ConversationEvent, ...], tuple[str, ...]]:
     events: list[ConversationEvent] = []
     unsupported: set[str] = set()
@@ -251,7 +275,7 @@ def _normalize(
         item = entry.get("item")
         if not isinstance(item, dict):
             raise ValueError("Codex history entry has no item")
-        event = _event(item, ordinal, unsupported)
+        event = _event(item, ordinal, unsupported, known_imports)
         if event is None:
             continue
         events.append(event)
@@ -260,7 +284,10 @@ def _normalize(
 
 
 def _event(
-    item: dict[str, Any], ordinal: int, unsupported: set[str]
+    item: dict[str, Any],
+    ordinal: int,
+    unsupported: set[str],
+    known_imports: frozenset[str],
 ) -> ConversationEvent | None:
     kind = item.get("type")
     item_id = item.get("id")
@@ -277,7 +304,7 @@ def _event(
             ROLE_USER,
             text,
             event_id=item_id,
-            import_id=_import_id(text, item.get("clientId")),
+            import_id=_import_id(text, item.get("clientId"), known_imports),
         )
     if kind == "agentMessage":
         text = _as_text(item.get("text"))
@@ -438,8 +465,19 @@ def _file_change_text(item: dict[str, Any]) -> str:
         if not isinstance(change, dict):
             continue
         path = _as_text(change.get("path"))
-        kind = _as_text(change.get("kind"))
+        kind_value = change.get("kind")
+        kind = ""
+        move_path = ""
+        if isinstance(kind_value, dict):
+            kind = _as_text(kind_value.get("type"))
+            move_path = _as_text(
+                kind_value.get("movePath") or kind_value.get("move_path")
+            )
+        else:
+            kind = _as_text(kind_value)
         header = " ".join(part for part in (kind, path) if part)
+        if move_path:
+            header = f"{header} -> {move_path}" if header else f"-> {move_path}"
         diff = _as_text(change.get("diff"))
         if header and diff:
             parts.append(f"{header}\n{diff}")
@@ -530,16 +568,18 @@ def _json_text(value: Any) -> str:
     if isinstance(value, str):
         return value
     try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
     except (TypeError, ValueError):
         return ""
 
 
-def _import_id(text: str, client_id: Any) -> str | None:
+def _import_id(text: str, client_id: Any, known_imports: frozenset[str]) -> str | None:
     marker = import_id_for_text(text)
     if marker is not None:
         return marker
-    if isinstance(client_id, str) and _IDENTIFIER.fullmatch(client_id):
+    if isinstance(client_id, str) and client_id in known_imports:
         return client_id
     return None
 
