@@ -753,9 +753,9 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
             "reason": "already_active",
         }
     check_available = getattr(groups, "harness_available", None)
-    installed = (
-        check_available(target) if check_available is not None else available(target)
-    )
+    installed = available(target)
+    if not installed and check_available is not None:
+        installed = check_available(target)
     if not installed:
         raise ValueError("Independent session harness unavailable: " + str(target))
     _ensure_stopped(groups, entry)
