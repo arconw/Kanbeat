@@ -470,7 +470,13 @@ async def _ensure_no_native_writer(
         try:
             host = await groups.codex_host()
             read_thread = getattr(host, "read_thread", None)
-        except (CodexHostError, OSError, asyncio.TimeoutError, AttributeError, TypeError):
+        except (
+            CodexHostError,
+            OSError,
+            asyncio.TimeoutError,
+            AttributeError,
+            TypeError,
+        ):
             read_thread = None
         if read_thread is not None:
             for session_id in codex_ids:
@@ -494,16 +500,20 @@ async def _ensure_no_native_writer(
     identifiers = [
         row["id"]
         for harness, row in rows.items()
-        if harness == "opencode"
-        and isinstance(row.get("id"), str)
-        and row["id"]
+        if harness == "opencode" and isinstance(row.get("id"), str) and row["id"]
     ]
     if not identifiers:
         return
     try:
         host = await groups.opencode_host()
         statuses = await host.statuses()
-    except (OpenCodeHostError, OSError, asyncio.TimeoutError, AttributeError, TypeError):
+    except (
+        OpenCodeHostError,
+        OSError,
+        asyncio.TimeoutError,
+        AttributeError,
+        TypeError,
+    ):
         return
     if not isinstance(statuses, dict):
         return
@@ -529,11 +539,7 @@ def _assign_ordinals(
         buckets = {}
         entry["transfer_ordinals"] = buckets
     sequence = entry.get("transfer_ordinal_seq")
-    if (
-        isinstance(sequence, bool)
-        or not isinstance(sequence, int)
-        or sequence < 0
-    ):
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
         sequence = 0
         for harness_rows in buckets.values():
             if isinstance(harness_rows, dict):
@@ -550,11 +556,7 @@ def _assign_ordinals(
         for event in read.events:
             key = event.key[1]
             ordinal = harness_rows.get(key)
-            if (
-                isinstance(ordinal, bool)
-                or not isinstance(ordinal, int)
-                or ordinal < 0
-            ):
+            if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
                 ordinal = sequence
                 sequence += 1
                 harness_rows[key] = ordinal
@@ -646,16 +648,12 @@ async def _reconcile_target(
     if not pending:
         return
     if target_id is None:
-        _mark_pending_not_delivered(
-            entry, ledger, groups.state, terminal_id, target
-        )
+        _mark_pending_not_delivered(entry, ledger, groups.state, terminal_id, target)
         groups.state.save()
         return
     read = await _read_history(groups, target, target_id, ledger)
     if read.outcome == MISSING:
-        _mark_pending_not_delivered(
-            entry, ledger, groups.state, terminal_id, target
-        )
+        _mark_pending_not_delivered(entry, ledger, groups.state, terminal_id, target)
         groups.state.save()
         return
     if read.outcome != AVAILABLE:
@@ -664,13 +662,9 @@ async def _reconcile_target(
             f"and its history could not be read: {read.detail or read.outcome}. "
             "The source session stays active; retry when the target is reachable"
         )
-    result = ledger.reconcile(
-        target, read.events, history_complete=read.complete
-    )
+    result = ledger.reconcile(target, read.events, history_complete=read.complete)
     for record in (*result.confirmed, *result.missing):
-        _remove_context(
-            _context_path(groups.state, terminal_id, record.import_id)
-        )
+        _remove_context(_context_path(groups.state, terminal_id, record.import_id))
     _store_ledger(entry, ledger)
     groups.state.save()
     if result.uncertain:
@@ -728,9 +722,7 @@ def _fresh_state(
     target: str,
 ) -> None:
     ledger.reset_checkpoint(target)
-    _mark_pending_not_delivered(
-        entry, ledger, groups.state, terminal_id, target
-    )
+    _mark_pending_not_delivered(entry, ledger, groups.state, terminal_id, target)
     rows = entry.get("native_sessions")
     if not isinstance(rows, dict):
         rows = {}
@@ -777,9 +769,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     await _ensure_no_native_writer(groups, rows)
 
     target_row = rows.get(target)
-    target_id = (
-        target_row.get("id") if isinstance(target_row, dict) else None
-    )
+    target_id = target_row.get("id") if isinstance(target_row, dict) else None
     if not isinstance(target_id, str) or not target_id:
         target_id = None
     fresh = request.get("fresh_session") is True or request.get("fresh") is True
@@ -867,9 +857,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     sorted_reads = _assign_ordinals(entry, reads)
     histories = [read.history() for read in sorted_reads.values()]
 
-    await _reconcile_target(
-        groups, entry, ledger, terminal_id, str(target), target_id
-    )
+    await _reconcile_target(groups, entry, ledger, terminal_id, str(target), target_id)
 
     plan = ledger.plan(histories, str(target))
     reduction = request.get("reduction")
@@ -930,9 +918,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     elif target == "opencode":
         chosen_id = _opencode_message_id(plan)
     else:
-        context_path = _context_path(
-            groups.state, terminal_id, str(plan.import_id)
-        )
+        context_path = _context_path(groups.state, terminal_id, str(plan.import_id))
         try:
             _write_context(context_path, plan.text)
         except OSError as error:
@@ -1120,21 +1106,15 @@ async def _deliver_claude(
 ) -> _Delivery:
     argv = ["claude"]
     if created:
-        argv += cli_args(
-            "claude", groups.fresh_settings("claude"), interactive=True
-        )
+        argv += cli_args("claude", groups.fresh_settings("claude"), interactive=True)
         argv += ["--session-id", session_id]
     else:
         argv += ["--resume", session_id]
     argv += ["-p", prompt]
     environment = (
-        groups.claude_runtime.child_env()
-        if groups.claude_runtime is not None
-        else None
+        groups.claude_runtime.child_env() if groups.claude_runtime is not None else None
     )
-    code, output = await _one_shot(
-        argv, groups.state.board.project, environment
-    )
+    code, output = await _one_shot(argv, groups.state.board.project, environment)
     if code is None:
         raise _DeliveryUncertain(output)
     if code != 0:
@@ -1174,9 +1154,7 @@ async def _deliver_pi(
     except ValueError as error:
         raise _DeliveryUncertain(_error_text(error)) from error
     if event is None:
-        raise _DeliveryUncertain(
-            "Pi finished but the import marker is not visible yet"
-        )
+        raise _DeliveryUncertain("Pi finished but the import marker is not visible yet")
     return _Delivery(event.event_id or str(plan.import_id), context_path)
 
 
@@ -1197,9 +1175,7 @@ async def _one_shot(
     except OSError as error:
         raise _DeliveryFailed(_error_text(error)) from error
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(), DELIVERY_TIMEOUT
-        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), DELIVERY_TIMEOUT)
     except asyncio.TimeoutError:
         with suppress(ProcessLookupError):
             process.kill()
@@ -1225,8 +1201,7 @@ async def _delivered_event(
         if event.import_id == import_id:
             return event
         if import_id is not None and any(
-            marker.import_id == import_id
-            for marker in find_import_markers(event.text)
+            marker.import_id == import_id for marker in find_import_markers(event.text)
         ):
             return event
     return None
