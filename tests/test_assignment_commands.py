@@ -337,6 +337,96 @@ def test_reviewers_add_takes_the_next_free_slot_and_remove_warns_on_the_last(
     assert supervisor.ticket_state(ticket.id)["reviewers"] == []
 
 
+def test_reviewers_add_refuses_a_slot_that_appeared_after_the_snapshot(tmp_path):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Reviewed", column="review")
+
+    async def racing_send(request):
+        if request["op"] == "set_assignment" and request.get("only_if_absent"):
+            await supervisor.dispatch(
+                {
+                    "op": "set_assignment",
+                    "ticket": ticket.id,
+                    "slot": request["slot"],
+                    "values": {"harness": "claude"},
+                }
+            )
+        return await supervisor.dispatch(request)
+
+    with pytest.raises(ValueError, match="already exists"):
+        asyncio.run(
+            reviewers_command(
+                racing_send,
+                args(
+                    reviewers_command="add",
+                    ticket=ticket.id,
+                    harness="codex",
+                    restart=False,
+                ),
+            )
+        )
+    assert supervisor.ticket_state(ticket.id)["reviewers"] == [
+        {"id": "reviewer-1", "harness": "claude"}
+    ]
+
+
+def test_remove_reviewer_refuses_a_running_terminal_and_clears_slot_state(tmp_path):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Reviewed", column="review")
+    asyncio.run(
+        supervisor.dispatch(
+            {
+                "op": "set_assignment",
+                "ticket": ticket.id,
+                "slot": "reviewer-1",
+                "values": {"harness": "codex"},
+            }
+        )
+    )
+    state = supervisor.ticket_state(ticket.id)
+    state["review_results"] = {"reviewer-1": {"verdict": "approve"}}
+    state["runtime"] = {"reviewer-1": {"status": "completed"}}
+    supervisor.save()
+    supervisor.terminals.entries["terminal"] = {
+        "ticket": ticket.id,
+        "slot": "reviewer-1",
+        "status": "running",
+        "owner": "board",
+    }
+    with pytest.raises(ValueError, match="interactive slot terminal"):
+        asyncio.run(
+            supervisor.dispatch(
+                {
+                    "op": "remove_reviewer",
+                    "ticket": ticket.id,
+                    "slot": "reviewer-1",
+                }
+            )
+        )
+    state = supervisor.ticket_state(ticket.id)
+    assert [row["id"] for row in state["reviewers"]] == ["reviewer-1"]
+    assert "reviewer-1" in state["review_results"]
+    assert "reviewer-1" in state["runtime"]
+
+    supervisor.terminals.entries["terminal"]["status"] = "interrupted"
+    asyncio.run(
+        supervisor.dispatch(
+            {"op": "remove_reviewer", "ticket": ticket.id, "slot": "reviewer-1"}
+        )
+    )
+    state = supervisor.ticket_state(ticket.id)
+    assert state["reviewers"] == []
+    assert state["review_results"] == {}
+    assert state["runtime"] == {}
+
+    with pytest.raises(ValueError, match="Invalid reviewer slot identifier"):
+        asyncio.run(
+            supervisor.dispatch(
+                {"op": "remove_reviewer", "ticket": ticket.id, "slot": "developer"}
+            )
+        )
+
+
 def test_reviewers_remove_refuses_a_slot_the_ticket_does_not_have(tmp_path):
     supervisor = Supervisor(tmp_path)
     ticket = supervisor.board.create("Reviewed", column="review")
