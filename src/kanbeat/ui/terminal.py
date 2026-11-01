@@ -220,8 +220,23 @@ class TerminalSession:
     def controls_root(self) -> Widget:
         return self
 
-    def part(self, selector: str, kind: type[Widget]):
-        return self.controls_root.query_one(selector, kind)
+    def part(self, selector: str, kind: type[Widget]) -> Widget | None:
+        try:
+            return self.controls_root.query_one(selector, kind)
+        except NoMatches:
+            return None
+
+    def local(self, selector: str) -> Widget | None:
+        try:
+            return self.query_one(selector)
+        except NoMatches:
+            return None
+
+    def display(self) -> TerminalDisplay | None:
+        try:
+            return self.query_one(TerminalDisplay)
+        except NoMatches:
+            return None
 
     def show_hint(self, text: str) -> None:
         raise NotImplementedError
@@ -235,7 +250,9 @@ class TerminalSession:
             await self.stop_terminal()
 
     def begin(self) -> None:
-        self.query_one(TerminalDisplay).focus()
+        display = self.display()
+        if display is not None:
+            display.focus()
         self.watch_terminal()
         self.pump_input()
 
@@ -245,60 +262,81 @@ class TerminalSession:
     async def rpc(self, op: str, **values):
         return await self.app.rpc({"op": op, "terminal": self.terminal_id, **values})
 
-    @work(exclusive=True, group="terminal-watch")
+    @work(exclusive=True, group="terminal-watch", exit_on_error=False)
     async def watch_terminal(self) -> None:
         failed = False
         retry = RETRY_SECONDS
-        while True:
-            try:
-                epoch = self.view_epoch
-                if self.revision < 0:
-                    snapshot = await self.rpc(
-                        "terminal_snapshot", history_position=self.scroll_position
-                    )
-                else:
-                    snapshot = await self.rpc(
-                        "terminal_wait",
-                        revision=self.revision,
-                        timeout=WAIT_SECONDS,
-                        history_position=self.scroll_position,
-                    )
-                if epoch == self.view_epoch:
-                    self.apply_snapshot(snapshot)
-                if self.was_live and snapshot["status"] in ENDED_STATUSES:
-                    self.detach_ended(snapshot)
-                    return
-                if self.input.error and snapshot["status"] == "running":
-                    self.input = TerminalInput(self.rpc, self.report_input_error)
-                    self.pump_input()
-                    self.app.notify(
-                        "Terminal input reconnected; previous delivery is unconfirmed",
-                        severity="warning",
-                    )
-                failed = False
-                retry = RETRY_SECONDS
-            except (OSError, RuntimeError, ValueError) as exc:
-                if not failed:
-                    self.app.notify(str(exc), severity="error")
-                reason = str(exc).lower()
-                heading = "TERMINAL DISCONNECTED · " + str(exc)[:80]
-                if heading != self.heading:
-                    self.heading = heading
-                    self.part("#terminal-heading", Static).update(
-                        self.heading_text(heading)
-                    )
-                if (
-                    "not attached" in reason
-                    or "no longer attached" in reason
-                    or "not found" in reason
-                    or "shutting down" in reason
-                ):
-                    return
-                failed = True
-                await asyncio.sleep(retry)
-                retry = min(retry * 2, MAX_RETRY_SECONDS)
+        try:
+            while True:
+                try:
+                    epoch = self.view_epoch
+                    if self.revision < 0:
+                        snapshot = await self.rpc(
+                            "terminal_snapshot", history_position=self.scroll_position
+                        )
+                    else:
+                        snapshot = await self.rpc(
+                            "terminal_wait",
+                            revision=self.revision,
+                            timeout=WAIT_SECONDS,
+                            history_position=self.scroll_position,
+                        )
+                    if epoch == self.view_epoch:
+                        applied = self.apply_snapshot(snapshot)
+                        while not applied and epoch == self.view_epoch:
+                            if not self.is_attached or self.terminal_id is None:
+                                return
+                            await asyncio.sleep(RETRY_SECONDS)
+                            applied = self.apply_snapshot(snapshot)
+                        if not applied:
+                            continue
+                    if self.was_live and snapshot["status"] in ENDED_STATUSES:
+                        self.detach_ended(snapshot)
+                        return
+                    if self.input.error and snapshot["status"] == "running":
+                        self.input = TerminalInput(self.rpc, self.report_input_error)
+                        self.pump_input()
+                        self.app.notify(
+                            "Terminal input reconnected; previous delivery is unconfirmed",
+                            severity="warning",
+                        )
+                    failed = False
+                    retry = RETRY_SECONDS
+                except (OSError, RuntimeError, ValueError) as exc:
+                    if not self.is_attached or self.terminal_id is None:
+                        return
+                    if not failed:
+                        self.app.notify(str(exc), severity="error")
+                    reason = str(exc).lower()
+                    heading = "TERMINAL DISCONNECTED · " + str(exc)[:80]
+                    if heading != self.heading:
+                        heading_widget = self.part("#terminal-heading", Static)
+                        if heading_widget is not None:
+                            self.heading = heading
+                            heading_widget.update(self.heading_text(heading))
+                    if (
+                        "not attached" in reason
+                        or "no longer attached" in reason
+                        or "not found" in reason
+                        or "shutting down" in reason
+                    ):
+                        return
+                    failed = True
+                    await asyncio.sleep(retry)
+                    retry = min(retry * 2, MAX_RETRY_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except NoMatches:
+            return
+        except Exception as exc:
+            if not self.is_attached or self.terminal_id is None:
+                return
+            self.app.notify(str(exc), severity="error")
 
-    def apply_snapshot(self, snapshot: dict) -> None:
+    def apply_snapshot(self, snapshot: dict) -> bool:
+        display = self.display()
+        if display is None:
+            return False
         self.revision = snapshot["revision"]
         self.last_snapshot = snapshot
         self.was_live = self.was_live or snapshot["status"] in LIVE_STATUSES
@@ -311,7 +349,9 @@ class TerminalSession:
             self.scroll_position = (
                 snapshot["scroll_position"] if snapshot["historical"] else None
             )
-        self.part("#terminal-live", Button).disabled = self.scroll_position is None
+        live = self.part("#terminal-live", Button)
+        if live is not None:
+            live.disabled = self.scroll_position is None
         title = snapshot["title"]
         if self.show_status:
             title += " / " + snapshot["status"]
@@ -322,9 +362,10 @@ class TerminalSession:
         if snapshot.get("read_only"):
             title += " / monitor"
         if title != self.heading:
-            self.heading = title
-            self.part("#terminal-heading", Static).update(self.heading_text(title))
-        display = self.query_one(TerminalDisplay)
+            heading = self.part("#terminal-heading", Static)
+            if heading is not None:
+                self.heading = title
+                heading.update(self.heading_text(title))
         size = (snapshot["cols"], snapshot["rows"])
         lines = snapshot["screen"].split("\n")
         if size != self.grid:
@@ -348,6 +389,7 @@ class TerminalSession:
             display.clear_selection()
         self.rows_text = lines
         self.cursor_state = cursor
+        return True
 
     def detach_ended(self, snapshot: dict) -> None:
         message = f"{snapshot['title']} {snapshot['status']}"
@@ -396,7 +438,9 @@ class TerminalSession:
     async def go_live(self) -> None:
         self.scroll_position = None
         await self.refresh_view()
-        self.query_one(TerminalDisplay).focus()
+        display = self.display()
+        if display is not None:
+            display.focus()
 
     async def scroll_terminal(self, direction: str, event) -> None:
         snapshot = self.last_snapshot
@@ -518,7 +562,9 @@ class TerminalView(TerminalSession, BackdropModal[None]):
             yield TerminalDisplay(id="terminal-display")
 
     def show_hint(self, text: str) -> None:
-        self.query_one("#terminal-hint", Static).update(text)
+        hint = self.part("#terminal-hint", Static)
+        if hint is not None:
+            hint.update(text)
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()
@@ -559,10 +605,14 @@ class TerminalPane(TerminalSession, Vertical):
         return "| " + text if text else ""
 
     def show_hint(self, text: str) -> None:
-        self.part("#terminal-detach", Button).tooltip = text
+        button = self.part("#terminal-detach", Button)
+        if button is not None:
+            button.tooltip = text
 
     def show_controls(self, visible: bool) -> None:
-        self.part("#terminal-controls", Widget).display = visible
+        controls = self.part("#terminal-controls", Widget)
+        if controls is not None:
+            controls.display = visible
 
     async def on_mount(self) -> None:
         self.show_body(False)
@@ -570,32 +620,44 @@ class TerminalPane(TerminalSession, Vertical):
     def on_unmount(self) -> None:
         self.workers.cancel_group(self, "terminal-watch")
         self.workers.cancel_group(self, "terminal-input")
-        try:
-            self.show_controls(False)
-            self.part("#terminal-heading", Static).update("")
-        except NoMatches:
-            pass
+        self.show_controls(False)
+        heading = self.part("#terminal-heading", Static)
+        if heading is not None:
+            heading.update("")
 
     def show_body(self, visible: bool) -> None:
         self.show_controls(visible)
-        self.query_one("#terminal-body").display = visible
-        self.query_one("#terminal-empty").display = not visible
+        body = self.local("#terminal-body")
+        if body is not None:
+            body.display = visible
+        empty = self.local("#terminal-empty")
+        if empty is not None:
+            empty.display = not visible
 
     def open_terminal(self, terminal_id: str) -> None:
         self.workers.cancel_group(self, "terminal-watch")
         self.reset_terminal(terminal_id)
         self.app.embedded_terminal = terminal_id
         self.app.update_diff_button()
-        self.part("#terminal-heading", Static).update("")
+        heading = self.part("#terminal-heading", Static)
+        if heading is not None:
+            heading.update("")
         self.show_hint(DEFAULT_HINT)
-        self.part("#terminal-live", Button).disabled = True
-        self.query_one(TerminalDisplay).feed("\x1b[2J\x1b[H")
+        live = self.part("#terminal-live", Button)
+        if live is not None:
+            live.disabled = True
+        display = self.display()
+        if display is not None:
+            display.feed("\x1b[2J\x1b[H")
         self.show_body(True)
         self.begin()
         self.call_after_refresh(self.fit_terminal)
 
     async def fit_terminal(self) -> None:
-        size = self.query_one(TerminalDisplay).size
+        display = self.display()
+        if display is None:
+            return
+        size = display.size
         if size.width and size.height and self.terminal_id is not None:
             await self.resize_terminal(size.height, size.width)
 
@@ -605,6 +667,8 @@ class TerminalPane(TerminalSession, Vertical):
         self.reset_terminal(None)
         self.app.embedded_terminal = None
         self.app.update_diff_button()
-        self.part("#terminal-heading", Static).update("")
+        heading = self.part("#terminal-heading", Static)
+        if heading is not None:
+            heading.update("")
         self.show_body(False)
         self.post_message(self.Closed())

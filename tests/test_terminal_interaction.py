@@ -11,7 +11,7 @@ from kanbeat.supervisor import Supervisor
 from kanbeat.terminal_control import InputCapture, apply_input
 from kanbeat.terminal_history import HISTORY_LINES, HistoryBoard
 from kanbeat.ui.app import KanbeatApp
-from kanbeat.ui.terminal import TerminalDisplay, TerminalView
+from kanbeat.ui.terminal import TerminalDisplay, TerminalPane, TerminalView
 from kanbeat.ui.terminal_input import MAX_QUEUED_INPUTS, TerminalInput
 
 RAW_CLI = """
@@ -826,3 +826,110 @@ async def test_ctrl_c_is_not_bound_by_kanbeat_and_reaches_the_terminal(
         await contains(session, "GOT:" + ("1b5b3131323b3575" if kitty else "10"))
         assert isinstance(app.screen, TerminalView)
         assert notices == []
+
+
+@pytest.mark.asyncio
+async def test_snapshot_without_a_display_is_applied_after_the_display_returns(
+    terminal, monkeypatch
+):
+    supervisor, session = terminal
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    notices = []
+    monkeypatch.setattr(
+        app, "notify", lambda message, **kwargs: notices.append((message, kwargs))
+    )
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.click("#nav-sessions")
+        await pilot.pause(0.3)
+        pane = app.query_one(TerminalPane)
+        pane.open_terminal(session.id)
+        await pilot.pause(0.3)
+        display = pane.query_one(TerminalDisplay)
+        await display.remove()
+        await pilot.pause()
+        snapshot = await supervisor.dispatch(
+            {"op": "terminal_snapshot", "terminal": session.id}
+        )
+        revision = pane.revision
+        assert pane.apply_snapshot(snapshot) is False
+        assert pane.revision == revision
+        await pane.mount(TerminalDisplay(id="terminal-display"))
+        await pilot.pause()
+        assert pane.apply_snapshot(snapshot) is True
+        assert pane.revision == snapshot["revision"]
+        assert not [notice for notice in notices if notice[1].get("severity") == "error"]
+
+
+@pytest.mark.asyncio
+async def test_closing_the_pane_cancels_a_pending_snapshot_quietly(
+    terminal, monkeypatch
+):
+    supervisor, session = terminal
+    app = KanbeatApp(supervisor.board.project)
+    pending = asyncio.Event()
+    release = asyncio.Event()
+
+    async def rpc(message):
+        if (
+            message.get("op") == "terminal_snapshot"
+            and message.get("terminal") == session.id
+        ):
+            pending.set()
+            await release.wait()
+        return await supervisor.dispatch(message)
+
+    monkeypatch.setattr(app, "rpc", rpc)
+    notices = []
+    monkeypatch.setattr(
+        app, "notify", lambda message, **kwargs: notices.append((message, kwargs))
+    )
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.click("#nav-sessions")
+        await pilot.pause(0.3)
+        pane = app.query_one(TerminalPane)
+        pane.open_terminal(session.id)
+        await asyncio.wait_for(pending.wait(), timeout=1)
+        await pane.leave()
+        release.set()
+        await pilot.pause(0.2)
+        assert pane.terminal_id is None
+        watchers = [worker for worker in pane.workers if worker.group == "terminal-watch"]
+        assert all(not worker.is_running for worker in watchers)
+        assert not [notice for notice in notices if notice[1].get("severity") == "error"]
+
+
+@pytest.mark.asyncio
+async def test_unexpected_watcher_error_is_reported_once_and_stops_the_worker(
+    terminal, monkeypatch
+):
+    supervisor, session = terminal
+    app = KanbeatApp(supervisor.board.project)
+
+    async def rpc(message):
+        if (
+            message.get("op") == "terminal_snapshot"
+            and message.get("terminal") == session.id
+        ):
+            raise KeyError("broken snapshot")
+        return await supervisor.dispatch(message)
+
+    monkeypatch.setattr(app, "rpc", rpc)
+    notices = []
+    monkeypatch.setattr(
+        app, "notify", lambda message, **kwargs: notices.append((message, kwargs))
+    )
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.click("#nav-sessions")
+        await pilot.pause(0.3)
+        pane = app.query_one(TerminalPane)
+        pane.open_terminal(session.id)
+        for _ in range(100):
+            if [notice for notice in notices if notice[1].get("severity") == "error"]:
+                break
+            await asyncio.sleep(0.01)
+        await pilot.pause(0.2)
+        errors = [notice for notice in notices if notice[1].get("severity") == "error"]
+        assert len(errors) == 1
+        watchers = [worker for worker in pane.workers if worker.group == "terminal-watch"]
+        assert all(not worker.is_running for worker in watchers)
