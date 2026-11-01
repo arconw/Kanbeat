@@ -541,7 +541,7 @@ async def test_a_switch_does_not_replay_the_stored_initial_prompt(tmp_path, inst
     empty.entries["t1"]["prompt"] = "Unsent instructions"
     result = await switch_harness(empty, {"terminal": "t1", "harness": "opencode"})
     assert result["delivered"] == 0
-    assert "prompt" not in empty.entries["t1"]
+    assert empty.entries["t1"]["prompt"] == "Unsent instructions"
 
 
 @pytest.mark.asyncio

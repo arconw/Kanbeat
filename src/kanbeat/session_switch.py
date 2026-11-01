@@ -948,7 +948,8 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     if not plan.events:
         entry["harness"] = target
         entry["native_session"] = target_id
-        entry.pop("prompt", None)
+        if any(read.events for read in reads):
+            entry.pop("prompt", None)
         if created and target in ("claude", "pi"):
             entry["native_assigned"] = True
         else:

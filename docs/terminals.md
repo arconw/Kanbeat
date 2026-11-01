@@ -96,9 +96,11 @@ confirmation, the privacy rule, what moves between harnesses, limits and the
 fresh-session fallback.
 
 Groups, session IDs, titles, prompts, ownership and known native IDs persist in
-`.state`. A harness switch clears the session's stored initial launch prompt: it
-belonged to the source native session and is already part of the transferred
-conversation. Restart after supervisor recovery reuses the same local session ID;
+`.state`. A harness switch with source conversation history clears the session's
+stored initial launch prompt: it belonged to the source native session and is
+already part of the transferred conversation. An empty source history keeps it,
+because the prompt may never have reached a native session. Restart after
+supervisor recovery reuses the same local session ID;
 a known native ID resumes vendor history, otherwise a fresh native context starts.
 No active process is silently restarted. Unresolved crash-orphan identities block
 restart/removal until manually resolved. Deleting `.state` intentionally discards
