@@ -68,6 +68,53 @@ def harness_name(value: Any) -> str:
     return HARNESS_LABELS.get(value, str(value))
 
 
+def recorded_harnesses(entry: dict[str, Any]) -> list[str]:
+    """Return every harness with a recorded native session for this card."""
+    found: list[str] = []
+    rows = entry.get("native_sessions")
+    if isinstance(rows, dict):
+        for harness, row in rows.items():
+            if harness in HARNESS_LABELS and isinstance(row, dict):
+                identifier = row.get("id")
+                if isinstance(identifier, str) and identifier and harness not in found:
+                    found.append(harness)
+    current = entry.get("harness")
+    identifier = entry.get("native_session")
+    if (
+        current in HARNESS_LABELS
+        and isinstance(identifier, str)
+        and identifier
+        and current not in found
+    ):
+        found.append(current)
+    return found
+
+
+def removal_question(entry: dict[str, Any], native: bool) -> str:
+    harness = entry.get("harness")
+    name = escape(entry.get("title") or "this session")
+    product = harness_name(harness)
+    harnesses = recorded_harnesses(entry)
+    every_harness = len(harnesses) > 1 or (bool(harnesses) and harness not in harnesses)
+    if native:
+        if every_harness:
+            return (
+                f"Delete {name} and its conversations in every harness it has "
+                "used? This cannot be undone."
+            )
+        return (
+            f"Delete {name} and its conversation in {product}? This cannot be undone."
+        )
+    if harness == SHELL:
+        return f"Remove {name} from Kanbeat? Its shell is closed."
+    if every_harness:
+        return (
+            f"Remove {name} from Kanbeat? Its conversations stay in every "
+            "harness it has used."
+        )
+    return f"Remove {name} from Kanbeat? Its conversation stays in {product}."
+
+
 def byte_size(value: Any) -> str:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         return ""
@@ -90,6 +137,36 @@ def switch_question(entry: dict[str, Any], target: str, title: str) -> str:
     )
 
 
+_UNSUPPORTED_SUMMARIES = {
+    "agent": "harness bookkeeping",
+    "compaction": "compaction summaries",
+    "context compaction": "compaction summaries",
+    "file": "attachments",
+    "ignored": "harness bookkeeping",
+    "patch": "harness bookkeeping",
+    "reasoning": "hidden reasoning",
+    "retry": "harness bookkeeping",
+    "snapshot": "harness bookkeeping",
+    "step-finish": "harness bookkeeping",
+    "step-start": "harness bookkeeping",
+    "subtask": "sub-agent activity",
+    "synthetic": "harness bookkeeping",
+    "unknown part": "unknown content",
+}
+
+
+def unsupported_summary(values: Any) -> list[str]:
+    """Summarize reader categories without exposing harness part names."""
+    if isinstance(values, str):
+        values = [values]
+    labels = set()
+    for value in values or []:
+        label = str(value).strip()
+        if label:
+            labels.add(_UNSUPPORTED_SUMMARIES.get(label, label))
+    return sorted(labels)
+
+
 def switch_result_message(
     entry: dict[str, Any], target: str, result: dict[str, Any]
 ) -> str:
@@ -104,9 +181,7 @@ def switch_result_message(
         )
     else:
         message = f"Switched {name} to {product}; there was no new conversation."
-    unsupported = sorted(
-        {str(item) for item in result.get("unsupported") or [] if str(item).strip()}
-    )
+    unsupported = unsupported_summary(result.get("unsupported"))
     if unsupported:
         message += " Not transferred: " + ", ".join(unsupported) + "."
     return message
@@ -602,13 +677,7 @@ class SessionEdit(BackdropModal[None]):
                     label += f" ({text})"
             options.append((label, {"reduction": reduction}))
         message = str(error)
-        unsupported = sorted(
-            {
-                str(item)
-                for item in details.get("unsupported") or []
-                if str(item).strip()
-            }
-        )
+        unsupported = unsupported_summary(details.get("unsupported"))
         if unsupported:
             message += (
                 "\nNot transferred from the source: " + ", ".join(unsupported) + "."
@@ -646,12 +715,7 @@ class SessionActions(PopupMenu):
                 yield Button(
                     "Remove from Kanbeat", id="session-remove", variant="error"
                 )
-                if self.entry.get("native_session") and self.entry["harness"] in (
-                    "claude",
-                    "codex",
-                    "opencode",
-                    "pi",
-                ):
+                if recorded_harnesses(self.entry):
                     yield Button(
                         "Delete session and history",
                         id="session-remove-all",
@@ -677,24 +741,11 @@ class SessionActions(PopupMenu):
     async def confirm_delete(self, native: bool) -> None:
         from .app import Confirm
 
-        harness = self.entry["harness"]
-        name = escape(self.entry["title"])
-        product = HARNESS_LABELS.get(harness, harness)
-        if native:
-            question = (
-                f"Delete {name} and its conversation in {product}? "
-                "This cannot be undone."
-            )
-        elif harness == SHELL:
-            question = f"Remove {name} from Kanbeat? Its shell is closed."
-        else:
-            question = (
-                f"Remove {name} from Kanbeat? Its conversation stays in {product}."
-            )
+        terminal_id = self.entry["id"]
+        question = removal_question(self.entry, native)
         app = self.app
         if not await app.push_screen_wait(Confirm(question)):
             return
-        terminal_id = self.entry["id"]
         if self.entry["status"] in ("starting", "running") and not await app.execute(
             {"op": "terminal_stop", "terminal": terminal_id, "confirmed": True}
         ):

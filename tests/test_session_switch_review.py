@@ -20,9 +20,14 @@ from kanbeat.session_switch import (
     SessionSwitchRefused,
     _ensure_no_native_writer,
     _one_shot,
+    _prompt_event_key,
     switch_harness,
 )
-from kanbeat.session_transfer import IMPORT_NOTE, find_import_markers
+from kanbeat.session_transfer import (
+    IMPORT_NOTE,
+    ConversationEvent,
+    find_import_markers,
+)
 
 THREAD = "01a18660-9ca4-71c0-ba25-81426f4ca65d"
 
@@ -526,6 +531,95 @@ async def test_codex_to_opencode_to_codex_delivers_only_new_events(tmp_path, ins
     assert len(groups.codex.turns) == before
     assert len(groups.opencode.sent) == 1
     assert entry["harness"] == "opencode"
+
+
+@pytest.mark.asyncio
+async def test_a_switch_does_not_replay_the_stored_initial_prompt(tmp_path, installed):
+    groups = make_groups(tmp_path)
+    groups.entries["t1"]["prompt"] = "Initial instructions"
+    groups.codex.threads[THREAD].insert(
+        0,
+        codex_user(
+            "codex-prompt", "Kanbeat interactive instructions:\nInitial instructions"
+        ),
+    )
+    await switch_harness(groups, {"terminal": "t1", "harness": "opencode"})
+    assert groups.entries["t1"]["harness"] == "opencode"
+    assert "prompt" not in groups.entries["t1"]
+
+    empty = make_groups(tmp_path / "empty")
+    empty.codex.threads[THREAD] = []
+    empty.entries["t1"]["prompt"] = "Unsent instructions"
+    result = await switch_harness(empty, {"terminal": "t1", "harness": "opencode"})
+    assert result["delivered"] == 0
+    assert empty.entries["t1"]["prompt"] == "Unsent instructions"
+
+
+@pytest.mark.asyncio
+async def test_a_reduction_keeps_the_initial_prompt_until_it_is_transferred(
+    tmp_path, installed
+):
+    groups = make_groups(tmp_path)
+    groups.entries["t1"]["prompt"] = "Initial instructions"
+    groups.codex.threads[THREAD].insert(
+        0,
+        codex_user(
+            "codex-prompt", "Kanbeat interactive instructions:\nInitial instructions"
+        ),
+    )
+    result = await switch_harness(
+        groups,
+        {
+            "terminal": "t1",
+            "harness": "opencode",
+            "reduction": {"kind": "newest", "count": 2},
+        },
+    )
+    assert result["delivered"] == 2
+    assert groups.entries["t1"]["prompt"] == "Initial instructions"
+
+
+def test_prompt_matching_needs_the_whole_initial_message():
+    follow_up = ConversationEvent(
+        harness="codex",
+        ordinal=0,
+        role="user",
+        text="Kanbeat interactive instructions:\nInitial instructions continued",
+        event_id="follow-up",
+    )
+    reads = [SimpleNamespace(events=(follow_up,))]
+    assert _prompt_event_key({"prompt": "Initial instructions"}, reads) is None
+
+
+@pytest.mark.asyncio
+async def test_switching_back_to_the_harness_that_has_the_prompt_clears_it(
+    tmp_path, installed
+):
+    groups = FakeGroups(tmp_path)
+    groups.codex.threads[THREAD] = [
+        codex_user(
+            "codex-prompt", "Kanbeat interactive instructions:\nInitial instructions"
+        ),
+        codex_assistant("codex-answer", "Earlier Codex answer"),
+    ]
+    groups.opencode.sessions["ses_0"] = True
+    groups.opencode.messages["ses_0"] = [
+        opencode_message("msg_1", "user", "OpenCode question"),
+        opencode_message("msg_2", "assistant", "OpenCode answer"),
+    ]
+    groups.entries["t1"] = entry_for(
+        harness="opencode",
+        native="ses_0",
+        prompt="Initial instructions",
+        native_sessions={
+            "codex": {"id": THREAD, "status": "available"},
+            "opencode": {"id": "ses_0", "status": "available"},
+        },
+    )
+    result = await switch_harness(groups, {"terminal": "t1", "harness": "codex"})
+    assert result["delivered"] == 2
+    assert groups.entries["t1"]["harness"] == "codex"
+    assert "prompt" not in groups.entries["t1"]
 
 
 @pytest.mark.asyncio

@@ -15,12 +15,15 @@ from kanbeat.ui.sessions import (
     SWITCH_TIMEOUT_MESSAGE,
     SessionEdit,
     SwitchChoice,
+    recorded_harnesses,
+    removal_question,
     switch_eligible,
     switch_failure_message,
     switch_locked,
     switch_question,
     switch_result_message,
     switch_tooltip,
+    unsupported_summary,
 )
 
 
@@ -37,6 +40,42 @@ def entry(identifier="t1", harness="codex", status="stopped", **fields):
     }
     row.update(fields)
     return row
+
+
+def test_removal_copy_covers_every_harness_after_a_switch():
+    row = entry(
+        harness="opencode",
+        native_session="native-opencode",
+        native_sessions={
+            "codex": {"id": "native-codex", "status": "available"},
+            "opencode": {"id": "native-opencode", "status": "available"},
+        },
+    )
+    assert set(recorded_harnesses(row)) == {"codex", "opencode"}
+    assert removal_question(row, True) == (
+        "Delete Work and its conversations in every harness it has used? "
+        "This cannot be undone."
+    )
+    assert removal_question(row, False) == (
+        "Remove Work from Kanbeat? Its conversations stay in every harness it has used."
+    )
+
+    single = entry()
+    assert recorded_harnesses(single) == ["codex"]
+    assert removal_question(single, True) == (
+        "Delete Work and its conversation in Codex? This cannot be undone."
+    )
+
+    cleared = entry(
+        harness="opencode",
+        native_session=None,
+        native_sessions={"codex": {"id": "native-codex", "status": "available"}},
+    )
+    assert recorded_harnesses(cleared) == ["codex"]
+    assert removal_question(cleared, True) == (
+        "Delete Work and its conversations in every harness it has used? "
+        "This cannot be undone."
+    )
 
 
 class FakeRpc:
@@ -150,6 +189,33 @@ def test_done_message_reports_delivery_and_one_line_of_unsupported_categories():
     assert "\n" not in message
     empty = switch_result_message(entry(), "pi", {"delivered": 0, "unsupported": []})
     assert empty == "Switched Work to Pi; there was no new conversation."
+
+
+def test_protocol_part_names_are_summarized_for_the_notice():
+    message = switch_result_message(
+        entry(),
+        "opencode",
+        {
+            "delivered": 1,
+            "unsupported": [
+                "step-start",
+                "patch",
+                "reasoning",
+                "file",
+                "subtask",
+                "agent",
+            ],
+        },
+    )
+    assert message.endswith(
+        "Not transferred: attachments, harness bookkeeping, hidden reasoning, "
+        "sub-agent activity."
+    )
+    assert unsupported_summary(["images", "thinking", "images"]) == [
+        "images",
+        "thinking",
+    ]
+    assert unsupported_summary("step-start") == ["harness bookkeeping"]
 
 
 @pytest.mark.asyncio

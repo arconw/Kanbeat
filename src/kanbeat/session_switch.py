@@ -404,6 +404,43 @@ def _error_text(error: BaseException) -> str:
     return text[-ERROR_TAIL:] if text else type(error).__name__
 
 
+def _prompt_event_key(
+    entry: dict[str, Any], reads: list[_History]
+) -> tuple[str, str] | None:
+    prompt = entry.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return None
+    framed = ("Kanbeat interactive instructions:\n" + prompt).strip()
+    bare = prompt.strip()
+    for read in reads:
+        for event in read.events:
+            if event.role != "user" or event.is_import or event.import_id:
+                continue
+            text = event.text.strip()
+            if text == framed or text == bare:
+                return event.key
+    return None
+
+
+def _prompt_transferred(
+    entry: dict[str, Any],
+    ledger: TransferLedger,
+    target: str,
+    reads: list[_History],
+    delivered: tuple[ConversationEvent, ...],
+) -> bool:
+    if not entry.get("prompt"):
+        return True
+    key = _prompt_event_key(entry, reads)
+    if key is None:
+        return False
+    if key[0] == target:
+        return True
+    if any(event.key == key for event in delivered):
+        return True
+    return key in ledger.delivered(target)
+
+
 def _progress(groups: Any, message: str, level: str = "information") -> None:
     report = getattr(groups, "progress", None)
     if callable(report):
@@ -908,6 +945,15 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
         raise
     reads.append(source_read)
 
+    prompt_reads = list(reads)
+    if entry.get("prompt") and target_id is not None:
+        try:
+            target_read = await _read_history(groups, str(target), target_id, ledger)
+        except ValueError:
+            target_read = None
+        if target_read is not None and target_read.outcome == AVAILABLE:
+            prompt_reads.append(target_read)
+
     sorted_reads = _assign_ordinals(entry, reads)
     histories = [read.history() for read in sorted_reads.values()]
 
@@ -948,6 +994,8 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     if not plan.events:
         entry["harness"] = target
         entry["native_session"] = target_id
+        if _prompt_transferred(entry, ledger, str(target), prompt_reads, ()):
+            entry.pop("prompt", None)
         if created and target in ("claude", "pi"):
             entry["native_assigned"] = True
         else:
@@ -1051,6 +1099,8 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     ledger.confirm_delivery(record.import_id, delivery.target_message_id)
     entry["harness"] = target
     entry["native_session"] = target_id
+    if _prompt_transferred(entry, ledger, str(target), prompt_reads, plan.events):
+        entry.pop("prompt", None)
     entry.pop("native_assigned", None)
     _store_ledger(entry, ledger)
     groups.state.save()
