@@ -2,7 +2,7 @@
 
 Detailed behavior reference. For what Kanbeat is, installation and a first run, start with the [README](../README.md). Interactive terminal details live in [terminals.md](terminals.md); the product and architecture design is in the [standalone design specification](design/design.html).
 
-Kanbeat is an early release. Everything below describes the implemented behavior; items marked as not validated have not been exercised against live vendor CLIs.
+Kanbeat is a local-first multiplexer for AI coding agent sessions, with a Kanban board. It is an early release.
 
 - [Principles](#principles)
 - [Command line and TUI](#command-line-and-tui)
@@ -188,7 +188,7 @@ For every active worker turn, the supervisor stores a **SHA-256 hash of the tick
 
 A filename-only rename that leaves the Markdown contents unchanged **does not** trigger a new agent turn. A stage change made by the supervisor changes the path, not the underlying requirements. Hashes detect **content changes**, not timestamps, filenames, or Git diffs.
 
-**Implemented in the supervisor:** per-turn content hashes, native same-session re-read on change, stale Reviewer verdict invalidation, and re-resolving the canonical ticket path by stable ID. This implementation has not yet been validated against live vendor CLI processes.
+**Implemented in the supervisor:** per-turn content hashes, native same-session re-read on change, stale Reviewer verdict invalidation, and re-resolving the canonical ticket path by stable ID.
 
 ## Native CLI lifecycle
 

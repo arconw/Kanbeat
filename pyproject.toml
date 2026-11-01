@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "kanbeat"
 version = "1.0.0"
-description = "Filesystem-native Kanban with a persistent local AI harness supervisor"
+description = "Local-first multiplexer for AI coding agent sessions, with a Kanban board"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
