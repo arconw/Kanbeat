@@ -292,7 +292,7 @@ flowchart TB
 - Live task attach is available for OpenCode, Codex and Claude. Pi task terminals still require Board Stop, and Pi model/effort capture is not implemented.
 - Kanbeat does not manage Git: no worktrees, branches, resets or cleanups. Parallel tickets all edit the same working tree, so declare a dependency whenever two tickets touch the same files.
 - The TUI shows ticket Markdown read-only; edit the files externally.
-- Attached views are monitor-only while a structured worker turn is active, so Kanbeat never runs two writers against one native session.
+- Attached views are monitor-only while a structured worker turn is active, so Kanbeat never runs two writers against one native session. Keys and paste are disabled; the wheel still scrolls the view.
 - Harness switching moves conversation text only. Hidden reasoning and binary attachments do not move, permissions, sandbox and native settings stay with each harness, and agent behavior can differ. Some Claude and Pi paths are not yet verified against live CLIs, and a context file does not extend a model's context window.
 - The transition hook is woken by typing into its terminal when it is quiet, so it can misread a message sent while the harness waits for an answer; keep its prompt specific and its actions safe to repeat.
 - Native terminals do not forward mouse reporting or clipboard requests.

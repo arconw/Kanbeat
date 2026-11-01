@@ -199,6 +199,54 @@ async def terminal_request(
             env=env,
         )
         return {"terminal": terminal_id}
+    if op == "terminal_navigate":
+        terminal = supervisor.terminals.get(str(request["terminal"]))
+        if terminal.entry["status"] != "running":
+            raise ValueError("Terminal is no longer running")
+        if not monitor_only(supervisor, terminal):
+            raise ValueError(
+                "Terminal navigation is only available for live worker monitors"
+            )
+        direction = request.get("direction")
+        if direction not in ("up", "down"):
+            raise ValueError("Unknown terminal scroll direction")
+        try:
+            x = min(max(int(request.get("x", 1)), 1), terminal.board.width)
+            y = min(max(int(request.get("y", 1)), 1), terminal.board.height)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Terminal mouse coordinates must be numeric") from exc
+        modifiers = request.get("modifiers") or []
+        if not isinstance(modifiers, list) or any(
+            value not in ("shift", "meta", "ctrl") for value in modifiers
+        ):
+            raise ValueError("Unsupported mouse modifier")
+        navigation = {
+            "kind": "wheel",
+            "direction": direction,
+            "x": x,
+            "y": y,
+            "modifiers": modifiers,
+        }
+        if not (
+            terminal.board.modes.mouse_protocol.name != "OFF"
+            or terminal.board.modes.alternate_scroll_mode
+        ):
+            if not terminal.board.blitter.in_alt_screen:
+                raise ValueError("This monitor has no scrollable view")
+            navigation = {
+                "kind": "key",
+                "key": "pageup" if direction == "up" else "pagedown",
+            }
+        collector = InputCapture()
+        connection = terminal.board.host.connection
+        try:
+            terminal.board.host.attach(collector)
+            apply_input(terminal, navigation)
+        finally:
+            terminal.board.host.attach(connection)
+        if not terminal.queue_bytes(collector.data):
+            raise ValueError("Terminal input queue is full")
+        return monitor_snapshot(supervisor, terminal, terminal.snapshot())
     if op in (
         "terminal_snapshot",
         "terminal_wait",

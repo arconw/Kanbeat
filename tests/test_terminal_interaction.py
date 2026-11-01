@@ -26,6 +26,27 @@ while True:
         print('INPUTHEX:' + line.hex() + '\\r', flush=True)
 """
 
+ALT_VIEWER_CLI = """
+import os, sys, tty
+tty.setraw(0)
+sys.stdout.write("\\x1b[?1049h\\x1b[?1000h\\x1b[?1006h")
+for index in range(80):
+    sys.stdout.write(f"ALT-{index:03}\\r\\n")
+sys.stdout.write("VIEWER-READY\\r\\n")
+sys.stdout.flush()
+while True:
+    data = os.read(0, 4096)
+    sys.stdout.write("VIEWER-GOT:" + data.hex() + "\\r\\n")
+    sys.stdout.flush()
+"""
+
+INLINE_MONITOR_CLI = """
+import time
+for index in range(80):
+    print(f"INLINE-{index:03}", flush=True)
+time.sleep(60)
+"""
+
 
 @pytest_asyncio.fixture
 async def terminal(tmp_path, monkeypatch):
@@ -57,6 +78,155 @@ async def contains(session, text, count=1):
             return
         await asyncio.sleep(0.01)
     pytest.fail(f"Missing expected terminal output: {text}")
+
+
+@pytest_asyncio.fixture
+async def monitor_terminal_factory(tmp_path, monkeypatch):
+    monkeypatch.setattr("kanbeat.supervisor.available", lambda name: True)
+    supervisors = []
+    jobs = []
+
+    async def start(script, slot="developer"):
+        project = tmp_path / f"monitor-{len(supervisors)}"
+        project.mkdir()
+        supervisor = Supervisor(project)
+        supervisors.append(supervisor)
+        column = "progress" if slot == "developer" else "review"
+        ticket = supervisor.board.create("Task", column=column)
+        terminal_id = await supervisor.terminals.create(
+            "shell",
+            ticket=ticket.id,
+            column=column,
+            slot=slot,
+            owner="attach",
+            argv=[sys.executable, "-u", "-c", script],
+            title="fake viewer",
+        )
+        session = supervisor.terminals.get(terminal_id)
+        job = asyncio.create_task(asyncio.sleep(60))
+        jobs.append(job)
+        supervisor.jobs[supervisor.slot_key(ticket.id, slot)] = job
+        return supervisor, session
+
+    try:
+        yield start
+    finally:
+        for job in jobs:
+            job.cancel()
+        await asyncio.gather(*jobs, return_exceptions=True)
+        for supervisor in supervisors:
+            await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slot", ["developer", "reviewer-1"])
+async def test_monitor_only_slot_terminal_scrolls_the_attached_view(
+    slot, monitor_terminal_factory, monkeypatch
+):
+    supervisor, session = await monitor_terminal_factory(ALT_VIEWER_CLI, slot)
+    await contains(session, "VIEWER-READY")
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    notices = []
+    monkeypatch.setattr(
+        app, "notify", lambda message, **kwargs: notices.append((message, kwargs))
+    )
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause(0.6)
+        view = TerminalView(session.id)
+        app.push_screen(view)
+        await pilot.pause()
+        snapshot = view.last_snapshot
+        assert snapshot["read_only"] is True
+        assert snapshot["alternate_screen"] is True
+        assert snapshot["mouse_tracking"] is True
+        assert not view.has_local_history(snapshot)
+        display = view.query_one(TerminalDisplay)
+        display.post_message(
+            events.MouseScrollUp(display, 3, 2, 0, 0, 0, False, False, False)
+        )
+        await contains(session, "VIEWER-GOT:1b5b3c36343b343b334d")
+        await view.scroll_terminal(
+            "down",
+            events.MouseScrollDown(display, 3, 2, 0, 0, 0, True, False, False),
+        )
+        await contains(session, "VIEWER-GOT:1b5b3c36353b343b334d")
+        assert view.scroll_position is None
+        assert not view.last_snapshot["historical"]
+        await view.send_input({"kind": "key", "key": "x", "character": "x"})
+        await view.send_input({"kind": "paste", "text": "hello"})
+        assert "VIEWER-GOT:78" not in session.snapshot()["text"]
+        assert "VIEWER-GOT:68656c6c6f" not in session.snapshot()["text"]
+        assert any("read-only" in message for message, _ in notices)
+        with pytest.raises(ValueError, match="live worker monitor"):
+            await supervisor.dispatch(
+                {
+                    "op": "terminal_input",
+                    "terminal": session.id,
+                    "kind": "key",
+                    "key": "x",
+                    "character": "x",
+                }
+            )
+        job = next(iter(supervisor.jobs.values()))
+        job.cancel()
+        await asyncio.gather(job, return_exceptions=True)
+        await view.refresh_view()
+        assert view.last_snapshot["read_only"] is False
+        await view.scroll_terminal(
+            "up",
+            events.MouseScrollUp(display, 3, 2, 0, 0, 0, True, False, False),
+        )
+        await contains(session, "VIEWER-GOT:1b5b3c36343b343b334d", count=2)
+        await view.action_detach()
+        await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_monitor_only_primary_output_keeps_local_history_and_live(
+    monitor_terminal_factory, monkeypatch
+):
+    supervisor, session = await monitor_terminal_factory(INLINE_MONITOR_CLI)
+    await contains(session, "INLINE-079")
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause(0.6)
+        view = TerminalView(session.id)
+        app.push_screen(view)
+        await pilot.pause()
+        assert view.last_snapshot["read_only"] is True
+        assert view.has_local_history(view.last_snapshot)
+        display = view.query_one(TerminalDisplay)
+        display.post_message(
+            events.MouseScrollUp(display, 1, 1, 0, 0, 0, False, False, False)
+        )
+        await pilot.pause()
+        assert view.last_snapshot["historical"]
+        newest = view.scroll_position
+        await view.scroll_terminal(
+            "up",
+            events.MouseScrollUp(display, 1, 1, 0, 0, 0, True, False, False),
+        )
+        assert view.scroll_position < newest
+        position = view.scroll_position
+        first_row = view.last_snapshot["screen"].split("\n")[0]
+        session.board.parser.feed("MORE\r\n" * 4)
+        session.touch()
+        await pilot.pause()
+        assert view.scroll_position == position
+        assert view.last_snapshot["screen"].split("\n")[0] == first_row
+        await view.scroll_terminal(
+            "down",
+            events.MouseScrollDown(display, 1, 1, 0, 0, 0, True, False, False),
+        )
+        assert view.scroll_position == newest
+        assert view.last_snapshot["historical"]
+        await view.go_live()
+        assert view.scroll_position is None
+        assert not view.last_snapshot["historical"]
+        await view.action_detach()
+        await pilot.pause()
 
 
 @pytest.mark.asyncio
