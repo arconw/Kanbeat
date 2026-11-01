@@ -2,9 +2,9 @@
 
 # Kanbeat
 
-**A filesystem-native Kanban board and local supervisor for AI coding agents.**
+**A local-first multiplexer for AI coding agent sessions, with a Kanban board.**
 
-A ticket is a Markdown file, its status is the directory it lives in, and one persistent supervisor per project runs your own coding CLIs against the queue.
+One persistent supervisor per project runs your own coding CLIs, and sessions outlive the TUI: detach, close the terminal, and reattach later. A ticket is a Markdown file, its status is the directory it lives in, and the board queues tickets for those agents.
 
 [![CI](https://github.com/arconw/Kanbeat/actions/workflows/ci.yml/badge.svg)](https://github.com/arconw/Kanbeat/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/tag/arconw/Kanbeat?label=release&sort=semver)](https://github.com/arconw/Kanbeat/releases)
@@ -22,7 +22,7 @@ A ticket is a Markdown file, its status is the directory it lives in, and one pe
 
 </div>
 
-> **Beta.** Kanbeat is still under active development, so you may meet rough edges, but the happy path works: it has been tried by hand with several of the supported CLIs. The automated tests run against deterministic local fake APIs rather than real models, and agents edit your working tree, so read [Limitations](#limitations) before letting them run unattended.
+> **Beta.** Kanbeat is still under active development, so you may meet rough edges, but the happy path works. Agents edit your working tree, so read [Limitations](#limitations) before letting them run unattended.
 
 ![Kanbeat board: dependencies between tickets, the card strip and manual moves](docs/media/board.gif)
 
@@ -289,7 +289,6 @@ flowchart TB
 
 - Beta. Behaviour, file layout and configuration may still change. **0.9.0 renamed tickets to `<id>-<slug>.md`**; files named in the old `<order>-<id>-<slug>.md` form are reported as invalid and must be renamed by hand. The old `.tasks` layout is not migrated.
 - Only Linux and macOS are supported. WSL is untested and native Windows does not work.
-- Live vendor protocols were exercised against local deterministic fake APIs, not against every real remote provider, login mode or CLI version. Event formats and session resume can change between vendor releases; check your installed CLI versions before running unattended.
 - Live task attach is available for OpenCode, Codex and Claude. Pi task terminals still require Board Stop, and Pi model/effort capture is not implemented.
 - Kanbeat does not manage Git: no worktrees, branches, resets or cleanups. Parallel tickets all edit the same working tree, so declare a dependency whenever two tickets touch the same files.
 - The TUI shows ticket Markdown read-only; edit the files externally.
