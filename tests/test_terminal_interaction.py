@@ -864,6 +864,48 @@ async def test_snapshot_without_a_display_is_applied_after_the_display_returns(
 
 
 @pytest.mark.asyncio
+async def test_watcher_reapplies_a_snapshot_after_the_display_returns(
+    terminal, monkeypatch
+):
+    supervisor, session = terminal
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    notices = []
+    monkeypatch.setattr(
+        app, "notify", lambda message, **kwargs: notices.append((message, kwargs))
+    )
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.click("#nav-sessions")
+        await pilot.pause(0.3)
+        pane = app.query_one(TerminalPane)
+        pane.open_terminal(session.id)
+        await pilot.pause(0.6)
+        assert pane.last_snapshot
+        display = pane.query_one(TerminalDisplay)
+        await display.remove()
+        revision = pane.revision
+        session.write("AFTER-REMOVE\r\n")
+        for _ in range(200):
+            if session.snapshot()["revision"] != revision:
+                break
+            await asyncio.sleep(0.01)
+        await pilot.pause(0.8)
+        assert pane.revision == revision
+        assert not [
+            notice for notice in notices if notice[1].get("severity") == "error"
+        ]
+        await pane.mount(TerminalDisplay(id="terminal-display"))
+        for _ in range(300):
+            if pane.revision != revision:
+                break
+            await pilot.pause(0.05)
+        assert pane.revision != revision
+        assert not [
+            notice for notice in notices if notice[1].get("severity") == "error"
+        ]
+
+
+@pytest.mark.asyncio
 async def test_closing_the_pane_cancels_a_pending_snapshot_quietly(
     terminal, monkeypatch
 ):
