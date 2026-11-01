@@ -78,9 +78,10 @@ def interactive_command(
 
 
 class TerminalSession:
-    def __init__(self, state: LocalState, entry: dict[str, Any]):
+    def __init__(self, state: LocalState, entry: dict[str, Any], on_close=None):
         self.state = state
         self.entry = entry
+        self.on_close = on_close
         self.id = entry["id"]
         self.board = HistoryBoard(
             width=entry.get("cols", 80), height=entry.get("rows", 24)
@@ -259,6 +260,8 @@ class TerminalSession:
             self.entry.pop("process_identity", None)
             self.state.save()
             self.touch()
+            if self.on_close is not None:
+                self.on_close(self.id)
 
     async def stop(self) -> None:
         self.stop_requested = True
@@ -329,8 +332,9 @@ class TerminalSession:
 
 
 class Terminals:
-    def __init__(self, state: LocalState):
+    def __init__(self, state: LocalState, on_close=None):
         self.state = state
+        self.on_close = on_close
         self.entries = state.data.setdefault("terminals", {})
         self.sessions: dict[str, TerminalSession] = {}
 
@@ -401,7 +405,7 @@ class Terminals:
         entry.pop("exit_code", None)
         entry.pop("dropped_replies", None)
         self.state.save()
-        session = TerminalSession(self.state, entry)
+        session = TerminalSession(self.state, entry, self.on_close)
         self.sessions[entry["id"]] = session
         try:
             await session.start(argv, env)

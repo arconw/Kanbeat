@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from typing import Any, TYPE_CHECKING
 import uuid
 
@@ -17,6 +18,10 @@ if TYPE_CHECKING:
 
 MAX_WAIT_SECONDS = 8.0
 MAX_INPUT_EVENTS = 256
+PASTE_BEGIN = b"\x1b[200~"
+PASTE_END = b"\x1b[201~"
+PASTE_STALE_SECONDS = 60.0
+MAX_PASTES_PER_TERMINAL = 8
 
 
 async def terminal_request(
@@ -247,6 +252,41 @@ async def terminal_request(
         if not terminal.queue_bytes(collector.data):
             raise ValueError("Terminal input queue is full")
         return monitor_snapshot(supervisor, terminal, terminal.snapshot())
+    if op == "terminal_paste":
+        terminal = supervisor.terminals.get(str(request["terminal"]))
+        if terminal.entry["status"] != "running":
+            supervisor.pastes.discard_terminal(terminal.id)
+            raise ValueError("Terminal is no longer running")
+        if monitor_only(supervisor, terminal):
+            supervisor.pastes.discard_terminal(terminal.id)
+            raise ValueError(
+                "This is a live worker monitor; wait for the turn or use Board Stop "
+                "before sending input"
+            )
+        prune_pastes(supervisor, time.monotonic())
+        phase = request.get("phase")
+        paste_id = request.get("paste")
+        if not isinstance(paste_id, str) or not paste_id or len(paste_id) > 128:
+            raise ValueError("Invalid paste identifier")
+        client = request.get("client")
+        if client is not None and not isinstance(client, str):
+            raise ValueError("Invalid paste client")
+        now = time.monotonic()
+        if phase == "begin":
+            accepted = supervisor.pastes.begin(terminal, paste_id, client, now)
+        elif phase == "chunk":
+            text = request.get("text")
+            if not isinstance(text, str):
+                raise ValueError("Paste must be text")
+            accepted = supervisor.pastes.chunk(terminal, paste_id, text, client, now)
+        elif phase == "end":
+            accepted = supervisor.pastes.end(terminal, paste_id, client, now)
+        elif phase == "abort":
+            accepted = supervisor.pastes.abort(terminal, paste_id, now)
+            return {"accepted": accepted}
+        else:
+            raise ValueError("Unknown paste phase")
+        return {"accepted": accepted}
     if op in (
         "terminal_snapshot",
         "terminal_wait",
@@ -288,6 +328,7 @@ async def terminal_request(
         if op == "terminal_stop":
             if request.get("confirmed") is not True:
                 raise ValueError("Explicit terminal stop confirmation required")
+            supervisor.pastes.discard_terminal(terminal.id)
             await terminal.stop()
         elif op == "terminal_resize":
             terminal.resize(int(request["rows"]), int(request["cols"]))
@@ -365,13 +406,182 @@ class InputCapture:
         self.data.extend(payload)
 
 
+class PasteAssembler:
+    def __init__(self) -> None:
+        self.terminals: dict[str, dict[str, dict[str, Any]]] = {}
+
+    def begin(
+        self,
+        terminal: TerminalSession,
+        paste_id: str,
+        client: str | None,
+        now: float,
+    ) -> bool:
+        pastes = self.terminals.setdefault(terminal.id, {})
+        for existing, state in list(pastes.items()):
+            if client and state.get("client") == client:
+                if self._close(state):
+                    pastes.pop(existing, None)
+                else:
+                    self._hold(state, now)
+        if paste_id in pastes:
+            raise ValueError("Paste is already in progress")
+        while len(pastes) >= MAX_PASTES_PER_TERMINAL:
+            evicted = False
+            for oldest in sorted(pastes, key=lambda key: pastes[key]["updated"]):
+                state = pastes[oldest]
+                if not state.get("closing") and (
+                    now - state["updated"] <= PASTE_STALE_SECONDS
+                ):
+                    continue
+                if self._close(state):
+                    del pastes[oldest]
+                    evicted = True
+                    break
+                self._hold(state, now)
+            if not evicted:
+                return False
+        bracketed = bool(terminal.board.modes.bracketed_paste)
+        if bracketed and not terminal.queue_bytes(PASTE_BEGIN):
+            if not pastes:
+                self.terminals.pop(terminal.id, None)
+            return False
+        pastes[paste_id] = {
+            "bracketed": bracketed,
+            "updated": now,
+            "client": client,
+            "terminal": terminal,
+        }
+        return True
+
+    def chunk(
+        self,
+        terminal: TerminalSession,
+        paste_id: str,
+        text: str,
+        client: str | None,
+        now: float,
+    ) -> bool:
+        state = self._state(terminal.id, paste_id, client)
+        state["updated"] = now
+        accepted = bool(terminal.queue_bytes(text.encode("utf-8")))
+        if accepted:
+            state.pop("closing", None)
+        return accepted
+
+    def end(
+        self,
+        terminal: TerminalSession,
+        paste_id: str,
+        client: str | None,
+        now: float,
+    ) -> bool:
+        state = self._state(terminal.id, paste_id, client)
+        state["updated"] = now
+        if state["bracketed"] and not terminal.queue_bytes(PASTE_END):
+            return False
+        self._discard(terminal.id, paste_id)
+        return True
+
+    def abort(self, terminal: TerminalSession, paste_id: str, now: float) -> bool:
+        pastes = self.terminals.get(terminal.id)
+        if not pastes:
+            return True
+        state = pastes.get(paste_id)
+        if state is None:
+            return True
+        state["updated"] = now
+        if not self._close(state):
+            self._hold(state, now)
+            return False
+        self._discard(terminal.id, paste_id)
+        return True
+
+    def discard_terminal(self, terminal_id: str) -> None:
+        self.terminals.pop(terminal_id, None)
+
+    def prune(
+        self,
+        now: float,
+        active_ids: set[str] | None = None,
+        terminals: dict[str, TerminalSession] | None = None,
+    ) -> list[tuple[str, bool]]:
+        expired: list[tuple[str, bool]] = []
+        for terminal_id in list(self.terminals):
+            if active_ids is not None and terminal_id not in active_ids:
+                self.terminals.pop(terminal_id, None)
+                continue
+            pastes = self.terminals[terminal_id]
+            for paste_id in list(pastes):
+                state = pastes[paste_id]
+                if not state.get("closing") and (
+                    now - state["updated"] <= PASTE_STALE_SECONDS
+                ):
+                    continue
+                if self._close(state, terminals):
+                    del pastes[paste_id]
+                    expired.append((terminal_id, bool(state["bracketed"])))
+                else:
+                    self._hold(state, now)
+            if not pastes:
+                self.terminals.pop(terminal_id, None)
+        return expired
+
+    def _state(
+        self, terminal_id: str, paste_id: str, client: str | None
+    ) -> dict[str, Any]:
+        state = (self.terminals.get(terminal_id) or {}).get(paste_id)
+        if state is None:
+            raise ValueError("Unknown paste")
+        owner = state.get("client")
+        if client and owner and client != owner:
+            raise ValueError("Paste belongs to another client")
+        return state
+
+    def _discard(self, terminal_id: str, paste_id: str) -> None:
+        pastes = self.terminals.get(terminal_id)
+        if pastes is None:
+            return
+        pastes.pop(paste_id, None)
+        if not pastes:
+            self.terminals.pop(terminal_id, None)
+
+    @staticmethod
+    def _hold(state: dict[str, Any], now: float) -> None:
+        state["updated"] = now
+        state["closing"] = True
+
+    @staticmethod
+    def _close(
+        state: dict[str, Any],
+        terminals: dict[str, TerminalSession] | None = None,
+    ) -> bool:
+        if not state["bracketed"]:
+            return True
+        terminal = None
+        if terminals is not None:
+            terminal = terminals.get(state["terminal"].id)
+        if terminal is None:
+            terminal = state.get("terminal")
+        if terminal is None:
+            return True
+        try:
+            return bool(terminal.queue_bytes(PASTE_END))
+        except (ValueError, OSError):
+            return True
+
+
+def prune_pastes(
+    supervisor: Supervisor, now: float, active_ids: set[str] | None = None
+) -> None:
+    supervisor.pastes.prune(now, active_ids, supervisor.terminals.sessions)
+
+
 def apply_input(terminal: TerminalSession, request: dict[str, Any]) -> None:
     if request.get("kind") == "paste":
         text = request.get("text") or ""
         if not isinstance(text, str):
             raise ValueError("Paste must be text")
-        if len(text.encode()) > 16000:
-            raise ValueError("Paste is too large")
         terminal.board.input_paste(text)
         return
     from bittty import constants

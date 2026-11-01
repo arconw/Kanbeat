@@ -476,7 +476,7 @@ async def test_rejected_event_does_not_disable_input_or_drop_valid_keys(terminal
     queue = TerminalInput(send, failures.append)
     for value in [
         {"kind": "key", "character": "a"},
-        {"kind": "paste", "text": "x" * 16001},
+        {"kind": "paste", "text": 123},
         {"kind": "key", "character": "b"},
         {"kind": "key", "key": "ctrl+j", "character": "\n"},
     ]:
