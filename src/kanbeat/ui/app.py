@@ -117,6 +117,7 @@ class TicketView(BackdropModal[None]):
     def __init__(self, ticket: dict[str, Any]):
         super().__init__()
         self.ticket = ticket
+        self._refresh_lock = asyncio.Lock()
 
     @staticmethod
     def runtime_label(state: dict[str, Any], slot: str) -> str:
@@ -133,6 +134,46 @@ class TicketView(BackdropModal[None]):
             state, slot
         )
         return "runtime agent-working" if active else "runtime"
+
+    def reviewer_row(
+        self, ticket: dict[str, Any], slot: str, refusal: str | None
+    ) -> Horizontal:
+        state = ticket.get("state") or {}
+        running = self.app.snapshot.get("execution") == "running"
+        row = Horizontal(classes="slot-row", id="slot-row-" + slot, name=slot)
+        row.compose_add_child(Static(slot, classes="slot-name"))
+        row.compose_add_child(
+            Button(
+                "Configure",
+                id="conf-" + slot,
+                disabled=bool(refusal),
+                tooltip=refusal,
+            )
+        )
+        row.compose_add_child(
+            Button(
+                "Terminal",
+                id="terminal-" + slot,
+                disabled=running and live_session(ticket, slot) is None,
+            )
+        )
+        row.compose_add_child(Button("Logs", id="log-" + slot))
+        row.compose_add_child(
+            Button(
+                "Remove",
+                id="remove-" + slot,
+                disabled=bool(refusal),
+                tooltip=refusal,
+            )
+        )
+        row.compose_add_child(
+            Static(
+                self.runtime_label(state, slot),
+                classes=self.status_classes(state, slot),
+                id="runtime-" + slot,
+            )
+        )
+        return row
 
     def compose(self) -> ComposeResult:
         state = self.ticket.get("state") or {}
@@ -159,57 +200,36 @@ class TicketView(BackdropModal[None]):
                 links.display = bool(dependency_text(self.ticket))
                 yield Markdown(self.ticket["body"], id="ticket-markdown")
                 yield Static("HARNESS SLOTS", classes="section-title")
-                with Horizontal(classes="slot-row"):
-                    yield Static("Developer", classes="slot-name")
-                    yield Button(
-                        "Configure",
-                        id="dev-config",
-                        disabled=bool(refusal),
-                        tooltip=refusal,
-                    )
-                    yield Button(
-                        "Terminal",
-                        id="dev-terminal",
-                        disabled=(
-                            self.app.snapshot.get("execution") == "running"
-                            and live_session(self.ticket, "developer") is None
-                        ),
-                    )
-                    yield Button("Logs", id="dev-log")
-                    yield Static(
-                        self.runtime_label(state, "developer"),
-                        classes=self.status_classes(state, "developer"),
-                        id="developer-runtime",
-                    )
-                for slot in state.get("reviewers") or []:
-                    sid = slot.get("id", "reviewer")
-                    with Horizontal(classes="slot-row"):
-                        yield Static(sid, classes="slot-name")
+                with Vertical(id="ticket-slots"):
+                    with Horizontal(
+                        classes="slot-row",
+                        id="slot-row-developer",
+                        name="developer",
+                    ):
+                        yield Static("Developer", classes="slot-name")
                         yield Button(
                             "Configure",
-                            id="conf-" + sid,
+                            id="dev-config",
                             disabled=bool(refusal),
                             tooltip=refusal,
                         )
                         yield Button(
                             "Terminal",
-                            id="terminal-" + sid,
+                            id="dev-terminal",
                             disabled=(
                                 self.app.snapshot.get("execution") == "running"
-                                and live_session(self.ticket, sid) is None
+                                and live_session(self.ticket, "developer") is None
                             ),
                         )
-                        yield Button("Logs", id="log-" + sid)
-                        yield Button(
-                            "Remove",
-                            id="remove-" + sid,
-                            disabled=bool(refusal),
-                            tooltip=refusal,
-                        )
+                        yield Button("Logs", id="dev-log")
                         yield Static(
-                            self.runtime_label(state, sid),
-                            classes=self.status_classes(state, sid),
-                            id="runtime-" + sid,
+                            self.runtime_label(state, "developer"),
+                            classes=self.status_classes(state, "developer"),
+                            id="developer-runtime",
+                        )
+                    for slot in state.get("reviewers") or []:
+                        yield self.reviewer_row(
+                            self.ticket, slot.get("id", "reviewer"), refusal
                         )
                 yield Button(
                     "+ Reviewer",
@@ -243,61 +263,72 @@ class TicketView(BackdropModal[None]):
 
     async def refresh_ticket(self) -> None:
         """Mirror external file changes without editing or recreating the dialog."""
-        latest = self.app.find_ticket(self.ticket["id"])
-        if latest is None:
-            self.query_one("#ticket-location", Static).update(
-                "Ticket is no longer present on this board"
-            )
-            return
-        if latest["body"] != self.ticket["body"]:
-            await self.query_one("#ticket-markdown", Markdown).update(latest["body"])
-        if (
-            latest["filename"] != self.ticket["filename"]
-            or latest["column"] != self.ticket["column"]
-        ):
-            self.query_one("#ticket-location", Static).update(
-                "FILE  " + latest["filename"] + "   •   " + latest["column"].upper()
-            )
-        if dependency_text(latest) != dependency_text(self.ticket):
-            links = self.query_one("#ticket-links", Vertical)
-            await links.remove_children()
-            await links.mount_all(dependency_widgets(latest))
-            links.display = bool(dependency_text(latest))
-        if latest["title"] != self.ticket["title"]:
-            self.query_one("#ticket-heading", Static).update(
-                "TICKET " + latest["id"] + " · " + latest["title"]
-            )
-        state = latest.get("state") or {}
-        developer = self.query_one("#developer-runtime", Static)
-        developer.update(self.runtime_label(state, "developer"))
-        active = self.active_worker(state, "developer") and (
-            self.app.snapshot.get("execution") == "running"
-        )
-        developer.set_class(active, "agent-working")
-        if not active:
-            developer.remove_class("agent-pulse")
-        running = self.app.snapshot.get("execution") == "running"
-        self.query_one("#dev-terminal", Button).disabled = running and (
-            live_session(latest, "developer") is None
-        )
-        for slot in state.get("reviewers") or []:
-            label = self.query("#runtime-" + slot["id"])
-            if label:
-                widget = label.first(Static)
-                widget.update(self.runtime_label(state, slot["id"]))
-                active = self.active_worker(state, slot["id"]) and (
-                    self.app.snapshot.get("execution") == "running"
+        async with self._refresh_lock:
+            latest = self.app.find_ticket(self.ticket["id"])
+            if latest is None:
+                self.query_one("#ticket-location", Static).update(
+                    "Ticket is no longer present on this board"
                 )
-                widget.set_class(active, "agent-working")
+                return
+            if latest["body"] != self.ticket["body"]:
+                await self.query_one("#ticket-markdown", Markdown).update(
+                    latest["body"]
+                )
+            if (
+                latest["filename"] != self.ticket["filename"]
+                or latest["column"] != self.ticket["column"]
+            ):
+                self.query_one("#ticket-location", Static).update(
+                    "FILE  " + latest["filename"] + "   •   " + latest["column"].upper()
+                )
+            if dependency_text(latest) != dependency_text(self.ticket):
+                links = self.query_one("#ticket-links", Vertical)
+                await links.remove_children()
+                await links.mount_all(dependency_widgets(latest))
+                links.display = bool(dependency_text(latest))
+            if latest["title"] != self.ticket["title"]:
+                self.query_one("#ticket-heading", Static).update(
+                    "TICKET " + latest["id"] + " · " + latest["title"]
+                )
+            state = latest.get("state") or {}
+            running = self.app.snapshot.get("execution") == "running"
+            developer = self.query_one("#developer-runtime", Static)
+            developer.update(self.runtime_label(state, "developer"))
+            active = self.active_worker(state, "developer") and running
+            developer.set_class(active, "agent-working")
+            if not active:
+                developer.remove_class("agent-pulse")
+            self.query_one("#dev-terminal", Button).disabled = running and (
+                live_session(latest, "developer") is None
+            )
+            slots = self.query_one("#ticket-slots", Vertical)
+            wanted = ["developer"] + [
+                slot.get("id", "reviewer") for slot in state.get("reviewers") or []
+            ]
+            rows = {row.name: row for row in slots.query(".slot-row")}
+            for name, row in rows.items():
+                if name not in wanted:
+                    await row.remove()
+            refusal = slot_change_refusal(latest, self.app.snapshot)
+            for slot in wanted:
+                if slot == "developer":
+                    continue
+                if slot not in rows:
+                    await slots.mount(self.reviewer_row(latest, slot, refusal))
+                label = slots.query_one("#runtime-" + slot, Static)
+                label.update(self.runtime_label(state, slot))
+                active = self.active_worker(state, slot) and running
+                label.set_class(active, "agent-working")
                 if not active:
-                    widget.remove_class("agent-pulse")
-            button = self.query("#terminal-" + slot["id"])
-            if button:
-                button.first(Button).disabled = running and (
-                    live_session(latest, slot["id"]) is None
+                    label.remove_class("agent-pulse")
+                slots.query_one("#terminal-" + slot, Button).disabled = running and (
+                    live_session(latest, slot) is None
                 )
-        self.update_assignment_controls(latest)
-        self.ticket = latest
+            if [row.name for row in slots.query(".slot-row")] != wanted:
+                order = {slot: index for index, slot in enumerate(wanted)}
+                slots.sort_children(key=lambda row: order.get(row.name, -1))
+            self.update_assignment_controls(latest)
+            self.ticket = latest
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         name = event.button.id or ""
@@ -312,13 +343,17 @@ class TicketView(BackdropModal[None]):
                 app.push_screen(TicketView(target))
             return
         if name == "dev-config":
-            self.app.push_screen(Assignment(self.ticket, "developer"))
+            self.app.push_screen(
+                Assignment(self.ticket, "developer"), callback=self.assignment_closed
+            )
         elif name == "dev-terminal":
             await self.app.open_task_terminal(self.ticket["id"], "developer")
         elif name == "dev-log":
             self.app.push_screen(LogView(self.ticket["id"], "developer"))
         elif name.startswith("conf-"):
-            self.app.push_screen(Assignment(self.ticket, name[5:]))
+            self.app.push_screen(
+                Assignment(self.ticket, name[5:]), callback=self.assignment_closed
+            )
         elif name.startswith("terminal-"):
             await self.app.open_task_terminal(
                 self.ticket["id"], name[len("terminal-") :]
@@ -328,12 +363,19 @@ class TicketView(BackdropModal[None]):
         elif name.startswith("remove-"):
             self.confirm_remove(name[7:])
         elif name == "add-reviewer":
+            await self.refresh_ticket()
             reviewers = (self.ticket.get("state") or {}).get("reviewers") or []
             occupied = {r.get("id") for r in reviewers}
             number = 1
             while "reviewer-" + str(number) in occupied:
                 number += 1
-            self.app.push_screen(Assignment(self.ticket, "reviewer-" + str(number)))
+            self.app.push_screen(
+                Assignment(self.ticket, "reviewer-" + str(number)),
+                callback=self.assignment_closed,
+            )
+
+    def assignment_closed(self, _result: object = None) -> None:
+        self.call_later(self.refresh_ticket)
 
     @work
     async def confirm_remove(self, slot: str) -> None:
@@ -404,19 +446,29 @@ class Assignment(BackdropModal[None]):
     def on_mount(self) -> None:
         self.set_interval(1.5, self.refresh_rule)
 
+    def current_ticket(self) -> dict[str, Any]:
+        latest = self.app.find_ticket(self.ticket["id"])
+        if latest is not None:
+            self.ticket = latest
+        return self.ticket
+
     def refresh_rule(self) -> None:
-        latest = self.app.find_ticket(self.ticket["id"]) or self.ticket
-        refusal = slot_change_refusal(latest, self.app.snapshot)
+        ticket = self.current_ticket()
+        refusal = slot_change_refusal(ticket, self.app.snapshot)
         button = self.query_one("#save", Button)
         button.disabled = bool(refusal)
         button.tooltip = refusal
+        self.query_one("#open-terminal", Button).disabled = (
+            self.app.snapshot.get("execution") == "running"
+            and live_session(ticket, self.slot) is None
+        )
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         name = event.button.id
         if name in ("close", "cancel"):
             self.dismiss(None)
         elif name == "open-terminal":
-            state = self.ticket.get("state") or {}
+            state = self.current_ticket().get("state") or {}
             saved = (
                 state.get("developer", {})
                 if self.slot == "developer"
@@ -440,7 +492,7 @@ class Assignment(BackdropModal[None]):
         elif name == "open-harness":
             await self.app.open_harness_config(self.query_one("#harness", Select).value)
         elif name == "save":
-            latest = self.app.find_ticket(self.ticket["id"]) or self.ticket
+            latest = self.current_ticket()
             refusal = slot_change_refusal(latest, self.app.snapshot)
             if refusal:
                 self.app.notify(refusal, severity="error")

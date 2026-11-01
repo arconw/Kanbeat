@@ -164,6 +164,7 @@ TaskSessions { height: auto; }
 
 #ticket-markdown MarkdownH1 { content-align: left middle; text-align: left; color: #f2c94c; background: transparent; text-style: bold; }
 #ticket-links { height: auto; padding: 0 1; margin-bottom: 1; }
+#ticket-slots { height: auto; }
 .dependency-heading { color: #8fa9c6; text-style: bold; }
 .dependency { width: 100%; height: 1; padding: 0 1; background: transparent; color: #f2c94c; content-align: left middle; text-align: left; }
 .dependency:hover { background: #223146; text-style: underline; }
