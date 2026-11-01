@@ -417,7 +417,7 @@ def _prompt_event_key(
             if event.role != "user" or event.is_import or event.import_id:
                 continue
             text = event.text.strip()
-            if text == framed or text == bare or text.startswith(framed):
+            if text == framed or text == bare:
                 return event.key
     return None
 
@@ -434,6 +434,8 @@ def _prompt_transferred(
     key = _prompt_event_key(entry, reads)
     if key is None:
         return False
+    if key[0] == target:
+        return True
     if any(event.key == key for event in delivered):
         return True
     return key in ledger.delivered(target)
@@ -943,6 +945,15 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
         raise
     reads.append(source_read)
 
+    prompt_reads = list(reads)
+    if entry.get("prompt") and target_id is not None:
+        try:
+            target_read = await _read_history(groups, str(target), target_id, ledger)
+        except ValueError:
+            target_read = None
+        if target_read is not None and target_read.outcome == AVAILABLE:
+            prompt_reads.append(target_read)
+
     sorted_reads = _assign_ordinals(entry, reads)
     histories = [read.history() for read in sorted_reads.values()]
 
@@ -983,7 +994,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     if not plan.events:
         entry["harness"] = target
         entry["native_session"] = target_id
-        if _prompt_transferred(entry, ledger, str(target), reads, ()):
+        if _prompt_transferred(entry, ledger, str(target), prompt_reads, ()):
             entry.pop("prompt", None)
         if created and target in ("claude", "pi"):
             entry["native_assigned"] = True
@@ -1088,7 +1099,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     ledger.confirm_delivery(record.import_id, delivery.target_message_id)
     entry["harness"] = target
     entry["native_session"] = target_id
-    if _prompt_transferred(entry, ledger, str(target), reads, plan.events):
+    if _prompt_transferred(entry, ledger, str(target), prompt_reads, plan.events):
         entry.pop("prompt", None)
     entry.pop("native_assigned", None)
     _store_ledger(entry, ledger)

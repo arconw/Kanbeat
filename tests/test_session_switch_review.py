@@ -20,9 +20,14 @@ from kanbeat.session_switch import (
     SessionSwitchRefused,
     _ensure_no_native_writer,
     _one_shot,
+    _prompt_event_key,
     switch_harness,
 )
-from kanbeat.session_transfer import IMPORT_NOTE, find_import_markers
+from kanbeat.session_transfer import (
+    IMPORT_NOTE,
+    ConversationEvent,
+    find_import_markers,
+)
 
 THREAD = "01a18660-9ca4-71c0-ba25-81426f4ca65d"
 
@@ -572,6 +577,49 @@ async def test_a_reduction_keeps_the_initial_prompt_until_it_is_transferred(
     )
     assert result["delivered"] == 2
     assert groups.entries["t1"]["prompt"] == "Initial instructions"
+
+
+def test_prompt_matching_needs_the_whole_initial_message():
+    follow_up = ConversationEvent(
+        harness="codex",
+        ordinal=0,
+        role="user",
+        text="Kanbeat interactive instructions:\nInitial instructions continued",
+        event_id="follow-up",
+    )
+    reads = [SimpleNamespace(events=(follow_up,))]
+    assert _prompt_event_key({"prompt": "Initial instructions"}, reads) is None
+
+
+@pytest.mark.asyncio
+async def test_switching_back_to_the_harness_that_has_the_prompt_clears_it(
+    tmp_path, installed
+):
+    groups = FakeGroups(tmp_path)
+    groups.codex.threads[THREAD] = [
+        codex_user(
+            "codex-prompt", "Kanbeat interactive instructions:\nInitial instructions"
+        ),
+        codex_assistant("codex-answer", "Earlier Codex answer"),
+    ]
+    groups.opencode.sessions["ses_0"] = True
+    groups.opencode.messages["ses_0"] = [
+        opencode_message("msg_1", "user", "OpenCode question"),
+        opencode_message("msg_2", "assistant", "OpenCode answer"),
+    ]
+    groups.entries["t1"] = entry_for(
+        harness="opencode",
+        native="ses_0",
+        prompt="Initial instructions",
+        native_sessions={
+            "codex": {"id": THREAD, "status": "available"},
+            "opencode": {"id": "ses_0", "status": "available"},
+        },
+    )
+    result = await switch_harness(groups, {"terminal": "t1", "harness": "codex"})
+    assert result["delivered"] == 2
+    assert groups.entries["t1"]["harness"] == "codex"
+    assert "prompt" not in groups.entries["t1"]
 
 
 @pytest.mark.asyncio

@@ -97,11 +97,11 @@ fresh-session fallback.
 
 Groups, session IDs, titles, prompts, ownership and known native IDs persist in
 `.state`. A harness switch clears the session's stored initial launch prompt only
-after the user event that carries it has been delivered to the target; it
-belonged to the source native session and is already part of that conversation.
-An empty source history or a reduced transfer that excludes the prompt keeps it,
-because it may not have reached the target. Restart after supervisor recovery
-reuses the same local session ID;
+after the user event that carries it is already in the target's own history or
+has been delivered to the target. An empty source history, a prompt that is not
+found in the readable history, or a reduced transfer that excludes the prompt
+keeps it, because it may not have reached the target. Restart after supervisor
+recovery reuses the same local session ID;
 a known native ID resumes vendor history, otherwise a fresh native context starts.
 No active process is silently restarted. Unresolved crash-orphan identities block
 restart/removal until manually resolved. Deleting `.state` intentionally discards
