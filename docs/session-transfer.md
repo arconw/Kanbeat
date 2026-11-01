@@ -36,7 +36,7 @@ The feature is implemented in `src/kanbeat` and covered by focused tests. The te
 - **Writer guard.** A switch is refused while the source record is starting, running, stopping or blocked, and Codex thread metadata or OpenCode session status is checked for another active writer. A failure to run that check leaves the source active rather than guessing. Claude Code and Pi expose no equivalent live-activity check, so a session running in another client cannot be detected; the user guide asks the user to stop it first.
 - **Initial prompt.** A successful switch clears the stored initial prompt from the session record. That prompt was seeded into the source native session and is already part of the transferred conversation; replaying it into the target would duplicate it, and Pi and a new Claude session would otherwise receive it on their first launch.
 - **Failures.** The active harness changes only after delivery is confirmed. An unconfirmed import is reconciled against the target history before a retry; an incomplete read keeps it uncertain.
-- **Deletion.** "Delete session and history" deletes every recorded native session for the logical session in every harness it has used, plus its context files. "Remove from Kanbeat" deletes no native session. The confirmation names every harness once more than one has been used.
+- **Deletion.** "Delete session and history" deletes every recorded native session for the logical session in every harness it has used, plus its context files. "Remove from Kanbeat" deletes no native session. The confirmation covers every recorded harness once more than one has been used.
 
 ## Corrections found while implementing the switch
 
