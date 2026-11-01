@@ -53,6 +53,10 @@ class SessionGroups:
             raise ValueError("Unknown session group")
         return group_id
 
+    @staticmethod
+    def harness_available(harness: str) -> bool:
+        return available(harness)
+
     def custom(self, terminal_id: str) -> dict[str, Any]:
         entry = self.terminals.entries.get(terminal_id)
         if entry is None or entry.get("owner") != "custom":

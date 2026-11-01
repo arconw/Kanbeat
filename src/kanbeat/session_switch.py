@@ -305,7 +305,14 @@ async def _read_history(
             result = await read_codex_history(
                 host, session_id, import_message_ids=imports
             )
-        except (CodexHostError, OSError, asyncio.TimeoutError, ValueError) as error:
+        except (
+            CodexHostError,
+            OSError,
+            asyncio.TimeoutError,
+            ValueError,
+            AttributeError,
+            TypeError,
+        ) as error:
             raise ValueError(
                 f"Codex history is temporarily unreachable: {_error_text(error)}"
             ) from error
@@ -325,7 +332,14 @@ async def _read_history(
             result = await read_opencode_history(
                 host, session_id, import_message_ids=imports
             )
-        except (OpenCodeHostError, OSError, asyncio.TimeoutError, ValueError) as error:
+        except (
+            OpenCodeHostError,
+            OSError,
+            asyncio.TimeoutError,
+            ValueError,
+            AttributeError,
+            TypeError,
+        ) as error:
             raise ValueError(
                 f"OpenCode history is temporarily unreachable: {_error_text(error)}"
             ) from error
@@ -738,7 +752,11 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
             "unsupported": [],
             "reason": "already_active",
         }
-    if not available(target):
+    check_available = getattr(groups, "harness_available", None)
+    installed = (
+        check_available(target) if check_available is not None else available(target)
+    )
+    if not installed:
         raise ValueError("Independent session harness unavailable: " + str(target))
     _ensure_stopped(groups, entry)
     source_id = _source_session(entry, str(source))
