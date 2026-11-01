@@ -86,6 +86,7 @@ class Supervisor:
             lambda: self.opencode_host(),
             lambda: self.codex_host(),
             self.claude,
+            notice=self.notice,
         )
         self.socket = socket_path(self.board.project)
         self.lock_path = self.state_dir / "supervisor.lock"

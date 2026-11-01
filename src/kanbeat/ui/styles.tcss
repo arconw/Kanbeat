@@ -147,6 +147,7 @@ SessionActions, GroupActions, ColumnMenu, SourceMenu { align: left top; backgrou
 .menu Button:disabled { color: #5d6e84; }
 .menu .section-title { margin: 0 0 1 0; padding: 0 1; }
 .modal-text { padding: 2; height: auto; }
+SwitchChoice .choice { height: 1; min-width: 0; margin-bottom: 1; }
 .modal-actions { height: 1; margin-top: 1; align-horizontal: right; }
 .modal-actions Button { min-width: 10; height: 1; margin-left: 1; }
 #log-scroll { height: 1fr; padding: 1 2; }

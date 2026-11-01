@@ -39,14 +39,20 @@ class SessionGroups:
         opencode_host: Callable[[], Awaitable[Any]] | None = None,
         codex_host: Callable[[], Awaitable[Any]] | None = None,
         claude_runtime: Any = None,
+        notice: Callable[[str, str], None] | None = None,
     ):
         self.state = state
         self.terminals = terminals
         self.opencode_host = opencode_host
         self.codex_host = codex_host
         self.claude_runtime = claude_runtime
+        self.notice = notice
         self.config_lock = asyncio.Lock()
         self.groups = state.data.setdefault("custom", {}).setdefault("groups", {})
+
+    def progress(self, message: str, level: str = "information") -> None:
+        if self.notice is not None:
+            self.notice(message, level)
 
     def group(self, group_id: str) -> str:
         if group_id and group_id not in self.groups:
