@@ -529,6 +529,22 @@ async def test_codex_to_opencode_to_codex_delivers_only_new_events(tmp_path, ins
 
 
 @pytest.mark.asyncio
+async def test_a_switch_does_not_replay_the_stored_initial_prompt(tmp_path, installed):
+    groups = make_groups(tmp_path)
+    groups.entries["t1"]["prompt"] = "Initial instructions"
+    await switch_harness(groups, {"terminal": "t1", "harness": "opencode"})
+    assert groups.entries["t1"]["harness"] == "opencode"
+    assert "prompt" not in groups.entries["t1"]
+
+    empty = make_groups(tmp_path / "empty")
+    empty.codex.threads[THREAD] = []
+    empty.entries["t1"]["prompt"] = "Unsent instructions"
+    result = await switch_harness(empty, {"terminal": "t1", "harness": "opencode"})
+    assert result["delivered"] == 0
+    assert "prompt" not in empty.entries["t1"]
+
+
+@pytest.mark.asyncio
 async def test_three_harness_cycles_keep_checkpoints_and_do_not_nest_envelopes(
     tmp_path, installed, monkeypatch
 ):

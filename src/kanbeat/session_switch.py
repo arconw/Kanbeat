@@ -948,6 +948,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     if not plan.events:
         entry["harness"] = target
         entry["native_session"] = target_id
+        entry.pop("prompt", None)
         if created and target in ("claude", "pi"):
             entry["native_assigned"] = True
         else:
@@ -1051,6 +1052,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     ledger.confirm_delivery(record.import_id, delivery.target_message_id)
     entry["harness"] = target
     entry["native_session"] = target_id
+    entry.pop("prompt", None)
     entry.pop("native_assigned", None)
     _store_ledger(entry, ledger)
     groups.state.save()
