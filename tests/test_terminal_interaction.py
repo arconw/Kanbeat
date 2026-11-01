@@ -858,7 +858,9 @@ async def test_snapshot_without_a_display_is_applied_after_the_display_returns(
         await pilot.pause()
         assert pane.apply_snapshot(snapshot) is True
         assert pane.revision == snapshot["revision"]
-        assert not [notice for notice in notices if notice[1].get("severity") == "error"]
+        assert not [
+            notice for notice in notices if notice[1].get("severity") == "error"
+        ]
 
 
 @pytest.mark.asyncio
@@ -890,13 +892,17 @@ async def test_closing_the_pane_cancels_a_pending_snapshot_quietly(
         pane = app.query_one(TerminalPane)
         pane.open_terminal(session.id)
         await asyncio.wait_for(pending.wait(), timeout=1)
-        await pane.leave()
+        pane.leave()
         release.set()
         await pilot.pause(0.2)
         assert pane.terminal_id is None
-        watchers = [worker for worker in pane.workers if worker.group == "terminal-watch"]
+        watchers = [
+            worker for worker in pane.workers if worker.group == "terminal-watch"
+        ]
         assert all(not worker.is_running for worker in watchers)
-        assert not [notice for notice in notices if notice[1].get("severity") == "error"]
+        assert not [
+            notice for notice in notices if notice[1].get("severity") == "error"
+        ]
 
 
 @pytest.mark.asyncio
@@ -931,5 +937,7 @@ async def test_unexpected_watcher_error_is_reported_once_and_stops_the_worker(
         await pilot.pause(0.2)
         errors = [notice for notice in notices if notice[1].get("severity") == "error"]
         assert len(errors) == 1
-        watchers = [worker for worker in pane.workers if worker.group == "terminal-watch"]
+        watchers = [
+            worker for worker in pane.workers if worker.group == "terminal-watch"
+        ]
         assert all(not worker.is_running for worker in watchers)
