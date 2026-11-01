@@ -532,6 +532,12 @@ async def test_codex_to_opencode_to_codex_delivers_only_new_events(tmp_path, ins
 async def test_a_switch_does_not_replay_the_stored_initial_prompt(tmp_path, installed):
     groups = make_groups(tmp_path)
     groups.entries["t1"]["prompt"] = "Initial instructions"
+    groups.codex.threads[THREAD].insert(
+        0,
+        codex_user(
+            "codex-prompt", "Kanbeat interactive instructions:\nInitial instructions"
+        ),
+    )
     await switch_harness(groups, {"terminal": "t1", "harness": "opencode"})
     assert groups.entries["t1"]["harness"] == "opencode"
     assert "prompt" not in groups.entries["t1"]
@@ -542,6 +548,30 @@ async def test_a_switch_does_not_replay_the_stored_initial_prompt(tmp_path, inst
     result = await switch_harness(empty, {"terminal": "t1", "harness": "opencode"})
     assert result["delivered"] == 0
     assert empty.entries["t1"]["prompt"] == "Unsent instructions"
+
+
+@pytest.mark.asyncio
+async def test_a_reduction_keeps_the_initial_prompt_until_it_is_transferred(
+    tmp_path, installed
+):
+    groups = make_groups(tmp_path)
+    groups.entries["t1"]["prompt"] = "Initial instructions"
+    groups.codex.threads[THREAD].insert(
+        0,
+        codex_user(
+            "codex-prompt", "Kanbeat interactive instructions:\nInitial instructions"
+        ),
+    )
+    result = await switch_harness(
+        groups,
+        {
+            "terminal": "t1",
+            "harness": "opencode",
+            "reduction": {"kind": "newest", "count": 2},
+        },
+    )
+    assert result["delivered"] == 2
+    assert groups.entries["t1"]["prompt"] == "Initial instructions"
 
 
 @pytest.mark.asyncio
