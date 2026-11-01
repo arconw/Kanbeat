@@ -1,7 +1,8 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
-from textual.widgets import Select
+from textual.widgets import Button, Select
 
 from kanbeat.session_switch import (
     _Delivery,
@@ -11,9 +12,11 @@ from kanbeat.session_switch import (
 from kanbeat.session_transfer import ConversationEvent
 from kanbeat.ui.app import Confirm, KanbeatApp
 from kanbeat.ui.sessions import (
+    SWITCH_TIMEOUT_MESSAGE,
     SessionEdit,
     SwitchChoice,
     switch_eligible,
+    switch_failure_message,
     switch_locked,
     switch_question,
     switch_result_message,
@@ -567,3 +570,133 @@ async def test_only_the_switch_rpc_gets_the_longer_timeout(tmp_path, monkeypatch
     await app.rpc({"op": "snapshot"})
     await app.rpc({"op": "session_switch_harness", "terminal": "t1", "harness": "pi"})
     assert [timeout for _, timeout in calls] == [10.0, 360.0]
+
+
+class BlockingRpc:
+    def __init__(self, row):
+        self.entry = row
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+        self.cancelled = False
+        self.finished = False
+        self.switches = []
+
+    def snapshot(self):
+        return {
+            "tickets": [],
+            "execution": "stopped",
+            "custom": {"groups": {}},
+            "terminals": {self.entry["id"]: dict(self.entry)},
+            "notices": [],
+        }
+
+    async def __call__(self, message):
+        operation = message.get("op")
+        if operation == "snapshot":
+            return self.snapshot()
+        if operation == "session_switch_harness":
+            self.switches.append(dict(message))
+            self.started.set()
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            self.finished = True
+            self.entry["harness"] = message["harness"]
+            self.entry["native_session"] = "switched-" + message["harness"]
+            return {"delivered": 1, "unsupported": [], "changed": True}
+        raise AssertionError("unexpected operation: " + str(operation))
+
+
+@pytest.mark.asyncio
+async def test_an_in_flight_switch_cannot_be_dismissed(tmp_path, monkeypatch):
+    row = entry()
+    fake = BlockingRpc(row)
+    app = KanbeatApp(tmp_path)
+    monkeypatch.setattr(app, "rpc", fake)
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause(0.3)
+        await open_edit(app, pilot, row)
+        app.screen.query_one("#session-harness", Select).value = "claude"
+        await pilot.click("#session-save")
+        await settle(app, pilot, Confirm)
+        await pilot.click("#yes")
+        await asyncio.wait_for(fake.started.wait(), 2)
+        assert isinstance(app.screen, SessionEdit)
+        cancel = app.screen.query_one("#cancel", Button)
+        assert cancel.disabled
+        await pilot.click("#cancel")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, SessionEdit)
+        app.screen.dismiss(None)
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, SessionEdit)
+        assert any(
+            "Wait for the harness switch to finish." in notice.message
+            for notice in app._notifications
+        )
+        assert not fake.cancelled and len(fake.switches) == 1
+
+        fake.release.set()
+        await finish(app, pilot)
+        assert fake.finished
+        assert row["harness"] == "claude"
+        assert any(
+            "Switched Work to Claude Code; transferred 1 conversation event."
+            in notice.message
+            for notice in app._notifications
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_switch_keeps_the_dialog_open_with_unknown_outcome(
+    tmp_path, monkeypatch
+):
+    row = entry()
+    fake = FakeRpc({"t1": row})
+    fake.outcomes.append(TimeoutError())
+    app = KanbeatApp(tmp_path)
+    monkeypatch.setattr(app, "rpc", fake)
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause(0.3)
+        await open_edit(app, pilot, row)
+        app.screen.query_one("#session-harness", Select).value = "claude"
+        await pilot.click("#session-save")
+        await settle(app, pilot, Confirm)
+        await pilot.click("#yes")
+        for _ in range(100):
+            await pilot.pause(0.02)
+            if any(
+                notice.message == SWITCH_TIMEOUT_MESSAGE
+                for notice in app._notifications
+            ):
+                break
+        assert isinstance(app.screen, SessionEdit)
+        assert row["harness"] == "codex"
+        assert any(
+            notice.severity == "error" and notice.message == SWITCH_TIMEOUT_MESSAGE
+            for notice in app._notifications
+        )
+        assert len(fake.switches) == 1
+        assert app.screen.query_one("#cancel", Button).disabled is False
+
+
+def test_switch_failure_message_drops_protocol_detail_but_keeps_the_retry_path():
+    message = switch_failure_message(
+        RuntimeError(
+            "Delivery to claude was not confirmed: raw protocol detail. "
+            "The source codex session stays active. Retry the switch"
+        )
+    )
+    assert message == (
+        "Delivery to claude was not confirmed. "
+        "The source codex session stays active. Retry the switch"
+    )
+    collision = switch_failure_message(
+        RuntimeError("The planned conversation is too large: 2 MB")
+    )
+    assert collision == "The planned conversation is too large: 2 MB"
+    assert switch_failure_message(RuntimeError("line one\nline  two")) == (
+        "line one line two"
+    )
