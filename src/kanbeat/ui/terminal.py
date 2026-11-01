@@ -180,6 +180,7 @@ class TerminalDisplay(Monitor):
 WAIT_SECONDS = 5
 RETRY_SECONDS = 0.5
 MAX_RETRY_SECONDS = 8
+MAX_DISPLAY_RETRIES = 6
 LIVE_STATUSES = ("starting", "running", "stopping")
 ENDED_STATUSES = ("exited", "stopped", "failed", "interrupted")
 SELECTION_STYLE = Style(color="#ffffff", bgcolor="#2f5f9e", bold=True)
@@ -200,6 +201,14 @@ class TerminalSession:
 
     def heading_text(self, text: str) -> str:
         return text
+
+    def show_heading(self, text: str) -> None:
+        if text == self.heading:
+            return
+        heading = self.part("#terminal-heading", Static)
+        if heading is not None:
+            self.heading = text
+            heading.update(self.heading_text(text))
 
     def reset_terminal(self, terminal_id: str | None) -> None:
         self.terminal_id = terminal_id
@@ -266,9 +275,13 @@ class TerminalSession:
     async def watch_terminal(self) -> None:
         failed = False
         retry = RETRY_SECONDS
+        display_retry = RETRY_SECONDS
+        display_failures = 0
         try:
             while True:
                 try:
+                    if self.terminal_id is None:
+                        return
                     epoch = self.view_epoch
                     if self.revision < 0:
                         snapshot = await self.rpc(
@@ -282,14 +295,21 @@ class TerminalSession:
                             history_position=self.scroll_position,
                         )
                     if epoch == self.view_epoch:
-                        applied = self.apply_snapshot(snapshot)
-                        while not applied and epoch == self.view_epoch:
+                        if not self.apply_snapshot(snapshot):
+                            if self.was_live and snapshot["status"] in ENDED_STATUSES:
+                                self.detach_ended(snapshot)
+                                return
                             if not self.is_attached or self.terminal_id is None:
                                 return
-                            await asyncio.sleep(RETRY_SECONDS)
-                            applied = self.apply_snapshot(snapshot)
-                        if not applied:
+                            display_failures += 1
+                            if display_failures > MAX_DISPLAY_RETRIES:
+                                self.show_heading("TERMINAL DISPLAY UNAVAILABLE")
+                                return
+                            await asyncio.sleep(display_retry)
+                            display_retry = min(display_retry * 2, MAX_RETRY_SECONDS)
                             continue
+                    display_retry = RETRY_SECONDS
+                    display_failures = 0
                     if self.was_live and snapshot["status"] in ENDED_STATUSES:
                         self.detach_ended(snapshot)
                         return
@@ -308,12 +328,7 @@ class TerminalSession:
                     if not failed:
                         self.app.notify(str(exc), severity="error")
                     reason = str(exc).lower()
-                    heading = "TERMINAL DISCONNECTED · " + str(exc)[:80]
-                    if heading != self.heading:
-                        heading_widget = self.part("#terminal-heading", Static)
-                        if heading_widget is not None:
-                            self.heading = heading
-                            heading_widget.update(self.heading_text(heading))
+                    self.show_heading("TERMINAL DISCONNECTED · " + str(exc)[:80])
                     if (
                         "not attached" in reason
                         or "no longer attached" in reason
@@ -332,6 +347,7 @@ class TerminalSession:
             if not self.is_attached or self.terminal_id is None:
                 return
             self.app.notify(str(exc), severity="error")
+            self.show_heading("TERMINAL ERROR · " + str(exc)[:80])
 
     def apply_snapshot(self, snapshot: dict) -> bool:
         display = self.display()
@@ -361,11 +377,7 @@ class TerminalSession:
             title += " / output history"
         if snapshot.get("read_only"):
             title += " / monitor"
-        if title != self.heading:
-            heading = self.part("#terminal-heading", Static)
-            if heading is not None:
-                self.heading = title
-                heading.update(self.heading_text(title))
+        self.show_heading(title)
         size = (snapshot["cols"], snapshot["rows"])
         lines = snapshot["screen"].split("\n")
         if size != self.grid:
@@ -404,6 +416,8 @@ class TerminalSession:
         self.app.notify(message, severity="error")
 
     async def send_input(self, values: dict) -> None:
+        if self.terminal_id is None:
+            return
         if self.read_only:
             if not self.read_only_notified:
                 self.read_only_notified = True
@@ -424,6 +438,8 @@ class TerminalSession:
         await self.input.run()
 
     async def refresh_view(self) -> None:
+        if self.terminal_id is None:
+            return
         self.view_epoch += 1
         epoch = self.view_epoch
         try:
@@ -436,6 +452,8 @@ class TerminalSession:
             self.report_input_error(str(exc))
 
     async def go_live(self) -> None:
+        if self.terminal_id is None:
+            return
         self.scroll_position = None
         await self.refresh_view()
         display = self.display()
@@ -505,6 +523,8 @@ class TerminalSession:
         return True
 
     async def navigate_monitor(self, direction: str, event) -> bool:
+        if self.terminal_id is None:
+            return False
         self.view_epoch += 1
         epoch = self.view_epoch
         try:
@@ -523,6 +543,8 @@ class TerminalSession:
             return False
 
     async def resize_terminal(self, rows: int, cols: int) -> None:
+        if self.terminal_id is None:
+            return
         try:
             await self.rpc("terminal_resize", rows=min(rows, 100), cols=min(cols, 240))
         except (OSError, RuntimeError, ValueError) as exc:
@@ -536,6 +558,8 @@ class TerminalSession:
         self.leave()
 
     async def stop_terminal(self) -> None:
+        if self.terminal_id is None:
+            return
         try:
             await self.rpc("terminal_stop", confirmed=True)
         except (OSError, RuntimeError, ValueError) as exc:

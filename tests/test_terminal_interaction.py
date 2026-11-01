@@ -979,7 +979,35 @@ async def test_unexpected_watcher_error_is_reported_once_and_stops_the_worker(
         await pilot.pause(0.2)
         errors = [notice for notice in notices if notice[1].get("severity") == "error"]
         assert len(errors) == 1
+        heading = app.query_one("#terminal-heading", Static).render()
+        assert "TERMINAL ERROR" in str(heading)
         watchers = [
             worker for worker in pane.workers if worker.group == "terminal-watch"
         ]
         assert all(not worker.is_running for worker in watchers)
+
+
+@pytest.mark.asyncio
+async def test_teardown_rpcs_after_detach_are_skipped_quietly(terminal, monkeypatch):
+    supervisor, session = terminal
+    app = KanbeatApp(supervisor.board.project)
+    monkeypatch.setattr(app, "rpc", supervisor.dispatch)
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.click("#nav-sessions")
+        await pilot.pause(0.3)
+        pane = app.query_one(TerminalPane)
+        pane.open_terminal(session.id)
+        await pilot.pause(0.3)
+        pane.leave()
+        calls = []
+
+        async def rpc(op, **values):
+            calls.append((op, values))
+
+        monkeypatch.setattr(pane, "rpc", rpc)
+        await pane.resize_terminal(40, 100)
+        await pane.refresh_view()
+        await pane.send_input({"kind": "key", "character": "a"})
+        await pane.stop_terminal()
+        assert calls == []
+        assert pane.terminal_id is None
