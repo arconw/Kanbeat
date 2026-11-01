@@ -206,13 +206,20 @@ def _sweep_contexts(state: Any, terminal_id: str, ledger: TransferLedger) -> Non
     directory = _terminals_context_dir(state, terminal_id)
     if not directory.is_dir():
         return
+    try:
+        paths = list(directory.iterdir())
+    except OSError:
+        return
     keep = {record.import_id for record in ledger.pending_imports()}
-    for path in directory.iterdir():
+    for path in paths:
         if not path.is_file():
             continue
         import_id = path.name[: -len(".md")] if path.name.endswith(".md") else path.name
         if import_id not in keep:
-            _remove_context(path)
+            with suppress(OSError):
+                path.unlink()
+    with suppress(OSError):
+        directory.rmdir()
 
 
 def _context_prompt(path: Path, plan: TransferPlan) -> str:
