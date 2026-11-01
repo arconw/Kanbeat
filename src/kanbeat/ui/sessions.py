@@ -95,9 +95,7 @@ def removal_question(entry: dict[str, Any], native: bool) -> str:
     name = escape(entry.get("title") or "this session")
     product = harness_name(harness)
     harnesses = recorded_harnesses(entry)
-    every_harness = len(harnesses) > 1 or (
-        bool(harnesses) and harness not in harnesses
-    )
+    every_harness = len(harnesses) > 1 or (bool(harnesses) and harness not in harnesses)
     if native:
         if every_harness:
             return (
@@ -105,8 +103,7 @@ def removal_question(entry: dict[str, Any], native: bool) -> str:
                 "used? This cannot be undone."
             )
         return (
-            f"Delete {name} and its conversation in {product}? "
-            "This cannot be undone."
+            f"Delete {name} and its conversation in {product}? This cannot be undone."
         )
     if harness == SHELL:
         return f"Remove {name} from Kanbeat? Its shell is closed."
