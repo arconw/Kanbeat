@@ -9,6 +9,13 @@ HARNESS_LABELS = {
     "opencode": "OpenCode",
     "pi": "Pi",
 }
+
+
+def is_reviewer_slot(value: str) -> bool:
+    digits = value[9:] if value.startswith("reviewer-") else ""
+    return bool(digits) and digits.isascii() and digits.isdigit() and digits[0] != "0"
+
+
 TEXT_LIMIT = 20000
 TEXT_LIMITS = {"transition_hook.prompt": 8000}
 BYTE_LIMITS = {"transition_hook.prompt": 12000}

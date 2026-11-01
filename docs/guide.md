@@ -40,9 +40,13 @@ kanbeat                      # start or join this project's supervisor and open 
 kanbeat list
 kanbeat new "Implement auth" --column todo --description "Add token validation"
 kanbeat move 001 backlog
+kanbeat assign 001 --harness claude  # set the Developer slot
+kanbeat assign 004 005 --slot reviewer-1 --harness codex
+kanbeat reviewers add 004 --harness codex
+kanbeat reviewers remove 004 reviewer-1
 kanbeat play
 kanbeat stop
-kanbeat status [--json]      # execution state and the tickets per column, with blockers
+kanbeat status [--json]      # execution state, tickets per column and slots
 kanbeat events [--since N]   # ticket events after number N, then exit
 kanbeat watch [--json]       # keep printing new ticket events until interrupted
 kanbeat config get [key]     # settings; set, history and revert are described below
@@ -59,7 +63,10 @@ Open a second terminal in the **same** project and launch `kanbeat` again: it co
 
 A ticket's status is the folder it sits in, so an agent or a script can run the board with plain files and these commands; there is no separate API or MCP server. [`INSTRUCTIONS.md`](#on-disk-layout) in every project tells agents the same.
 
-- `kanbeat status` prints the execution state and the tickets per column; `--json` gives the same as one JSON object (`execution` and `columns`, each ticket with `id`, `title` and the `blocked_by` ids that are not done yet).
+- `kanbeat status` prints the execution state and the tickets per column; `--json` gives the same as one JSON object (`execution` and `columns`, each ticket with `id`, `title`, the `blocked_by` ids that are not done yet, and its `slots`). Every ticket lists its `developer` slot and its `reviewers`, each with the effective `harness`, whether it has a `custom_prompt`, and whether a board worker is `running`. A ticket with no Reviewer slot has `straight_to_done: true` and the text form says it goes straight to Done when development finishes.
+- **Slots.** `kanbeat assign TICKET [TICKET ...] [--slot developer|reviewer-N] [--harness NAME] [--cp TEXT | --cp-file FILE]` reads and changes the Developer (the default) or Reviewer slot of one or more tickets through the supervisor's existing assignment operation. A `reviewer-N` that does not exist is created; several tickets in one command get the same change. The harness must be `codex`, `claude`, `opencode` or `pi`. A long custom prompt comes from `--cp-file PATH`, or from standard input with `--cp -`, the same way `config set` reads a long value. Changing a slot's harness clears its old verdict, as the Settings slot editor does.
+- `kanbeat reviewers add TICKET --harness NAME` picks the next free `reviewer-N`, creates it and prints it. `kanbeat reviewers remove TICKET reviewer-N` removes that slot; removing the last Reviewer is allowed and prints the same "goes straight to Done" warning.
+- Slot changes are refused while the board is running, while that slot's interactive terminal is running, and for an unknown ticket or invalid slot. The running error names `kanbeat stop` and `kanbeat play`. Add `--restart` to `assign` or `reviewers add/remove` to stop the board, apply the change, and play again only if it was running before; this is opt-in because stopping interrupts running workers, which resume from their native sessions. Slot changes are not written to the settings history: that history tracks `config.json` only, not tickets or slots. `kanbeat play` and `kanbeat stop` print the resulting execution state.
 - **Events.** Kanbeat records every ticket change it sees in the files as a numbered event: `created`, `moved`, `deleted`, and `execution` when the board goes from stopped to running or back. Changes made by hand and by Kanbeat look the same. The supervisor checks the files once a second, so changes that are made and undone inside one check are not recorded. The last 200 events are kept in `.kanbeat/.state/supervisor.json`, and numbers never repeat while that file exists.
 - `kanbeat events [--since N] [--limit N] [--json]` prints the events after number N and exits, or the newest ones (up to `--limit`, 1 to 200) when `--since` is left out. `kanbeat watch [--since N] [--json]` keeps printing new ones, once per second at most (`--interval`, at least 0.5 seconds), starts from now unless `--since` says otherwise, says `N earlier events are no longer available` when it asks for events older than the 200 the log keeps, and `--json` adds the event number (`seq`) and a `time` to every line. If the supervisor goes away it prints `supervisor disconnected`, retries for about a minute and prints `supervisor connected` and the events it missed when it is back. An agent that follows the board can run it as a background process.
 - `kanbeat config get [key]`, `config set <key> <value>`, `config history [--limit N]` and `config revert <id>` read and change `config.json` through the supervisor. A change applies at once and the TUI Settings page follows. The keys are `default_harness`, `max_parallel` (1 to 32), `global_cp`, `developer_prompt`, `reviewer_prompt`, `transition_hook.harness` and `transition_hook.prompt`. A long prompt can come from `--file PATH`, or from standard input with the value `-`. Do not edit `config.json` by hand while the supervisor runs: it reads the file once at start and the Settings page rewrites it from memory.

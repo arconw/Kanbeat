@@ -10,8 +10,12 @@ import sys
 from . import __version__
 from .agent_cli import (
     KNOWN_KEYS,
+    RESTART_HELP,
+    assign_command,
+    board_control_command,
     config_command,
     events_command,
+    reviewers_command,
     status_command,
     watch_command,
 )
@@ -47,6 +51,37 @@ def parser() -> argparse.ArgumentParser:
         "column",
         choices=("backlog", "todo", "progress", "review", "done", "failed", "archive"),
     )
+    assign = sub.add_parser(
+        "assign", help="Set the Developer or Reviewer slot of one or more tickets"
+    )
+    assign.add_argument("tickets", nargs="+", metavar="TICKET")
+    assign.add_argument(
+        "--slot",
+        default="developer",
+        help="developer (default) or reviewer-N; a missing reviewer-N is created",
+    )
+    assign.add_argument("--harness", help="Harness name: codex, claude, opencode or pi")
+    assign.add_argument("--cp", help="Custom prompt text, or - to read standard input")
+    assign.add_argument("--cp-file", help="Read the custom prompt from a file")
+    assign.add_argument("--restart", action="store_true", help=RESTART_HELP)
+    reviewers = sub.add_parser(
+        "reviewers", help="Add or remove Reviewer slots of a ticket"
+    )
+    reviewer_actions = reviewers.add_subparsers(dest="reviewers_command", required=True)
+    reviewer_add = reviewer_actions.add_parser(
+        "add", help="Add the next free Reviewer slot"
+    )
+    reviewer_add.add_argument("ticket", metavar="TICKET")
+    reviewer_add.add_argument(
+        "--harness", required=True, help="Harness name: codex, claude, opencode or pi"
+    )
+    reviewer_add.add_argument("--restart", action="store_true", help=RESTART_HELP)
+    reviewer_remove = reviewer_actions.add_parser(
+        "remove", help="Remove a Reviewer slot"
+    )
+    reviewer_remove.add_argument("ticket", metavar="TICKET")
+    reviewer_remove.add_argument("slot", metavar="reviewer-N")
+    reviewer_remove.add_argument("--restart", action="store_true", help=RESTART_HELP)
     status = sub.add_parser(
         "status", help="Show execution state and tickets per column"
     )
@@ -143,6 +178,12 @@ def run() -> None:
             asyncio.run(shutdown(project, args.yes))
         elif args.command == "config":
             asyncio.run(_with_supervisor(project, config_command, args))
+        elif args.command == "assign":
+            asyncio.run(_with_supervisor(project, assign_command, args))
+        elif args.command == "reviewers":
+            asyncio.run(_with_supervisor(project, reviewers_command, args))
+        elif args.command in ("play", "stop"):
+            asyncio.run(_with_supervisor(project, board_control_command, args.command))
         elif args.command == "status":
             asyncio.run(_with_supervisor(project, status_command, args.json))
         elif args.command == "watch":
