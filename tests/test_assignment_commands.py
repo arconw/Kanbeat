@@ -583,6 +583,37 @@ def test_restart_stops_and_plays_only_when_the_board_was_running(tmp_path, monke
     ]
 
 
+def test_restart_does_not_stop_the_board_for_unlocked_tickets(tmp_path, monkeypatch):
+    import kanbeat.supervisor as module
+
+    monkeypatch.setattr(module, "available", lambda _name: True)
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Editable", column="todo")
+    operations = []
+
+    async def send(request):
+        operations.append(request["op"])
+        return await supervisor.dispatch(request)
+
+    supervisor.runtime.data["execution"] = "running"
+    asyncio.run(
+        assign_command(
+            send,
+            args(
+                tickets=[ticket.id],
+                slot="developer",
+                harness="codex",
+                cp=None,
+                cp_file=None,
+                restart=True,
+            ),
+        )
+    )
+    assert operations == ["snapshot", "set_assignment"]
+    assert supervisor.runtime.data["execution"] == "running"
+    assert supervisor.ticket_state(ticket.id)["developer"] == {"harness": "codex"}
+
+
 def test_restart_replays_a_board_it_stopped_when_a_change_is_refused(
     tmp_path, monkeypatch
 ):

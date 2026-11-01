@@ -75,8 +75,7 @@ def reviewer_number(value: str) -> int | None:
 def assignment_error(locked: list[tuple[str, str]]) -> ValueError:
     return ValueError(
         " ".join(
-            assignment_change_refusal(ticket_id, column)
-            for ticket_id, column in locked
+            assignment_change_refusal(ticket_id, column) for ticket_id, column in locked
         )
     )
 
@@ -328,7 +327,8 @@ async def apply_requests(
     applied: list[int] = []
     failure: Exception | None = None
     play_failure: Exception | None = None
-    if was_running and restart:
+    restart_needed = was_running and restart and bool(locked)
+    if restart_needed:
         await send({"op": "stop"})
     try:
         try:
@@ -338,7 +338,7 @@ async def apply_requests(
         except Exception as error:
             failure = error
     finally:
-        if was_running and restart:
+        if restart_needed:
             try:
                 await send({"op": "play"})
             except Exception as error:

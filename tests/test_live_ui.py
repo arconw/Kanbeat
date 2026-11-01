@@ -1056,7 +1056,9 @@ async def test_slot_controls_stay_enabled_outside_progress_and_review(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("column,label", [("progress", "Progress"), ("review", "Review")])
+@pytest.mark.parametrize(
+    "column,label", [("progress", "Progress"), ("review", "Review")]
+)
 async def test_slot_controls_are_disabled_with_a_tooltip_in_active_columns(
     tmp_path, monkeypatch, column, label
 ):

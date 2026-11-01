@@ -1447,9 +1447,7 @@ class Supervisor:
                         f"Unknown harness {harness!r}. Valid harnesses: "
                         + ", ".join(HARNESS_NAMES)
                     )
-            if assignment_change_blocked(
-                ticket.column, self.runtime.data["execution"]
-            ):
+            if assignment_change_blocked(ticket.column, self.runtime.data["execution"]):
                 raise ValueError(assignment_change_refusal(ticket_id, ticket.column))
             if any(
                 e.get("ticket") == ticket_id
@@ -1497,9 +1495,7 @@ class Supervisor:
             slot = str(request["slot"])
             if not is_reviewer_slot(slot):
                 raise ValueError("Invalid reviewer slot identifier. Use reviewer-N")
-            if assignment_change_blocked(
-                ticket.column, self.runtime.data["execution"]
-            ):
+            if assignment_change_blocked(ticket.column, self.runtime.data["execution"]):
                 raise ValueError(assignment_change_refusal(ticket_id, ticket.column))
             if any(
                 e.get("ticket") == ticket_id
