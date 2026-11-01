@@ -12,7 +12,7 @@ from .modal import BackdropModal
 from textual.widgets import Button, Collapsible, Input, Select, Static, TextArea
 
 from .diff import DiffView
-from .options import HARNESS_LABELS, SESSION_HARNESS
+from .options import HARNESS, HARNESS_LABELS, SESSION_HARNESS
 from .terminal import TerminalPane
 from .session_rows import SessionRow, SessionSection, TaskSessions
 
@@ -21,6 +21,74 @@ SIDE_MIN_WIDTH = 34
 DIFF_MIN_WIDTH = 44
 TERMINAL_MIN_WIDTH = 60
 SHELL = "shell"
+SWITCH_BLOCKED_STATES = ("starting", "running", "stopping", "recovery_blocked")
+SWITCH_EXCLUDED_ROLES = ("config", "hook")
+
+
+def switch_eligible(entry: dict[str, Any]) -> bool:
+    return (
+        entry.get("owner") == "custom"
+        and entry.get("harness") in HARNESS_LABELS
+        and entry.get("role") not in SWITCH_EXCLUDED_ROLES
+    )
+
+
+def switch_locked(entry: dict[str, Any]) -> bool:
+    return entry.get("status") in SWITCH_BLOCKED_STATES
+
+
+def switch_tooltip(entry: dict[str, Any]) -> str:
+    if entry.get("status") in ("starting", "running"):
+        return "Stop the session before switching its harness."
+    return "Wait until the session has stopped before switching its harness."
+
+
+def harness_name(value: Any) -> str:
+    return HARNESS_LABELS.get(value, str(value))
+
+
+def byte_size(value: Any) -> str:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return ""
+    if value < 1024:
+        return f"{value} B"
+    if value < 1024 * 1024:
+        return f"{value / 1024:.0f} KB"
+    return f"{value / (1024 * 1024):.1f} MB"
+
+
+def switch_question(entry: dict[str, Any], target: str, title: str) -> str:
+    product = harness_name(target)
+    name = escape(title or entry.get("title") or "this session")
+    return (
+        f"Switch {name} to {product}?\n\n"
+        f"The whole conversation, including tool output, will be sent to "
+        f"{product} and its provider.\n\n"
+        "Permissions and settings are not transferred, and the new agent may "
+        "behave differently."
+    )
+
+
+def switch_result_message(
+    entry: dict[str, Any], target: str, result: dict[str, Any]
+) -> str:
+    name = entry.get("title") or "Session"
+    product = harness_name(target)
+    delivered = result.get("delivered")
+    if isinstance(delivered, int) and not isinstance(delivered, bool) and delivered > 0:
+        unit = "event" if delivered == 1 else "events"
+        message = (
+            f"Switched {name} to {product}; transferred {delivered} conversation "
+            f"{unit}."
+        )
+    else:
+        message = f"Switched {name} to {product}; there was no new conversation."
+    unsupported = sorted(
+        {str(item) for item in result.get("unsupported") or [] if str(item).strip()}
+    )
+    if unsupported:
+        message += " Not transferred: " + ", ".join(unsupported) + "."
+    return message
 
 
 def group_title(group, count):
@@ -221,12 +289,59 @@ class GroupActions(PopupMenu):
                 self.dismiss(None)
 
 
+class SwitchChoice(BackdropModal[dict[str, Any] | None]):
+    BACKDROP_RESULT = None
+
+    def __init__(
+        self,
+        title: str,
+        message: str,
+        options: list[tuple[str, dict[str, Any]]],
+    ):
+        super().__init__()
+        self.title = title
+        self.message = message
+        self.options = options
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(classes="sm"):
+            with Horizontal(classes="modal-header"):
+                yield Static(self.title, classes="modal-name")
+                yield Button("×", id="no")
+            yield Static(self.message, classes="modal-text", markup=False)
+            for index, (label, _) in enumerate(self.options):
+                yield Button(
+                    label,
+                    id=f"switch-choice-{index}",
+                    classes="choice",
+                    variant="primary",
+                )
+            with Horizontal(classes="modal-actions"):
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        name = event.button.id or ""
+        if name in ("cancel", "no"):
+            self.dismiss(None)
+        elif name.startswith("switch-choice-"):
+            try:
+                index = int(name[len("switch-choice-") :])
+            except ValueError:
+                return
+            if 0 <= index < len(self.options):
+                self.dismiss(self.options[index][1])
+
+
 class SessionEdit(BackdropModal[None]):
     def __init__(self, entry: dict[str, Any]):
         super().__init__()
         self.entry = entry
+        self.saving = False
 
     def compose(self) -> ComposeResult:
+        eligible = switch_eligible(self.entry)
+        locked = eligible and switch_locked(self.entry)
         with Vertical(classes="sm"):
             yield Static("EDIT SESSION", classes="section-title")
             yield Input(self.entry["title"], id="session-title")
@@ -236,6 +351,16 @@ class SessionEdit(BackdropModal[None]):
                 allow_blank=False,
                 id="session-group",
             )
+            if eligible:
+                yield Static("Harness", classes="field")
+                yield Select(
+                    HARNESS,
+                    value=self.entry.get("harness"),
+                    allow_blank=False,
+                    id="session-harness",
+                    disabled=locked,
+                    tooltip=switch_tooltip(self.entry) if locked else None,
+                )
             if self.entry.get("harness") != SHELL:
                 yield Static("Native session ID (used to resume)", classes="field")
                 yield Input(
@@ -252,20 +377,186 @@ class SessionEdit(BackdropModal[None]):
         if event.button.id == "cancel":
             self.dismiss(None)
         elif event.button.id == "session-save":
-            if await self.app.execute(
+            self.save_changes()
+
+    def current_entry(self) -> dict[str, Any]:
+        return self.app.snapshot.get("terminals", {}).get(self.entry["id"], self.entry)
+
+    def field_values(self) -> tuple[str, str, str]:
+        title = self.query_one("#session-title", Input).value
+        group = self.query_one("#session-group", Select).value
+        agent = self.entry.get("harness") != SHELL
+        native = (
+            self.query_one("#session-native-id", Input).value.strip() if agent else ""
+        )
+        return title, group, native
+
+    def chosen_harness(self) -> Any:
+        if not switch_eligible(self.entry):
+            return self.entry.get("harness")
+        return self.query_one("#session-harness", Select).value
+
+    async def apply_edits(self, title: str, group: Any, native: str) -> bool:
+        try:
+            await self.app.rpc(
                 {
                     "op": "session_update",
                     "terminal": self.entry["id"],
-                    "title": self.query_one("#session-title", Input).value,
-                    "group": self.query_one("#session-group", Select).value,
+                    "title": title,
+                    "group": group,
                     "native_session": (
-                        self.query_one("#session-native-id", Input).value.strip()
-                        if self.entry.get("harness") != SHELL
-                        else ""
+                        native if self.entry.get("harness") != SHELL else ""
                     ),
                 }
+            )
+        except (RuntimeError, ValueError, OSError) as exc:
+            self.app.notify(str(exc), severity="error", timeout=7, markup=False)
+            return False
+        await self.app.refresh_snapshot(force=True)
+        return True
+
+    @work
+    async def save_changes(self) -> None:
+        if self.saving:
+            return
+        self.saving = True
+        button = self.query_one("#session-save", Button)
+        button.disabled = True
+        try:
+            await self._save_changes()
+        finally:
+            self.saving = False
+            if self.is_mounted:
+                self.query_one("#session-save", Button).disabled = False
+
+    async def _save_changes(self) -> None:
+        title, group, native = self.field_values()
+        source = self.entry.get("harness")
+        target = self.chosen_harness()
+        switching = switch_eligible(self.entry) and target != source
+        if switching and switch_locked(self.current_entry()):
+            self.app.notify(
+                "Stop the session before switching its harness.",
+                severity="warning",
+                markup=False,
+            )
+            return
+        changed = (
+            title != self.entry.get("title", "")
+            or group != self.entry.get("group", "")
+            or (source != SHELL and native != (self.entry.get("native_session") or ""))
+        )
+        if switching:
+            from .app import Confirm
+
+            if not await self.app.push_screen_wait(
+                Confirm(switch_question(self.entry, str(target), title))
             ):
+                return
+        if changed and not await self.apply_edits(title, group, native):
+            return
+        if changed:
+            self.entry["title"] = title
+            self.entry["group"] = group
+            if source != SHELL:
+                self.entry["native_session"] = native or None
+        if not switching:
+            self.dismiss(None)
+            return
+        await self.switch_to(str(target))
+
+    async def switch_to(self, target: str) -> None:
+        request: dict[str, Any] = {
+            "op": "session_switch_harness",
+            "terminal": self.entry["id"],
+            "harness": target,
+        }
+        while True:
+            try:
+                result = await self.app.rpc(dict(request))
+            except (RuntimeError, ValueError, OSError) as exc:
+                details = getattr(exc, "details", None)
+                reason = details.get("reason") if isinstance(details, dict) else None
+                if reason == "transfer_too_large":
+                    choice = await self.app.push_screen_wait(
+                        self.large_transfer_choice(exc, details)
+                    )
+                    if choice is None:
+                        return
+                    request["reduction"] = choice["reduction"]
+                    continue
+                if reason == "target_session_missing" and not request.get(
+                    "fresh_session"
+                ):
+                    choice = await self.app.push_screen_wait(
+                        self.missing_target_choice(target)
+                    )
+                    if choice is None:
+                        return
+                    request["fresh_session"] = True
+                    continue
+                self.app.notify(str(exc), severity="error", timeout=10, markup=False)
+                return
+            await self.app.refresh_snapshot(force=True)
+            self.app.notify(
+                switch_result_message(self.entry, target, result),
+                timeout=8,
+                markup=False,
+            )
+            if self.is_mounted:
                 self.dismiss(None)
+            return
+
+    def large_transfer_choice(
+        self, error: BaseException, details: dict[str, Any]
+    ) -> SwitchChoice:
+        options: list[tuple[str, dict[str, Any]]] = []
+        for row in details.get("options") or []:
+            if not isinstance(row, dict):
+                continue
+            kind = row.get("kind")
+            if kind == "newest":
+                count = row.get("count")
+                if isinstance(count, bool) or not isinstance(count, int):
+                    continue
+                reduction = {"kind": "newest", "count": count}
+            elif kind == "text_only":
+                reduction = {"kind": "text_only"}
+            else:
+                continue
+            label = str(row.get("description") or kind)
+            size = row.get("size")
+            if isinstance(size, dict):
+                text = byte_size(size.get("bytes"))
+                if text:
+                    label += f" ({text})"
+            options.append((label, {"reduction": reduction}))
+        message = str(error)
+        unsupported = sorted(
+            {
+                str(item)
+                for item in details.get("unsupported") or []
+                if str(item).strip()
+            }
+        )
+        if unsupported:
+            message += (
+                "\nNot transferred from the source: " + ", ".join(unsupported) + "."
+            )
+        return SwitchChoice("CONVERSATION TOO LARGE", message, options)
+
+    def missing_target_choice(self, target: str) -> SwitchChoice:
+        product = harness_name(target)
+        message = (
+            f"The saved {product} session no longer exists. Nothing is replaced "
+            f"automatically. Start a new {product} session and transfer the "
+            "accumulated conversation, or cancel."
+        )
+        return SwitchChoice(
+            "TARGET SESSION MISSING",
+            message,
+            [(f"Start a fresh {product} session", {"fresh_session": True})],
+        )
 
 
 class SessionActions(PopupMenu):

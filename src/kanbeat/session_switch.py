@@ -404,6 +404,12 @@ def _error_text(error: BaseException) -> str:
     return text[-ERROR_TAIL:] if text else type(error).__name__
 
 
+def _progress(groups: Any, message: str, level: str = "information") -> None:
+    report = getattr(groups, "progress", None)
+    if callable(report):
+        report(message, level)
+
+
 async def _target_present(groups: Any, harness: str, session_id: str) -> bool:
     if harness == "codex":
         if groups.codex_host is None:
@@ -655,7 +661,11 @@ def _refuse_large(plan: TransferPlan, limit: int) -> None:
             "A reduced transfer still has to fit the target model's context "
             "window"
         ),
-        details={"size": report.to_dict(), "options": options},
+        details={
+            "size": report.to_dict(),
+            "options": options,
+            "unsupported": list(plan.unsupported),
+        },
     )
 
 
@@ -859,6 +869,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
             _fresh_state(groups, entry, ledger, terminal_id, target)
             groups.state.save()
 
+    _progress(groups, "Reading conversation history")
     reads: list[_History] = []
     try:
         for harness, row in rows.items():
@@ -910,6 +921,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     if plan.size_bytes > MAX_TRANSFER_BYTES:
         _refuse_large(plan, MAX_TRANSFER_BYTES)
 
+    _progress(groups, "Preparing the target session")
     created = False
     if target_id is None:
         try:
@@ -970,6 +982,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     _store_ledger(entry, ledger)
     groups.state.save()
 
+    _progress(groups, f"Delivering the conversation to {target}")
     try:
         delivery = await _deliver(
             groups, str(target), target_id, plan, context_path, created

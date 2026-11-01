@@ -39,6 +39,8 @@ class SelectableText(Static):
 
 COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed")
 FREE_STEPS = {("backlog", "todo"), ("todo", "backlog")}
+RPC_TIMEOUT = 10.0
+SWITCH_RPC_TIMEOUT = 360.0
 
 
 class Confirm(BackdropModal[bool]):
@@ -594,7 +596,12 @@ class KanbeatApp(App[None], inherit_bindings=False):
         button.set_class(bright and self.diff_unseen(), "diff-pulse")
 
     async def rpc(self, message: dict[str, Any]) -> dict[str, Any]:
-        return await request(self.project, message)
+        timeout = (
+            SWITCH_RPC_TIMEOUT
+            if message.get("op") == "session_switch_harness"
+            else RPC_TIMEOUT
+        )
+        return await request(self.project, message, timeout=timeout)
 
     async def put_on_clipboard(self, text: str) -> None:
         self.copy_to_clipboard(text)
