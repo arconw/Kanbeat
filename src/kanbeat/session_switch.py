@@ -695,7 +695,6 @@ async def _create_target(
         return metadata.session_id, True
     if target in ("claude", "pi"):
         session_id = str(uuid.uuid4())
-        entry["native_assigned"] = True
         return session_id, True
     raise ValueError("Unsupported harness: " + str(target))
 
@@ -881,7 +880,9 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     if not plan.events:
         entry["harness"] = target
         entry["native_session"] = target_id
-        if target in ("codex", "opencode") or not created:
+        if created and target in ("claude", "pi"):
+            entry["native_assigned"] = True
+        else:
             entry.pop("native_assigned", None)
         _store_ledger(entry, ledger)
         groups.state.save()
