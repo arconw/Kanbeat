@@ -435,7 +435,7 @@ class PasteAssembler:
                     break
                 self._hold(pastes[oldest], now)
             if not evicted:
-                raise ValueError("Terminal input queue is full")
+                return False
         bracketed = bool(terminal.board.modes.bracketed_paste)
         if bracketed and not terminal.queue_bytes(PASTE_BEGIN):
             if not pastes:
