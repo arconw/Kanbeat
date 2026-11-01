@@ -1254,10 +1254,6 @@ class Supervisor:
             "brand": "Kanbeat",
             "project": str(self.board.project),
             "execution": self.runtime.data["execution"],
-            "assignment": {
-                "running": self.runtime.data["execution"] == "running",
-                "locked_columns": list(ACTIVE),
-            },
             "tickets": [
                 {
                     "id": t.id,
