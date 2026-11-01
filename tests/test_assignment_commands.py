@@ -1,0 +1,546 @@
+import asyncio
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from kanbeat.agent_cli import (
+    RESTART_HELP,
+    assign_command,
+    board_control_command,
+    check_harness,
+    check_reviewer,
+    check_slot,
+    reviewers_command,
+    status_command,
+)
+from kanbeat.cli import parser
+from kanbeat.filesystem import INSTRUCTION, LEGACY_INSTRUCTION_HASHES
+from kanbeat.supervisor import Supervisor
+
+PREVIOUS_INSTRUCTIONS_SHA256 = (
+    "a71c706fecbfbd748e9e6bd120abc3af9873e8e98fc692f4d74d510b533ce54d"
+)
+
+
+def args(**values):
+    return SimpleNamespace(**values)
+
+
+def test_parser_accepts_assignments_and_shows_the_restart_help(capsys):
+    p = parser()
+    assigned = p.parse_args(
+        ["assign", "004", "005", "--slot", "reviewer-1", "--harness", "codex"]
+    )
+    assert assigned.command == "assign"
+    assert assigned.tickets == ["004", "005"]
+    assert assigned.slot == "reviewer-1"
+    assert assigned.harness == "codex"
+    assert assigned.restart is False
+    defaults = p.parse_args(["assign", "001", "--harness", "claude"])
+    assert defaults.slot == "developer"
+    assert defaults.cp is None and defaults.cp_file is None
+    added = p.parse_args(["reviewers", "add", "004", "--harness", "codex", "--restart"])
+    assert added.reviewers_command == "add"
+    assert added.ticket == "004"
+    assert added.restart is True
+    removed = p.parse_args(["reviewers", "remove", "004", "reviewer-2"])
+    assert removed.reviewers_command == "remove"
+    assert removed.slot == "reviewer-2"
+    assert "resume from their native sessions" in RESTART_HELP
+    with pytest.raises(SystemExit):
+        p.parse_args(["assign", "--help"])
+    assert "resume from their native sessions" in capsys.readouterr().out
+
+
+def test_slot_and_harness_validation_names_the_valid_values():
+    assert check_slot("developer") == "developer"
+    assert check_slot("reviewer-12") == "reviewer-12"
+    assert check_reviewer("reviewer-1") == "reviewer-1"
+    with pytest.raises(ValueError, match="Invalid slot"):
+        check_slot("reviewer-x")
+    with pytest.raises(ValueError, match="Invalid slot"):
+        check_slot("")
+    with pytest.raises(ValueError, match="not a Reviewer slot"):
+        check_reviewer("developer")
+    with pytest.raises(ValueError) as info:
+        check_harness("gpt")
+    for name in ("codex", "claude", "opencode", "pi"):
+        assert name in str(info.value)
+
+
+def test_assign_sets_several_reviewers_and_status_reports_them(tmp_path, capsys):
+    supervisor = Supervisor(tmp_path)
+    first = supervisor.board.create("First", column="review")
+    second = supervisor.board.create("Second", column="review")
+
+    async def scenario():
+        await assign_command(
+            supervisor.dispatch,
+            args(
+                tickets=[first.id, second.id],
+                slot="reviewer-1",
+                harness="codex",
+                cp=None,
+                cp_file=None,
+                restart=False,
+            ),
+        )
+        await status_command(supervisor.dispatch, True)
+
+    asyncio.run(scenario())
+    output = capsys.readouterr().out
+    text, _, raw = output.partition("{")
+    assert f"assigned reviewer-1 on #{first.id}: harness codex" in text
+    assert f"assigned reviewer-1 on #{second.id}: harness codex" in text
+    data = json.loads("{" + raw)
+    rows = {row["id"]: row for row in data["columns"]["review"]}
+    assert rows[first.id]["slots"]["reviewers"] == [
+        {
+            "slot": "reviewer-1",
+            "harness": "codex",
+            "custom_prompt": False,
+            "running": False,
+        }
+    ]
+    assert (
+        rows[first.id]["slots"]["developer"]["harness"]
+        == (supervisor.runtime.config["default_harness"])
+    )
+    assert rows[first.id]["straight_to_done"] is False
+    assert rows[second.id]["slots"]["reviewers"][0]["harness"] == "codex"
+
+
+def test_status_text_marks_no_reviewer_and_reports_running_workers(tmp_path, capsys):
+    supervisor = Supervisor(tmp_path)
+    plain = supervisor.board.create("Plain", column="todo")
+    reviewed = supervisor.board.create("Reviewed", column="progress")
+    state = supervisor.ticket_state(reviewed.id)
+    state["developer"] = {"harness": "pi", "cp": "Be brief"}
+    state["reviewers"] = [{"id": "reviewer-1", "harness": "claude"}]
+    state["runtime"] = {"reviewer-1": {"status": "running"}}
+    supervisor.save()
+
+    asyncio.run(status_command(supervisor.dispatch, False))
+    lines = capsys.readouterr().out.splitlines()
+    plain_index = lines.index(f"  #{plain.id} Plain")
+    assert lines[plain_index + 1] == (
+        "    developer: harness "
+        + supervisor.runtime.config["default_harness"]
+        + ", no custom prompt, no worker"
+    )
+    assert (
+        lines[plain_index + 2]
+        == "    no Reviewer slot: goes straight to Done when development finishes"
+    )
+    reviewed_index = lines.index(f"  #{reviewed.id} Reviewed")
+    assert lines[reviewed_index + 1] == (
+        "    developer: harness pi, custom prompt, no worker"
+    )
+    assert lines[reviewed_index + 2] == (
+        "    reviewer-1: harness claude, no custom prompt, worker running"
+    )
+
+    asyncio.run(status_command(supervisor.dispatch, True))
+    data = json.loads(capsys.readouterr().out)
+    rows = {row["id"]: row for row in data["columns"]["todo"]}
+    assert rows[plain.id]["straight_to_done"] is True
+    assert rows[plain.id]["slots"]["developer"]["custom_prompt"] is False
+    rows = {row["id"]: row for row in data["columns"]["progress"]}
+    assert rows[reviewed.id]["slots"]["developer"]["custom_prompt"] is True
+    assert rows[reviewed.id]["slots"]["reviewers"][0]["running"] is True
+    assert rows[reviewed.id]["straight_to_done"] is False
+
+
+def test_assign_reads_a_custom_prompt_from_a_file_or_standard_input(
+    tmp_path, monkeypatch, capsys
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Reviewed", column="review")
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("Line one\nLine two\n", encoding="utf-8")
+
+    async def scenario():
+        await assign_command(
+            supervisor.dispatch,
+            args(
+                tickets=[ticket.id],
+                slot="reviewer-1",
+                harness="codex",
+                cp=None,
+                cp_file=str(prompt),
+                restart=False,
+            ),
+        )
+        monkeypatch.setattr(
+            "sys.stdin", SimpleNamespace(read=lambda: "From standard input")
+        )
+        await assign_command(
+            supervisor.dispatch,
+            args(
+                tickets=[ticket.id],
+                slot="reviewer-2",
+                harness="claude",
+                cp="-",
+                cp_file=None,
+                restart=False,
+            ),
+        )
+
+    asyncio.run(scenario())
+    reviewers = {
+        row["id"]: row for row in supervisor.ticket_state(ticket.id)["reviewers"]
+    }
+    assert reviewers["reviewer-1"]["cp"] == "Line one\nLine two\n"
+    assert reviewers["reviewer-2"]["cp"] == "From standard input"
+    with pytest.raises(ValueError, match="either a value or --cp-file"):
+        asyncio.run(
+            assign_command(
+                supervisor.dispatch,
+                args(
+                    tickets=[ticket.id],
+                    slot="reviewer-1",
+                    harness="codex",
+                    cp="Text",
+                    cp_file=str(prompt),
+                    restart=False,
+                ),
+            )
+        )
+
+
+def test_assign_clears_the_old_verdict_when_the_harness_changes(tmp_path):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Reviewed", column="review")
+    state = supervisor.ticket_state(ticket.id)
+    state["reviewers"] = [
+        {"id": "reviewer-1", "harness": "pi", "session": "old-session"}
+    ]
+    state["review_results"] = {"reviewer-1": {"verdict": "approve"}}
+    state["runtime"] = {"reviewer-1": {"status": "completed"}}
+    supervisor.save()
+
+    asyncio.run(
+        assign_command(
+            supervisor.dispatch,
+            args(
+                tickets=[ticket.id],
+                slot="reviewer-1",
+                harness="claude",
+                cp=None,
+                cp_file=None,
+                restart=False,
+            ),
+        )
+    )
+    state = supervisor.ticket_state(ticket.id)
+    assert state["reviewers"] == [{"id": "reviewer-1", "harness": "claude"}]
+    assert state["review_results"] == {}
+    assert state["runtime"] == {}
+
+
+def test_reviewers_add_takes_the_next_free_slot_and_remove_warns_on_the_last(
+    tmp_path, capsys
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Reviewed", column="review")
+
+    async def scenario():
+        await reviewers_command(
+            supervisor.dispatch,
+            args(
+                reviewers_command="add",
+                ticket=ticket.id,
+                harness="codex",
+                restart=False,
+            ),
+        )
+        await reviewers_command(
+            supervisor.dispatch,
+            args(
+                reviewers_command="add",
+                ticket=ticket.id,
+                harness="claude",
+                restart=False,
+            ),
+        )
+        await reviewers_command(
+            supervisor.dispatch,
+            args(
+                reviewers_command="remove",
+                ticket=ticket.id,
+                slot="reviewer-1",
+                restart=False,
+            ),
+        )
+        await reviewers_command(
+            supervisor.dispatch,
+            args(
+                reviewers_command="add",
+                ticket=ticket.id,
+                harness="pi",
+                restart=False,
+            ),
+        )
+        await reviewers_command(
+            supervisor.dispatch,
+            args(
+                reviewers_command="remove",
+                ticket=ticket.id,
+                slot="reviewer-2",
+                restart=False,
+            ),
+        )
+        await reviewers_command(
+            supervisor.dispatch,
+            args(
+                reviewers_command="remove",
+                ticket=ticket.id,
+                slot="reviewer-1",
+                restart=False,
+            ),
+        )
+
+    asyncio.run(scenario())
+    lines = capsys.readouterr().out.splitlines()
+    assert f"assigned reviewer-1 on #{ticket.id}: harness codex" in lines
+    assert f"assigned reviewer-2 on #{ticket.id}: harness claude" in lines
+    assert f"removed reviewer-1 from #{ticket.id}" in lines
+    assert f"assigned reviewer-1 on #{ticket.id}: harness pi" in lines
+    assert f"removed reviewer-2 from #{ticket.id}" in lines
+    assert lines[-1] == (
+        f"No Reviewer left on #{ticket.id}: it goes straight to Done when its "
+        "development finishes."
+    )
+    assert supervisor.ticket_state(ticket.id)["reviewers"] == []
+
+
+def test_reviewers_remove_refuses_a_slot_the_ticket_does_not_have(tmp_path):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Reviewed", column="review")
+    with pytest.raises(ValueError, match=f"#{ticket.id} has no reviewer-9"):
+        asyncio.run(
+            reviewers_command(
+                supervisor.dispatch,
+                args(
+                    reviewers_command="remove",
+                    ticket=ticket.id,
+                    slot="reviewer-9",
+                    restart=False,
+                ),
+            )
+        )
+
+
+def test_the_commands_refuse_a_running_board_and_name_stop_and_play(tmp_path):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Reviewed", column="review")
+    asyncio.run(
+        supervisor.dispatch(
+            {
+                "op": "set_assignment",
+                "ticket": ticket.id,
+                "slot": "reviewer-1",
+                "values": {"harness": "codex"},
+            }
+        )
+    )
+    supervisor.runtime.data["execution"] = "running"
+    before = json.dumps(supervisor.snapshot()["tickets"], sort_keys=True)
+
+    requests = [
+        (
+            assign_command,
+            args(
+                tickets=[ticket.id],
+                slot="reviewer-1",
+                harness="claude",
+                cp=None,
+                cp_file=None,
+                restart=False,
+            ),
+        ),
+        (
+            reviewers_command,
+            args(
+                reviewers_command="add",
+                ticket=ticket.id,
+                harness="claude",
+                restart=False,
+            ),
+        ),
+        (
+            reviewers_command,
+            args(
+                reviewers_command="remove",
+                ticket=ticket.id,
+                slot="reviewer-1",
+                restart=False,
+            ),
+        ),
+    ]
+    for command, arguments in requests:
+        with pytest.raises(ValueError) as info:
+            asyncio.run(command(supervisor.dispatch, arguments))
+        assert "kanbeat stop" in str(info.value)
+        assert "kanbeat play" in str(info.value)
+
+    with pytest.raises(ValueError) as info:
+        asyncio.run(
+            supervisor.dispatch(
+                {
+                    "op": "set_assignment",
+                    "ticket": ticket.id,
+                    "slot": "reviewer-1",
+                    "values": {"harness": "claude"},
+                }
+            )
+        )
+    assert "kanbeat stop" in str(info.value)
+    assert "kanbeat play" in str(info.value)
+    assert json.dumps(supervisor.snapshot()["tickets"], sort_keys=True) == before
+
+
+def test_restart_stops_and_plays_only_when_the_board_was_running(tmp_path, monkeypatch):
+    import kanbeat.supervisor as module
+
+    monkeypatch.setattr(module, "available", lambda _name: True)
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Reviewed", column="review")
+    operations = []
+
+    async def send(request):
+        operations.append(request["op"])
+        return await supervisor.dispatch(request)
+
+    supervisor.runtime.data["execution"] = "running"
+    asyncio.run(
+        assign_command(
+            send,
+            args(
+                tickets=[ticket.id],
+                slot="reviewer-1",
+                harness="codex",
+                cp=None,
+                cp_file=None,
+                restart=True,
+            ),
+        )
+    )
+    assert operations == ["snapshot", "stop", "set_assignment", "play"]
+    assert supervisor.runtime.data["execution"] == "running"
+    assert supervisor.ticket_state(ticket.id)["reviewers"] == [
+        {"id": "reviewer-1", "harness": "codex"}
+    ]
+
+    operations.clear()
+    supervisor.runtime.data["execution"] = "stopped"
+    asyncio.run(
+        reviewers_command(
+            send,
+            args(
+                reviewers_command="add",
+                ticket=ticket.id,
+                harness="claude",
+                restart=True,
+            ),
+        )
+    )
+    assert operations == ["snapshot", "set_assignment"]
+    assert supervisor.runtime.data["execution"] == "stopped"
+    assert [row["id"] for row in supervisor.ticket_state(ticket.id)["reviewers"]] == [
+        "reviewer-1",
+        "reviewer-2",
+    ]
+
+
+def test_invalid_values_change_nothing(tmp_path):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Reviewed", column="review")
+    before = json.dumps(supervisor.snapshot()["tickets"], sort_keys=True)
+    cases = [
+        (
+            dict(
+                tickets=[ticket.id],
+                slot="reviewer-1",
+                harness="gpt",
+                cp=None,
+                cp_file=None,
+                restart=False,
+            ),
+            "Unknown harness",
+        ),
+        (
+            dict(
+                tickets=[ticket.id],
+                slot="reviewer-x",
+                harness="codex",
+                cp=None,
+                cp_file=None,
+                restart=False,
+            ),
+            "Invalid slot",
+        ),
+        (
+            dict(
+                tickets=["999"],
+                slot="reviewer-1",
+                harness="codex",
+                cp=None,
+                cp_file=None,
+                restart=False,
+            ),
+            "Unknown ticket",
+        ),
+    ]
+    for values, message in cases:
+        with pytest.raises(ValueError, match=message):
+            asyncio.run(assign_command(supervisor.dispatch, args(**values)))
+    with pytest.raises(ValueError, match="not a Reviewer slot"):
+        asyncio.run(
+            reviewers_command(
+                supervisor.dispatch,
+                args(
+                    reviewers_command="remove",
+                    ticket=ticket.id,
+                    slot="developer",
+                    restart=False,
+                ),
+            )
+        )
+    with pytest.raises(ValueError, match="Unknown harness"):
+        asyncio.run(
+            reviewers_command(
+                supervisor.dispatch,
+                args(
+                    reviewers_command="add",
+                    ticket=ticket.id,
+                    harness="gpt",
+                    restart=False,
+                ),
+            )
+        )
+    assert json.dumps(supervisor.snapshot()["tickets"], sort_keys=True) == before
+
+
+def test_play_and_stop_print_the_resulting_execution_state(
+    tmp_path, monkeypatch, capsys
+):
+    import kanbeat.supervisor as module
+
+    monkeypatch.setattr(module, "available", lambda _name: True)
+    supervisor = Supervisor(tmp_path)
+    asyncio.run(board_control_command(supervisor.dispatch, "play"))
+    assert capsys.readouterr().out == "execution: running\n"
+    asyncio.run(board_control_command(supervisor.dispatch, "stop"))
+    assert capsys.readouterr().out == "execution: stopped\n"
+
+
+def test_the_previous_instructions_are_upgraded_on_an_existing_board(tmp_path):
+    assert PREVIOUS_INSTRUCTIONS_SHA256 in LEGACY_INSTRUCTION_HASHES
+    assert "kanbeat assign" in INSTRUCTION
+    assert "goes straight to Done" in INSTRUCTION
+    board = Supervisor(tmp_path).board
+    assert "kanbeat assign" in (board.root / "INSTRUCTIONS.md").read_text(
+        encoding="utf-8"
+    )
