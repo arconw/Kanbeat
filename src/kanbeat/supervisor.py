@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import time
 from typing import Any
 
 from .filesystem import (
@@ -40,7 +41,7 @@ from .hooks import HookSubscriber
 from .terminals import Terminals
 from .session_groups import SessionGroups
 from .session_switch import SessionSwitchRefused
-from .terminal_control import terminal_request
+from .terminal_control import PasteAssembler, prune_pastes, terminal_request
 from .launcher import app_command, external_environment, internal_environment
 from .host_process import HostError, RuntimeIdentity, stop_recorded
 from .opencode_host import (
@@ -78,6 +79,7 @@ class Supervisor:
         self.events = EventLog(self.runtime)
         self.subscriber = HookSubscriber(self)
         self.terminals = Terminals(self.runtime)
+        self.pastes = PasteAssembler()
         self.state_dir = self.board.root / ".state"
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.claude = ClaudeRuntime(self.board.project, self.state_dir)
@@ -1087,6 +1089,15 @@ class Supervisor:
 
     async def reconcile(self) -> None:
         async with self.guard:
+            prune_pastes(
+                self,
+                time.monotonic(),
+                {
+                    terminal_id
+                    for terminal_id, entry in self.terminals.entries.items()
+                    if entry.get("status") == "running"
+                },
+            )
             tickets, errors = self.board.scan()
             # Detect moves/deletions of active tickets before assigning fresh work.
             await self.terminals.reconcile(tickets)
@@ -1291,6 +1302,7 @@ class Supervisor:
             "terminal_wait",
             "terminal_input",
             "terminal_resize",
+            "terminal_paste",
         ):
             return await self._dispatch(request)
         async with self.guard:
