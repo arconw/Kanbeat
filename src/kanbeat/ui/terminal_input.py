@@ -88,6 +88,9 @@ class TerminalInput:
             for chunk in split_paste(text):
                 await self.send_paste_part("chunk", paste_id, chunk)
             await self.send_paste_part("end", paste_id)
+        except asyncio.CancelledError:
+            await self.abort_paste(paste_id)
+            raise
         except (OSError, ValueError, RuntimeError):
             await self.abort_paste(paste_id)
             raise

@@ -385,3 +385,104 @@ async def test_paste_refused_for_a_live_worker_monitor(tmp_path, monkeypatch):
         assert result == {"accepted": True}
     finally:
         await supervisor.terminals.stop()
+
+
+def test_abort_keeps_state_until_the_closing_marker_is_queued():
+    writes = []
+
+    class FakeTerminal:
+        id = "t1"
+
+        def __init__(self):
+            self.board = SimpleNamespace(modes=SimpleNamespace(bracketed_paste=True))
+            self.allow_end = False
+
+        def queue_bytes(self, payload):
+            if payload == b"\x1b[201~" and not self.allow_end:
+                return False
+            writes.append(payload)
+            return True
+
+    terminal = FakeTerminal()
+    assembler = PasteAssembler()
+    assert assembler.begin(terminal, "p1", "c1", 1000.0)
+    assert assembler.chunk(terminal, "p1", "data", "c1", 1000.0)
+    assert assembler.abort(terminal, "p1", 1001.0) is False
+    assert "t1" in assembler.terminals
+    assert assembler.prune(1002.0) == []
+    assert "t1" in assembler.terminals
+    terminal.allow_end = True
+    assert assembler.prune(1003.0) == [("t1", True)]
+    assert assembler.terminals == {}
+    assert writes == [b"\x1b[200~", b"data", b"\x1b[201~"]
+
+
+def test_rejected_chunk_refreshes_paste_inactivity():
+    class FakeTerminal:
+        id = "t1"
+
+        def __init__(self):
+            self.board = SimpleNamespace(modes=SimpleNamespace(bracketed_paste=True))
+
+        def queue_bytes(self, payload):
+            return payload != b"data"
+
+    terminal = FakeTerminal()
+    assembler = PasteAssembler()
+    assert assembler.begin(terminal, "p1", "c1", 1000.0)
+    assert not assembler.chunk(terminal, "p1", "data", "c1", 1050.0)
+    assert assembler.prune(1100.0) == []
+    assert "t1" in assembler.terminals
+    assert assembler.prune(1111.0) == [("t1", True)]
+    assert assembler.terminals == {}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_paste_sends_abort():
+    sent = []
+
+    async def send(op, **values):
+        sent.append((op, values))
+        if values.get("phase") == "chunk":
+            await asyncio.sleep(60)
+        return {"accepted": True}
+
+    queue = TerminalInput(send, lambda message: None)
+    await queue.put({"kind": "paste", "text": "x" * 40000})
+    pump = asyncio.create_task(queue.run())
+    try:
+        for _ in range(200):
+            if any(values.get("phase") == "chunk" for _, values in sent):
+                break
+            await asyncio.sleep(0.01)
+        assert any(values.get("phase") == "chunk" for _, values in sent)
+    finally:
+        pump.cancel()
+        await asyncio.gather(pump, return_exceptions=True)
+    assert any(values.get("phase") == "abort" for _, values in sent)
+
+
+@pytest.mark.asyncio
+async def test_pinned_terminal_input_sender_survives_reset():
+    from kanbeat.ui.terminal import TerminalSession
+
+    calls = []
+
+    class App:
+        async def rpc(self, message):
+            calls.append(message)
+            return {"accepted": True}
+
+    session = TerminalSession()
+    session.app = App()
+    sender = session.input_sender("old-terminal")
+    session.terminal_id = None
+    await sender("terminal_paste", phase="abort", paste="p1")
+    assert calls == [
+        {
+            "op": "terminal_paste",
+            "terminal": "old-terminal",
+            "phase": "abort",
+            "paste": "p1",
+        }
+    ]

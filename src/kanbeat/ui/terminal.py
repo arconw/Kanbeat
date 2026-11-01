@@ -214,7 +214,9 @@ class TerminalSession:
         self.rows_text: list[str] = []
         self.cursor_state = None
         self.grid = None
-        self.input = TerminalInput(self.rpc, self.report_input_error)
+        self.input = TerminalInput(
+            self.input_sender(terminal_id), self.report_input_error
+        )
         self.scroll_position = None
         self.view_epoch += 1
         self.last_snapshot = {}
@@ -267,6 +269,12 @@ class TerminalSession:
 
     async def rpc(self, op: str, **values):
         return await self.app.rpc({"op": op, "terminal": self.terminal_id, **values})
+
+    def input_sender(self, terminal_id: str | None):
+        async def send(op: str, **values):
+            return await self.rpc(op, **{"terminal": terminal_id, **values})
+
+        return send
 
     @work(exclusive=True, group="terminal-watch", exit_on_error=False)
     async def watch_terminal(self) -> None:

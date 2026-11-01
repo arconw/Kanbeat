@@ -282,8 +282,8 @@ async def terminal_request(
         elif phase == "end":
             accepted = supervisor.pastes.end(terminal, paste_id, client, now)
         elif phase == "abort":
-            supervisor.pastes.abort(terminal, paste_id)
-            return {"accepted": True}
+            accepted = supervisor.pastes.abort(terminal, paste_id, now)
+            return {"accepted": accepted}
         else:
             raise ValueError("Unknown paste phase")
         return {"accepted": accepted}
@@ -420,13 +420,22 @@ class PasteAssembler:
         pastes = self.terminals.setdefault(terminal.id, {})
         for existing, state in list(pastes.items()):
             if client and state.get("client") == client:
-                self._close(terminal, state)
-                pastes.pop(existing, None)
+                if self._close(state):
+                    pastes.pop(existing, None)
+                else:
+                    self._hold(state, now)
         if paste_id in pastes:
             raise ValueError("Paste is already in progress")
         while len(pastes) >= MAX_PASTES_PER_TERMINAL:
-            oldest = min(pastes, key=lambda key: pastes[key]["updated"])
-            self._close(terminal, pastes.pop(oldest))
+            evicted = False
+            for oldest in sorted(pastes, key=lambda key: pastes[key]["updated"]):
+                if self._close(pastes[oldest]):
+                    del pastes[oldest]
+                    evicted = True
+                    break
+                self._hold(pastes[oldest], now)
+            if not evicted:
+                raise ValueError("Terminal input queue is full")
         bracketed = bool(terminal.board.modes.bracketed_paste)
         if bracketed and not terminal.queue_bytes(PASTE_BEGIN):
             if not pastes:
@@ -436,6 +445,7 @@ class PasteAssembler:
             "bracketed": bracketed,
             "updated": now,
             "client": client,
+            "terminal": terminal,
         }
         return True
 
@@ -448,10 +458,8 @@ class PasteAssembler:
         now: float,
     ) -> bool:
         state = self._state(terminal.id, paste_id, client)
-        if not terminal.queue_bytes(text.encode("utf-8")):
-            return False
         state["updated"] = now
-        return True
+        return bool(terminal.queue_bytes(text.encode("utf-8")))
 
     def end(
         self,
@@ -461,25 +469,34 @@ class PasteAssembler:
         now: float,
     ) -> bool:
         state = self._state(terminal.id, paste_id, client)
+        state["updated"] = now
         if state["bracketed"] and not terminal.queue_bytes(PASTE_END):
             return False
         self._discard(terminal.id, paste_id)
         return True
 
-    def abort(self, terminal: TerminalSession, paste_id: str) -> None:
+    def abort(self, terminal: TerminalSession, paste_id: str, now: float) -> bool:
         pastes = self.terminals.get(terminal.id)
         if not pastes:
-            return
+            return True
         state = pastes.get(paste_id)
-        if state is not None:
-            self._close(terminal, state)
+        if state is None:
+            return True
+        state["updated"] = now
+        if not self._close(state):
+            self._hold(state, now)
+            return False
         self._discard(terminal.id, paste_id)
+        return True
 
     def discard_terminal(self, terminal_id: str) -> None:
         self.terminals.pop(terminal_id, None)
 
     def prune(
-        self, now: float, active_ids: set[str] | None = None
+        self,
+        now: float,
+        active_ids: set[str] | None = None,
+        terminals: dict[str, TerminalSession] | None = None,
     ) -> list[tuple[str, bool]]:
         expired: list[tuple[str, bool]] = []
         for terminal_id in list(self.terminals):
@@ -489,9 +506,15 @@ class PasteAssembler:
             pastes = self.terminals[terminal_id]
             for paste_id in list(pastes):
                 state = pastes[paste_id]
-                if now - state["updated"] > PASTE_STALE_SECONDS:
-                    expired.append((terminal_id, bool(state["bracketed"])))
+                if not state.get("closing") and (
+                    now - state["updated"] <= PASTE_STALE_SECONDS
+                ):
+                    continue
+                if self._close(state, terminals):
                     del pastes[paste_id]
+                    expired.append((terminal_id, bool(state["bracketed"])))
+                else:
+                    self._hold(state, now)
             if not pastes:
                 self.terminals.pop(terminal_id, None)
         return expired
@@ -516,28 +539,34 @@ class PasteAssembler:
             self.terminals.pop(terminal_id, None)
 
     @staticmethod
-    def _close(terminal: TerminalSession, state: dict[str, Any]) -> None:
+    def _hold(state: dict[str, Any], now: float) -> None:
+        state["updated"] = now
+        state["closing"] = True
+
+    @staticmethod
+    def _close(
+        state: dict[str, Any],
+        terminals: dict[str, TerminalSession] | None = None,
+    ) -> bool:
         if not state["bracketed"]:
-            return
+            return True
+        terminal = None
+        if terminals is not None:
+            terminal = terminals.get(state["terminal"].id)
+        if terminal is None:
+            terminal = state.get("terminal")
+        if terminal is None:
+            return True
         try:
-            terminal.queue_bytes(PASTE_END)
+            return bool(terminal.queue_bytes(PASTE_END))
         except (ValueError, OSError):
-            pass
+            return True
 
 
 def prune_pastes(
     supervisor: Supervisor, now: float, active_ids: set[str] | None = None
 ) -> None:
-    for terminal_id, bracketed in supervisor.pastes.prune(now, active_ids):
-        if not bracketed:
-            continue
-        session = supervisor.terminals.sessions.get(terminal_id)
-        if session is None:
-            continue
-        try:
-            session.queue_bytes(PASTE_END)
-        except (ValueError, OSError):
-            pass
+    supervisor.pastes.prune(now, active_ids, supervisor.terminals.sessions)
 
 
 def apply_input(terminal: TerminalSession, request: dict[str, Any]) -> None:
