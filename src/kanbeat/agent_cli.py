@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .config_keys import CONFIG_KEYS, HARNESSES
+from .config_keys import CONFIG_KEYS, HARNESSES, is_reviewer_slot
 from .events import format_event
 
 Send = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -42,11 +42,6 @@ def read_value(value: str | None, source: str | None, flag: str = "--file") -> s
     if value is None:
         raise ValueError(f"Give a value, {flag} PATH, or - to read standard input")
     return sys.stdin.read() if value == "-" else value
-
-
-def is_reviewer_slot(value: str) -> bool:
-    digits = value[9:] if value.startswith("reviewer-") else ""
-    return bool(digits) and digits.isascii() and digits.isdigit() and digits[0] != "0"
 
 
 def check_slot(value: str) -> str:
@@ -388,6 +383,7 @@ async def reviewers_add_command(send: Send, args: Any) -> None:
         "ticket": ticket_id,
         "slot": slot,
         "values": {"harness": harness},
+        "only_if_absent": True,
     }
     await apply_requests(send, snapshot, [request], bool(args.restart))
     print(f"assigned {slot} on #{ticket_id}: harness {harness}")

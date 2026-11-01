@@ -31,7 +31,7 @@ from .native_settings import NativeSettings, SettingsError, from_codex_thread
 from .claude_runtime import ClaudeRun, ClaudeRuntime
 from .codex_host import CodexAppServerHost, CodexHostError
 from .codex_runtime import CodexRun
-from .config_keys import check_key, read_key
+from .config_keys import check_key, is_reviewer_slot, read_key
 from .state import LocalState
 from .events import EventLog
 from .hooks import HookSubscriber
@@ -52,11 +52,6 @@ from .ipc import socket_path, prepare_socket_directory, remove_socket, bind_sock
 
 MAX_INPUT = 1024 * 1024
 HARNESS_NAMES = ("codex", "claude", "opencode", "pi")
-
-
-def is_reviewer_slot(value: str) -> bool:
-    digits = value[9:] if value.startswith("reviewer-") else ""
-    return bool(digits) and digits.isascii() and digits.isdigit() and digits[0] != "0"
 
 
 def whole_number(value: Any, name: str, low: int, high: int) -> int:
@@ -1463,17 +1458,16 @@ class Supervisor:
             if slot == "developer":
                 target = state.setdefault("developer", {})
             else:
+                reviewers = state.setdefault("reviewers", [])
                 target = next(
-                    (
-                        r
-                        for r in state.setdefault("reviewers", [])
-                        if r.get("id") == slot
-                    ),
+                    (r for r in reviewers if r.get("id") == slot),
                     None,
                 )
                 if target is None:
                     target = {"id": slot}
-                    state["reviewers"].append(target)
+                    reviewers.append(target)
+                elif request.get("only_if_absent") is True:
+                    raise ValueError(f"Reviewer slot {slot} already exists")
             old_harness = target.get("harness")
             for field in ("harness", "cp"):
                 if field in config:
@@ -1492,16 +1486,31 @@ class Supervisor:
                 state.setdefault("runtime", {}).pop(slot, None)
             self.save()
         elif op == "remove_reviewer":
-            state = self.ticket_state(str(request["ticket"]))
+            ticket_id = str(request["ticket"])
+            self.board.find(ticket_id)
+            state = self.ticket_state(ticket_id)
             slot = str(request["slot"])
+            if not is_reviewer_slot(slot):
+                raise ValueError("Invalid reviewer slot identifier. Use reviewer-N")
             if self.runtime.data["execution"] == "running":
                 raise ValueError(
                     "Stop the board with kanbeat stop before changing reviewer "
                     "slots, then start it with kanbeat play"
                 )
+            if any(
+                e.get("ticket") == ticket_id
+                and e.get("slot") == slot
+                and e.get("status") == "running"
+                for e in self.terminals.entries.values()
+            ):
+                raise ValueError(
+                    "Stop the interactive slot terminal before changing its assignment"
+                )
             state["reviewers"] = [
                 r for r in state.get("reviewers", []) if r.get("id") != slot
             ]
+            state.setdefault("review_results", {}).pop(slot, None)
+            state.setdefault("runtime", {}).pop(slot, None)
             self.save()
         elif op == "log":
             ticket_id = str(request["ticket"])
