@@ -78,8 +78,8 @@ class Supervisor:
         self.runtime.data.pop("hook_seq", None)
         self.events = EventLog(self.runtime)
         self.subscriber = HookSubscriber(self)
-        self.terminals = Terminals(self.runtime)
         self.pastes = PasteAssembler()
+        self.terminals = Terminals(self.runtime, self.pastes.discard_terminal)
         self.state_dir = self.board.root / ".state"
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.claude = ClaudeRuntime(self.board.project, self.state_dir)
