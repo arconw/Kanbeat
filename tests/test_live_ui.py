@@ -26,6 +26,15 @@ def client(supervisor, monkeypatch):
     return app
 
 
+def ticket_in_column(supervisor, column):
+    ticket = supervisor.board.create(
+        "Editable", column="backlog" if column == "archive" else column
+    )
+    if column == "archive":
+        ticket = supervisor.board.move(ticket.id, "archive")
+    return ticket
+
+
 @pytest.mark.asyncio
 async def test_startup_wordmark_precedes_first_board_snapshot(tmp_path, monkeypatch):
     supervisor = Supervisor(tmp_path)
@@ -1013,3 +1022,104 @@ async def test_moving_a_blocked_ticket_to_progress_needs_an_explicit_confirmatio
         await pilot.click("#yes")
         await pilot.pause(0.3)
         assert supervisor.board.find(waiting.id).column == "progress"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column", ["backlog", "todo", "done", "failed", "archive"])
+async def test_slot_controls_stay_enabled_outside_progress_and_review(
+    tmp_path, monkeypatch, column
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = ticket_in_column(supervisor, column)
+    supervisor.ticket_state(ticket.id)["reviewers"] = [{"id": "reviewer-1"}]
+    supervisor.runtime.data["execution"] = "running"
+    supervisor.save()
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await app.refresh_snapshot(force=True)
+        view = TicketView(app.find_ticket(ticket.id))
+        app.push_screen(view)
+        await pilot.pause()
+        for selector in (
+            "#dev-config",
+            "#add-reviewer",
+            "#conf-reviewer-1",
+            "#remove-reviewer-1",
+        ):
+            button = view.query_one(selector, Button)
+            assert not button.disabled
+            assert button.tooltip is None
+        form = Assignment(app.find_ticket(ticket.id), "developer")
+        app.push_screen(form)
+        await pilot.pause()
+        assert not form.query_one("#save", Button).disabled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column,label", [("progress", "Progress"), ("review", "Review")])
+async def test_slot_controls_are_disabled_with_a_tooltip_in_active_columns(
+    tmp_path, monkeypatch, column, label
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Locked", column=column)
+    supervisor.ticket_state(ticket.id)["reviewers"] = [{"id": "reviewer-1"}]
+    supervisor.runtime.data["execution"] = "running"
+    supervisor.save()
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await app.refresh_snapshot(force=True)
+        view = TicketView(app.find_ticket(ticket.id))
+        app.push_screen(view)
+        await pilot.pause()
+        for selector in (
+            "#dev-config",
+            "#add-reviewer",
+            "#conf-reviewer-1",
+            "#remove-reviewer-1",
+        ):
+            button = view.query_one(selector, Button)
+            assert button.disabled
+            assert f"in {label}" in str(button.tooltip)
+            assert "kanbeat stop" in str(button.tooltip)
+            assert "kanbeat play" in str(button.tooltip)
+        form = Assignment(app.find_ticket(ticket.id), "developer")
+        app.push_screen(form)
+        await pilot.pause()
+        save = form.query_one("#save", Button)
+        assert save.disabled
+        assert f"in {label}" in str(save.tooltip)
+        assert "kanbeat stop" in str(save.tooltip)
+
+
+@pytest.mark.asyncio
+async def test_ticket_controls_follow_the_rule_when_the_board_and_ticket_move(
+    tmp_path, monkeypatch
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Moving", column="todo")
+    supervisor.ticket_state(ticket.id)["reviewers"] = [{"id": "reviewer-1"}]
+    supervisor.save()
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await app.refresh_snapshot(force=True)
+        view = TicketView(app.find_ticket(ticket.id))
+        app.push_screen(view)
+        await pilot.pause()
+        assert not view.query_one("#dev-config", Button).disabled
+
+        supervisor.runtime.data["execution"] = "running"
+        await app.refresh_snapshot(force=True)
+        await view.refresh_ticket()
+        assert not view.query_one("#dev-config", Button).disabled
+
+        supervisor.board.move(ticket.id, "progress")
+        await app.refresh_snapshot(force=True)
+        await view.refresh_ticket()
+        blocked = view.query_one("#dev-config", Button)
+        assert blocked.disabled
+        assert "Progress" in str(blocked.tooltip)
+
+        supervisor.board.move(ticket.id, "todo")
+        await app.refresh_snapshot(force=True)
+        await view.refresh_ticket()
+        assert not view.query_one("#dev-config", Button).disabled

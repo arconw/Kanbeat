@@ -16,16 +16,33 @@ from kanbeat.agent_cli import (
     status_command,
 )
 from kanbeat.cli import parser
-from kanbeat.filesystem import INSTRUCTION, LEGACY_INSTRUCTION_HASHES
+from kanbeat.filesystem import (
+    INSTRUCTION,
+    LEGACY_INSTRUCTION_HASHES,
+    assignment_change_blocked,
+    assignment_change_refusal,
+)
 from kanbeat.supervisor import Supervisor
 
 PREVIOUS_INSTRUCTIONS_SHA256 = (
     "a71c706fecbfbd748e9e6bd120abc3af9873e8e98fc692f4d74d510b533ce54d"
 )
+SLOT_RULE_INSTRUCTIONS_SHA256 = (
+    "0fee5c9f9e2bf94972847ba0200b183695859a02876c964a3734f9d8a7359a04"
+)
 
 
 def args(**values):
     return SimpleNamespace(**values)
+
+
+def ticket_in_column(supervisor, column):
+    ticket = supervisor.board.create(
+        "Editable", column="backlog" if column == "archive" else column
+    )
+    if column == "archive":
+        ticket = supervisor.board.move(ticket.id, "archive")
+    return ticket
 
 
 def test_parser_accepts_assignments_and_shows_the_restart_help(capsys):
@@ -771,3 +788,272 @@ def test_the_previous_instructions_are_upgraded_on_an_existing_board(tmp_path):
     assert "kanbeat assign" in (board.root / "INSTRUCTIONS.md").read_text(
         encoding="utf-8"
     )
+
+
+def test_the_slot_rule_is_shared_and_names_the_blocking_column():
+    for column in ("backlog", "todo", "done", "failed", "archive"):
+        assert not assignment_change_blocked(column, "running")
+        assert not assignment_change_blocked(column, "stopped")
+    for column in ("progress", "review"):
+        assert assignment_change_blocked(column, "running")
+        assert not assignment_change_blocked(column, "stopped")
+        refusal = assignment_change_refusal("004", column)
+        assert f"Ticket 004 is in {column.title()}" in refusal
+        assert "kanbeat stop" in refusal
+        assert "kanbeat play" in refusal
+
+
+@pytest.mark.parametrize(
+    "column", ["backlog", "todo", "progress", "review", "done", "failed", "archive"]
+)
+@pytest.mark.parametrize("execution", ["stopped", "running"])
+def test_assign_follows_the_column_rule(tmp_path, column, execution):
+    supervisor = Supervisor(tmp_path)
+    ticket = ticket_in_column(supervisor, column)
+    supervisor.runtime.data["execution"] = execution
+    operations = []
+
+    async def send(request):
+        operations.append(request["op"])
+        return await supervisor.dispatch(request)
+
+    values = args(
+        tickets=[ticket.id],
+        slot="developer",
+        harness="codex",
+        cp=None,
+        cp_file=None,
+        restart=False,
+    )
+    if execution == "running" and column in ("progress", "review"):
+        with pytest.raises(ValueError) as info:
+            asyncio.run(assign_command(send, values))
+        message = str(info.value)
+        assert f"Ticket {ticket.id} is in {column.title()}" in message
+        assert "kanbeat stop" in message
+        assert "kanbeat play" in message
+        assert operations == ["snapshot"]
+        assert not supervisor.ticket_state(ticket.id)["developer"]
+    else:
+        asyncio.run(assign_command(send, values))
+        assert operations == ["snapshot", "set_assignment"]
+        assert supervisor.ticket_state(ticket.id)["developer"] == {"harness": "codex"}
+    assert supervisor.runtime.data["execution"] == execution
+
+
+@pytest.mark.parametrize("column", ["backlog", "todo", "done", "failed", "archive"])
+def test_a_running_board_changes_prompt_and_reviewer_outside_active_columns(
+    tmp_path, column
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = ticket_in_column(supervisor, column)
+    supervisor.runtime.data["execution"] = "running"
+    operations = []
+
+    async def send(request):
+        operations.append(request["op"])
+        return await supervisor.dispatch(request)
+
+    asyncio.run(
+        assign_command(
+            send,
+            args(
+                tickets=[ticket.id],
+                slot="developer",
+                harness="pi",
+                cp="Be precise",
+                cp_file=None,
+                restart=False,
+            ),
+        )
+    )
+    asyncio.run(
+        assign_command(
+            send,
+            args(
+                tickets=[ticket.id],
+                slot="reviewer-1",
+                harness="claude",
+                cp="Review carefully",
+                cp_file=None,
+                restart=False,
+            ),
+        )
+    )
+    state = supervisor.ticket_state(ticket.id)
+    assert state["developer"] == {"harness": "pi", "cp": "Be precise"}
+    assert state["reviewers"] == [
+        {"id": "reviewer-1", "harness": "claude", "cp": "Review carefully"}
+    ]
+    assert operations == [
+        "snapshot",
+        "set_assignment",
+        "snapshot",
+        "set_assignment",
+    ]
+    assert supervisor.runtime.data["execution"] == "running"
+
+
+@pytest.mark.parametrize("column", ["progress", "review"])
+def test_remove_reviewer_refuses_active_columns_with_the_column_message(
+    tmp_path, column
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Locked", column=column)
+    state = supervisor.ticket_state(ticket.id)
+    state["reviewers"] = [{"id": "reviewer-1", "harness": "codex"}]
+    supervisor.save()
+    supervisor.runtime.data["execution"] = "running"
+    operations = []
+
+    async def send(request):
+        operations.append(request["op"])
+        return await supervisor.dispatch(request)
+
+    with pytest.raises(ValueError) as info:
+        asyncio.run(
+            reviewers_command(
+                send,
+                args(
+                    reviewers_command="remove",
+                    ticket=ticket.id,
+                    slot="reviewer-1",
+                    restart=False,
+                ),
+            )
+        )
+    message = str(info.value)
+    assert f"Ticket {ticket.id} is in {column.title()}" in message
+    assert "kanbeat stop" in message
+    assert "kanbeat play" in message
+    assert operations == ["snapshot"]
+    assert [row["id"] for row in state["reviewers"]] == ["reviewer-1"]
+
+
+def test_adding_and_removing_a_reviewer_in_todo_while_another_ticket_is_developed(
+    tmp_path,
+):
+    supervisor = Supervisor(tmp_path)
+    working = supervisor.board.create("Working", column="progress")
+    waiting = supervisor.board.create("Waiting", column="todo")
+    supervisor.ticket_state(working.id)["runtime"] = {
+        "developer": {"status": "running", "activity": "working"}
+    }
+    supervisor.runtime.data["execution"] = "running"
+    supervisor.save()
+    operations = []
+
+    async def send(request):
+        operations.append(request["op"])
+        return await supervisor.dispatch(request)
+
+    asyncio.run(
+        reviewers_command(
+            send,
+            args(
+                reviewers_command="add",
+                ticket=waiting.id,
+                harness="codex",
+                restart=False,
+            ),
+        )
+    )
+    assert operations == ["snapshot", "set_assignment"]
+    assert supervisor.ticket_state(waiting.id)["reviewers"] == [
+        {"id": "reviewer-1", "harness": "codex"}
+    ]
+
+    asyncio.run(
+        reviewers_command(
+            send,
+            args(
+                reviewers_command="remove",
+                ticket=waiting.id,
+                slot="reviewer-1",
+                restart=False,
+            ),
+        )
+    )
+    assert operations == [
+        "snapshot",
+        "set_assignment",
+        "snapshot",
+        "remove_reviewer",
+    ]
+    assert supervisor.ticket_state(waiting.id)["reviewers"] == []
+    assert supervisor.ticket_state(working.id)["runtime"] == {
+        "developer": {"status": "running", "activity": "working"}
+    }
+    assert supervisor.runtime.data["execution"] == "running"
+
+
+def test_a_running_slot_terminal_still_refuses_a_todo_change(tmp_path):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Todo", column="todo")
+    supervisor.runtime.data["execution"] = "running"
+    supervisor.terminals.entries["terminal"] = {
+        "ticket": ticket.id,
+        "slot": "developer",
+        "status": "running",
+        "owner": "custom",
+    }
+    with pytest.raises(ValueError, match="interactive slot terminal"):
+        asyncio.run(
+            assign_command(
+                supervisor.dispatch,
+                args(
+                    tickets=[ticket.id],
+                    slot="developer",
+                    harness="codex",
+                    cp=None,
+                    cp_file=None,
+                    restart=False,
+                ),
+            )
+        )
+    assert not supervisor.ticket_state(ticket.id)["developer"]
+
+
+def test_a_ticket_changed_in_todo_starts_with_the_new_settings(tmp_path):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Todo", column="todo")
+    supervisor.runtime.data["execution"] = "running"
+    asyncio.run(
+        assign_command(
+            supervisor.dispatch,
+            args(
+                tickets=[ticket.id],
+                slot="developer",
+                harness="codex",
+                cp=None,
+                cp_file=None,
+                restart=False,
+            ),
+        )
+    )
+    asyncio.run(
+        assign_command(
+            supervisor.dispatch,
+            args(
+                tickets=[ticket.id],
+                slot="reviewer-1",
+                harness="claude",
+                cp=None,
+                cp_file=None,
+                restart=False,
+            ),
+        )
+    )
+    started = supervisor.board.move(ticket.id, "progress")
+    state = supervisor.ticket_state(ticket.id)
+    assert state["developer"] == {"harness": "codex"}
+    assert state["reviewers"] == [{"id": "reviewer-1", "harness": "claude"}]
+    assert supervisor.workers(started) == [("developer", state["developer"])]
+
+
+def test_the_instructions_describe_where_slot_changes_are_allowed():
+    assert SLOT_RULE_INSTRUCTIONS_SHA256 in LEGACY_INSTRUCTION_HASHES
+    assert "Slot changes are allowed while the board runs" in INSTRUCTION
+    assert "`progress/` or `review/`" in INSTRUCTION
+    assert "kanbeat stop" in INSTRUCTION
+    assert "kanbeat play" in INSTRUCTION
