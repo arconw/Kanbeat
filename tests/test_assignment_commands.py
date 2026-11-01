@@ -11,6 +11,7 @@ from kanbeat.agent_cli import (
     check_harness,
     check_reviewer,
     check_slot,
+    reviewer_number,
     reviewers_command,
     status_command,
 )
@@ -67,6 +68,27 @@ def test_slot_and_harness_validation_names_the_valid_values():
         check_harness("gpt")
     for name in ("codex", "claude", "opencode", "pi"):
         assert name in str(info.value)
+
+
+def test_non_ascii_and_zero_padded_reviewer_slots_are_rejected(tmp_path):
+    for slot in ("reviewer-", "reviewer-0", "reviewer-01", "reviewer-\u00b2"):
+        with pytest.raises(ValueError, match="Invalid slot"):
+            check_slot(slot)
+        assert reviewer_number(slot) is None
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Reviewed", column="review")
+    with pytest.raises(ValueError, match="Invalid reviewer slot identifier"):
+        asyncio.run(
+            supervisor.dispatch(
+                {
+                    "op": "set_assignment",
+                    "ticket": ticket.id,
+                    "slot": "reviewer-01",
+                    "values": {"harness": "codex"},
+                }
+            )
+        )
+    assert supervisor.ticket_state(ticket.id)["reviewers"] == []
 
 
 def test_assign_sets_several_reviewers_and_status_reports_them(tmp_path, capsys):
@@ -463,6 +485,53 @@ def test_restart_replays_a_board_it_stopped_when_a_change_is_refused(
     supervisor = Supervisor(tmp_path)
     first = supervisor.board.create("First", column="review")
     second = supervisor.board.create("Second", column="review")
+    supervisor.runtime.data["execution"] = "running"
+    operations = []
+
+    async def send(request):
+        operations.append(request["op"])
+        if request["op"] == "set_assignment" and request["ticket"] == second.id:
+            raise ValueError("Refused by the test")
+        return await supervisor.dispatch(request)
+
+    with pytest.raises(ValueError) as info:
+        asyncio.run(
+            assign_command(
+                send,
+                args(
+                    tickets=[first.id, second.id],
+                    slot="developer",
+                    harness="codex",
+                    cp=None,
+                    cp_file=None,
+                    restart=True,
+                ),
+            )
+        )
+    message = str(info.value)
+    assert f"Changed #{first.id} before the change was refused" in message
+    assert "Refused by the test" in message
+    assert operations == [
+        "snapshot",
+        "stop",
+        "set_assignment",
+        "set_assignment",
+        "play",
+    ]
+    assert supervisor.runtime.data["execution"] == "running"
+    assert supervisor.ticket_state(first.id)["developer"] == {"harness": "codex"}
+    assert not supervisor.ticket_state(second.id)["developer"]
+
+
+def test_a_busy_slot_terminal_refuses_the_whole_batch_before_stopping(
+    tmp_path, monkeypatch
+):
+    import kanbeat.supervisor as module
+
+    monkeypatch.setattr(module, "available", lambda _name: True)
+    supervisor = Supervisor(tmp_path)
+    first = supervisor.board.create("First", column="review")
+    second = supervisor.board.create("Second", column="review")
     supervisor.terminals.entries["terminal"] = {
         "ticket": second.id,
         "slot": "developer",
@@ -491,17 +560,11 @@ def test_restart_replays_a_board_it_stopped_when_a_change_is_refused(
             )
         )
     message = str(info.value)
-    assert f"Changed #{first.id} before the change was refused" in message
-    assert "Stop the interactive slot terminal" in message
-    assert operations == [
-        "snapshot",
-        "stop",
-        "set_assignment",
-        "set_assignment",
-        "play",
-    ]
+    assert f"#{second.id}/developer" in message
+    assert "interactive slot terminal" in message
+    assert operations == ["snapshot"]
     assert supervisor.runtime.data["execution"] == "running"
-    assert supervisor.ticket_state(first.id)["developer"] == {"harness": "codex"}
+    assert not supervisor.ticket_state(first.id)["developer"]
     assert not supervisor.ticket_state(second.id)["developer"]
 
 
