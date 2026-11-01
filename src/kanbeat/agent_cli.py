@@ -44,8 +44,13 @@ def read_value(value: str | None, source: str | None, flag: str = "--file") -> s
     return sys.stdin.read() if value == "-" else value
 
 
+def is_reviewer_slot(value: str) -> bool:
+    digits = value[9:] if value.startswith("reviewer-") else ""
+    return bool(digits) and digits.isascii() and digits.isdigit() and digits[0] != "0"
+
+
 def check_slot(value: str) -> str:
-    if value == "developer" or (value.startswith("reviewer-") and value[9:].isdigit()):
+    if value == "developer" or is_reviewer_slot(value):
         return value
     raise ValueError(
         f"Invalid slot {value!r}. Use developer or reviewer-N, for example reviewer-1"
@@ -68,9 +73,7 @@ def check_harness(value: str) -> str:
 
 
 def reviewer_number(value: str) -> int | None:
-    if value.startswith("reviewer-") and value[9:].isdigit():
-        return int(value[9:])
-    return None
+    return int(value[9:]) if is_reviewer_slot(value) else None
 
 
 def running_error() -> ValueError:
@@ -268,6 +271,28 @@ def with_applied(
     return error
 
 
+def running_slot_terminals(
+    snapshot: dict[str, Any], requests: list[dict[str, Any]]
+) -> list[str]:
+    terminals = snapshot.get("terminals")
+    if not isinstance(terminals, dict):
+        return []
+    busy: list[str] = []
+    for request in requests:
+        ticket = str(request.get("ticket") or "")
+        slot = str(request.get("slot") or "developer")
+        for entry in terminals.values():
+            if (
+                isinstance(entry, dict)
+                and entry.get("ticket") == ticket
+                and entry.get("slot") == slot
+                and entry.get("status") == "running"
+            ):
+                busy.append(f"#{ticket}/{slot}")
+                break
+    return busy
+
+
 async def apply_requests(
     send: Send,
     snapshot: dict[str, Any],
@@ -277,6 +302,12 @@ async def apply_requests(
     was_running = snapshot.get("execution") == "running"
     if was_running and not restart:
         raise running_error()
+    busy = running_slot_terminals(snapshot, requests)
+    if busy:
+        raise ValueError(
+            "Stop the interactive slot terminal before changing its assignment: "
+            + ", ".join(busy)
+        )
     applied: list[int] = []
     failure: Exception | None = None
     play_failure: Exception | None = None

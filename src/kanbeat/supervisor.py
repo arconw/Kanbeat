@@ -54,6 +54,11 @@ MAX_INPUT = 1024 * 1024
 HARNESS_NAMES = ("codex", "claude", "opencode", "pi")
 
 
+def is_reviewer_slot(value: str) -> bool:
+    digits = value[9:] if value.startswith("reviewer-") else ""
+    return bool(digits) and digits.isascii() and digits.isdigit() and digits[0] != "0"
+
+
 def whole_number(value: Any, name: str, low: int, high: int) -> int:
     if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
         raise ValueError(f"{name} must be a whole number")
@@ -1430,10 +1435,10 @@ class Supervisor:
             config = request.get("values")
             if not isinstance(config, dict):
                 raise ValueError("Assignment must be object")
-            if slot != "developer" and not (
-                slot.startswith("reviewer-") and slot[9:].isdigit()
-            ):
-                raise ValueError("Invalid reviewer slot identifier")
+            if slot != "developer" and not is_reviewer_slot(slot):
+                raise ValueError(
+                    "Invalid reviewer slot identifier. Use developer or reviewer-N"
+                )
             if "harness" in config:
                 harness = str(config["harness"])
                 if harness and harness not in HARNESS_NAMES:
