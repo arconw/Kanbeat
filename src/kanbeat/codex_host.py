@@ -853,6 +853,7 @@ class CodexAppServerHost:
         *,
         model: str | None = None,
         effort: str | None = None,
+        client_user_message_id: str | None = None,
     ) -> dict[str, Any]:
         if not text or len(text) > 8 * 1024 * 1024:
             raise CodexHostError("Invalid Codex turn input")
@@ -860,6 +861,15 @@ class CodexAppServerHost:
             "threadId": validate_thread_id(thread_id),
             "input": [{"type": "text", "text": text}],
         }
+        if client_user_message_id is not None:
+            if (
+                not isinstance(client_user_message_id, str)
+                or not client_user_message_id
+                or len(client_user_message_id) > MAX_VALUE_CHARS
+                or CONTROL.search(client_user_message_id)
+            ):
+                raise CodexHostError("Invalid Codex client message id")
+            params["clientUserMessageId"] = client_user_message_id
         if model is not None:
             params["model"] = model
         if effort is not None:

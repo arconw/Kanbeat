@@ -13,6 +13,12 @@ from .codex_host import CodexHostError, CodexRpcError, thread_missing
 from .native import available, process_identity
 from .native_settings import cli_args
 from .opencode_host import OpenCodeHostError, OpenCodeHttpError, OpenCodeModel
+from .session_switch import (
+    native_sessions,
+    remove_contexts,
+    set_native_session,
+    switch_harness,
+)
 from .state import LocalState
 from .terminals import SHELL_HARNESS, Terminals, framed_prompt
 
@@ -494,8 +500,32 @@ class SessionGroups:
         return argv + ([prompt] if prompt else []), None
 
     async def delete_native(self, entry: dict[str, Any]) -> None:
-        session_id = entry.get("native_session")
-        harness = entry.get("harness")
+        targets: list[tuple[str, str]] = []
+        for harness, row in native_sessions(entry).items():
+            session_id = row.get("id")
+            if isinstance(session_id, str) and session_id:
+                targets.append((harness, session_id))
+        current = entry.get("native_session")
+        current_harness = entry.get("harness")
+        if (
+            isinstance(current, str)
+            and current
+            and current_harness in ("codex", "claude", "opencode", "pi")
+            and (current_harness, current) not in targets
+        ):
+            targets.append((current_harness, current))
+        if not targets:
+            raise ValueError("No native session is recorded; nothing to delete")
+        errors: list[str] = []
+        for harness, session_id in targets:
+            try:
+                await self._delete_native_session(harness, session_id)
+            except ValueError as error:
+                errors.append(str(error))
+        if errors:
+            raise ValueError("; ".join(errors))
+
+    async def _delete_native_session(self, harness: str, session_id: str) -> None:
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("No native session is recorded; nothing to delete")
         try:
@@ -670,6 +700,8 @@ class SessionGroups:
                 self.terminals.entries[terminal_id]["native_assigned"] = True
                 self.state.save()
             return {"terminal": terminal_id}
+        elif op == "session_switch_harness":
+            result = await switch_harness(self, request)
         elif op in ("session_update", "session_restart", "session_delete"):
             terminal_id = str(request.get("terminal") or "")
             entry = self.custom(terminal_id)
@@ -689,6 +721,12 @@ class SessionGroups:
                         )
                     entry["native_session"] = native
                     entry.pop("native_assigned", None)
+                    if native is None:
+                        rows = native_sessions(entry)
+                        rows.pop(entry.get("harness"), None)
+                        entry["native_sessions"] = rows
+                    else:
+                        set_native_session(entry, entry["harness"], native)
                 entry.update(title=title, group=group_id)
             elif op == "session_restart":
                 self.inactive(entry)
@@ -740,6 +778,7 @@ class SessionGroups:
                         self.claude_runtime.remove_events(events_id)
                 if request.get("native") is True:
                     await self.delete_native(entry)
+                remove_contexts(self.state, terminal_id)
                 session = self.terminals.sessions.pop(terminal_id, None)
                 if session is not None:
                     session.close()
