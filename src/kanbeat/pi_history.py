@@ -45,6 +45,7 @@ UNSUPPORTED_BRANCH_SUMMARIES = "branch summaries"
 UNSUPPORTED_CONTEXT_EDITS = "context edits"
 UNSUPPORTED_CUSTOM_MESSAGES = "custom messages"
 UNSUPPORTED_TRUNCATED_OUTPUT = "truncated bash output"
+UNSUPPORTED_EXCLUDED_BASH = "excluded bash output"
 UNSUPPORTED_UNKNOWN = "unknown content"
 
 BOOKKEEPING_ENTRY_TYPES = frozenset(
@@ -534,6 +535,9 @@ def _message_drafts(
             return [], malformed
         return [_EventDraft(ROLE_TOOL_RESULT, text, tool_name)], malformed
     if role == ROLE_BASH_EXECUTION:
+        if message.get("excludeFromContext") is True:
+            _add_unsupported(unsupported, UNSUPPORTED_EXCLUDED_BASH)
+            return [], False
         if message.get("truncated") is True:
             _add_unsupported(unsupported, UNSUPPORTED_TRUNCATED_OUTPUT)
         text = _bash_text(message)

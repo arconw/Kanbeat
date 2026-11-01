@@ -315,6 +315,41 @@ def test_bash_execution_bookkeeping_and_unknown_entries_are_explicit(tmp_path):
     assert set(result.unsupported) == {"truncated bash output", "unknown content"}
 
 
+def test_bash_execution_excluded_from_context_is_not_exported(tmp_path):
+    records = [
+        header(),
+        message("user-one", None, {"role": "user", "content": "Run the fixture"}),
+        message(
+            "bash-excluded",
+            "user-one",
+            {
+                "role": "bashExecution",
+                "command": "cat fixture",
+                "output": "PRIVATE_EXCLUDED_OUTPUT",
+                "excludeFromContext": True,
+            },
+        ),
+        message(
+            "bash-visible",
+            "bash-excluded",
+            {
+                "role": "bashExecution",
+                "command": "pwd",
+                "output": "/fixture",
+                "excludeFromContext": False,
+            },
+        ),
+    ]
+    sessions, _ = session_file(tmp_path, records)
+
+    result = pi_history.read_pi_history(SESSION, sessions_dir=sessions)
+
+    assert result.available and result.complete
+    assert [event.event_id for event in result.events] == ["user-one", "bash-visible"]
+    assert "PRIVATE_EXCLUDED_OUTPUT" not in repr(result.events)
+    assert result.unsupported == ("excluded bash output",)
+
+
 def test_a_session_header_after_the_first_record_is_not_a_match(tmp_path):
     records = [
         message("user-one", None, {"role": "user", "content": "Fixture question"}),
