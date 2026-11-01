@@ -458,45 +458,70 @@ async def _target_present(groups: Any, harness: str, session_id: str) -> bool:
     raise ValueError("Unsupported harness: " + str(harness))
 
 
+def _cannot_check_native_writer(harness: str, source: str, detail: str) -> ValueError:
+    return ValueError(
+        f"Could not check whether the {harness} native session is running: "
+        f"{detail}. The source {source} session stays active; retry the switch "
+        f"when the {harness} host is reachable"
+    )
+
+
 async def _ensure_no_native_writer(
-    groups: Any, rows: dict[str, dict[str, Any]]
+    groups: Any, rows: dict[str, dict[str, Any]], source: str
 ) -> None:
     codex_ids = [
         row["id"]
         for harness, row in rows.items()
         if harness == "codex" and isinstance(row.get("id"), str) and row["id"]
     ]
-    if codex_ids and groups.codex_host is not None:
+    if codex_ids:
+        if groups.codex_host is None:
+            raise _cannot_check_native_writer(
+                "Codex", source, "the Codex host provider is unavailable"
+            )
         try:
             host = await groups.codex_host()
-            read_thread = getattr(host, "read_thread", None)
         except (
             CodexHostError,
             OSError,
             asyncio.TimeoutError,
             AttributeError,
             TypeError,
-        ):
-            read_thread = None
-        if read_thread is not None:
-            for session_id in codex_ids:
-                try:
-                    metadata = await read_thread(session_id)
-                except (
-                    CodexRpcError,
-                    CodexHostError,
-                    OSError,
-                    asyncio.TimeoutError,
-                    ValueError,
-                ):
+            ValueError,
+        ) as error:
+            raise _cannot_check_native_writer(
+                "Codex", source, _error_text(error)
+            ) from error
+        read_thread = getattr(host, "read_thread", None)
+        if read_thread is None:
+            raise _cannot_check_native_writer(
+                "Codex", source, "the Codex host has no thread reader"
+            )
+        for session_id in codex_ids:
+            try:
+                metadata = await read_thread(session_id)
+            except CodexRpcError as error:
+                if thread_missing(error):
                     continue
-                if getattr(metadata, "status", None) == "active":
-                    raise ValueError(
-                        "A Codex native session is still running; wait for it to "
-                        "finish before switching harnesses"
-                    )
-    if groups.opencode_host is None:
-        return
+                raise _cannot_check_native_writer(
+                    "Codex", source, _error_text(error)
+                ) from error
+            except (
+                CodexHostError,
+                OSError,
+                asyncio.TimeoutError,
+                AttributeError,
+                TypeError,
+                ValueError,
+            ) as error:
+                raise _cannot_check_native_writer(
+                    "Codex", source, _error_text(error)
+                ) from error
+            if getattr(metadata, "status", None) == "active":
+                raise ValueError(
+                    "A Codex native session is still running; wait for it to "
+                    "finish before switching harnesses"
+                )
     identifiers = [
         row["id"]
         for harness, row in rows.items()
@@ -504,6 +529,10 @@ async def _ensure_no_native_writer(
     ]
     if not identifiers:
         return
+    if groups.opencode_host is None:
+        raise _cannot_check_native_writer(
+            "OpenCode", source, "the OpenCode host provider is unavailable"
+        )
     try:
         host = await groups.opencode_host()
         statuses = await host.statuses()
@@ -513,21 +542,28 @@ async def _ensure_no_native_writer(
         asyncio.TimeoutError,
         AttributeError,
         TypeError,
-    ):
-        return
+        ValueError,
+    ) as error:
+        raise _cannot_check_native_writer(
+            "OpenCode", source, _error_text(error)
+        ) from error
     if not isinstance(statuses, dict):
-        return
-    running = [
-        session_id
-        for session_id in identifiers
-        if session_id in statuses
-        and getattr(statuses[session_id], "status", "idle") != "idle"
-    ]
-    if running:
-        raise ValueError(
-            "An OpenCode native session is still running; stop it before "
-            "switching harnesses"
+        raise _cannot_check_native_writer(
+            "OpenCode", source, "the status response was malformed"
         )
+    for session_id in identifiers:
+        if session_id not in statuses:
+            continue
+        status = getattr(statuses[session_id], "status", None)
+        if not isinstance(status, str) or not status:
+            raise _cannot_check_native_writer(
+                "OpenCode", source, "the session status was malformed"
+            )
+        if status != "idle":
+            raise ValueError(
+                "An OpenCode native session is still running; stop it before "
+                "switching harnesses"
+            )
 
 
 def _assign_ordinals(
@@ -766,7 +802,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     ledger = _ledger(entry)
     _sweep_contexts(groups.state, terminal_id, ledger)
 
-    await _ensure_no_native_writer(groups, rows)
+    await _ensure_no_native_writer(groups, rows, str(source))
 
     target_row = rows.get(target)
     target_id = target_row.get("id") if isinstance(target_row, dict) else None
@@ -1158,6 +1194,15 @@ async def _deliver_pi(
     return _Delivery(event.event_id or str(plan.import_id), context_path)
 
 
+async def _terminate_delivery_process(
+    process: asyncio.subprocess.Process,
+) -> None:
+    with suppress(ProcessLookupError):
+        process.kill()
+    with suppress(ProcessLookupError):
+        await process.wait()
+
+
 async def _one_shot(
     argv: list[str],
     cwd: Path,
@@ -1177,11 +1222,11 @@ async def _one_shot(
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), DELIVERY_TIMEOUT)
     except asyncio.TimeoutError:
-        with suppress(ProcessLookupError):
-            process.kill()
-        with suppress(BaseException):
-            await process.wait()
+        await _terminate_delivery_process(process)
         return None, "the harness did not finish before the delivery timeout"
+    except asyncio.CancelledError:
+        await _terminate_delivery_process(process)
+        raise
     text = (stderr + stdout).decode("utf-8", "replace")
     return process.returncode, " ".join(text.split())[-ERROR_TAIL:]
 
