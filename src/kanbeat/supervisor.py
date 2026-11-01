@@ -37,6 +37,7 @@ from .events import EventLog
 from .hooks import HookSubscriber
 from .terminals import Terminals
 from .session_groups import SessionGroups
+from .session_switch import SessionSwitchRefused
 from .terminal_control import terminal_request
 from .launcher import app_command, external_environment, internal_environment
 from .host_process import HostError, RuntimeIdentity, stop_recorded
@@ -1511,6 +1512,8 @@ class Supervisor:
             # Only local Unix socket clients can connect.
             result = await self.dispatch(req)
             payload = {"ok": True, "result": result}
+        except SessionSwitchRefused as exc:
+            payload = {"ok": False, "error": str(exc), "details": exc.to_dict()}
         except (
             ValueError,
             OSError,
@@ -1589,7 +1592,10 @@ async def request(
             raise RuntimeError("Supervisor disconnected")
         response = json.loads(data)
         if not response.get("ok"):
-            raise RuntimeError(str(response.get("error")))
+            error = RuntimeError(str(response.get("error")))
+            if isinstance(response.get("details"), dict):
+                error.details = response["details"]
+            raise error
         return response["result"]
     finally:
         writer.close()

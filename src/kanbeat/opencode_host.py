@@ -22,6 +22,7 @@ from .host_process import (
 )
 
 SESSION_ID = re.compile(r"^ses_[A-Za-z0-9]{1,100}$")
+MESSAGE_ID = re.compile(r"^msg[A-Za-z0-9]{1,100}$")
 LISTENING = re.compile(rb"listening on (http://127\.0\.0\.1:([0-9]{1,5}))\s")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 USERNAME = "opencode"
@@ -61,6 +62,12 @@ def validate_prompt(prompt: str) -> None:
 def validate_session_id(value: Any) -> str:
     if not isinstance(value, str) or not SESSION_ID.match(value):
         raise OpenCodeHostError("Invalid OpenCode session id")
+    return value
+
+
+def validate_message_id(value: Any) -> str:
+    if not isinstance(value, str) or not MESSAGE_ID.match(value):
+        raise OpenCodeHostError("Invalid OpenCode message id")
     return value
 
 
@@ -458,6 +465,34 @@ class OpenCodeServeHost:
 
     async def abort(self, session_id: str) -> None:
         await self._call("POST", f"/session/{validate_session_id(session_id)}/abort")
+
+    async def send_message(
+        self,
+        session_id: str,
+        *,
+        message_id: str,
+        text: str,
+        system: str | None = None,
+        no_reply: bool = True,
+    ) -> dict[str, Any]:
+        if not isinstance(text, str) or not text or "\x00" in text:
+            raise OpenCodeHostError("Invalid OpenCode message text")
+        body: dict[str, Any] = {
+            "messageID": validate_message_id(message_id),
+            "parts": [{"type": "text", "text": text}],
+        }
+        if system is not None:
+            if not isinstance(system, str) or "\x00" in system:
+                raise OpenCodeHostError("Invalid OpenCode system note")
+            body["system"] = system
+        if no_reply:
+            body["noReply"] = True
+        payload = await self._call(
+            "POST", f"/session/{validate_session_id(session_id)}/message", body
+        )
+        if not isinstance(payload, dict):
+            raise OpenCodeHostError("OpenCode message response is malformed")
+        return payload
 
     async def _call(
         self,
