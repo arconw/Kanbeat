@@ -15,6 +15,16 @@ from typing import Any
 
 COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed", "archive")
 ACTIVE = ("progress", "review")
+COLUMN_LABELS = {
+    "backlog": "Backlog",
+    "todo": "Todo",
+    "progress": "Progress",
+    "review": "Review",
+    "done": "Done",
+    "failed": "Failed",
+    "archive": "Archive",
+}
+ASSIGNMENT_LOCKED_COLUMNS = ACTIVE
 FILENAME = re.compile(
     r"^(?P<id>\d{3,})-(?P<slug>(?!\d+-)[a-z0-9]+(?:-[a-z0-9]+)*)\.md$"
 )
@@ -79,11 +89,13 @@ files and the `kanbeat` command. Run the command from the project directory.
 - `kanbeat reviewers add TICKET --harness NAME` picks the next free
   `reviewer-N` and prints it. `kanbeat reviewers remove TICKET reviewer-N`
   removes one; removing the last makes the ticket go straight to Done.
-- Slot changes are refused while the board runs, unless `--restart` is given,
-  and while that slot's interactive terminal runs. Stop with `kanbeat stop`,
-  apply the change, and start again with `kanbeat play`; `--restart` stops and
-  plays again only if the board was running, and workers resume from their
-  native sessions. Slot changes are not recorded in the settings history.
+- Slot changes are allowed while the board runs for tickets in `backlog/`,
+  `todo/`, `done/`, `failed/` and `archive/`. For a ticket in `progress/` or
+  `review/` the board must be stopped: stop with `kanbeat stop`, apply the
+  change, and start again with `kanbeat play`; or pass `--restart`, which stops
+  and plays again only if the board was running, and workers resume from their
+  native sessions. A change is also refused while that slot's interactive
+  terminal runs. Slot changes are not recorded in the settings history.
 - Queue work by moving a ticket from `backlog/` to `todo/` (`mv`, or
   `kanbeat move 004 todo`). While the board is running Kanbeat moves it on
   through `progress/`, `review/` and `done/` itself. Do not move a ticket that
@@ -116,6 +128,7 @@ LEGACY_INSTRUCTION_HASHES = frozenset(
         "cca0e0df29cef497c96fce72141ccba86438f8c902f8d433b74383d510167584",
         "a101523d49b881ab841947b74e4de997bb98d93e1978acd7aafb44a1061713a2",
         "a71c706fecbfbd748e9e6bd120abc3af9873e8e98fc692f4d74d510b533ce54d",
+        "0fee5c9f9e2bf94972847ba0200b183695859a02876c964a3734f9d8a7359a04",
     }
 )
 
@@ -142,6 +155,18 @@ INLINE_REF = re.compile(r"(?<![\w.])#(\d+)(?!\w)(?!\.\d)")
 
 def ticket_ref(text: str) -> str:
     return str(int(text)).zfill(3)
+
+
+def assignment_change_blocked(column: str, execution: str) -> bool:
+    return execution == "running" and column in ASSIGNMENT_LOCKED_COLUMNS
+
+
+def assignment_change_refusal(ticket_id: str, column: str) -> str:
+    label = COLUMN_LABELS.get(column, column.title())
+    return (
+        f"Ticket {ticket_id} is in {label}; stop the board with kanbeat stop "
+        "to change its workers, then start it with kanbeat play"
+    )
 
 
 def blocker_ids(body: str) -> list[str]:

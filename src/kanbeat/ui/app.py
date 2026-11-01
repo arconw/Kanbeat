@@ -19,6 +19,7 @@ from textual.widgets import Button, Input, Markdown, Select, Static, TextArea
 from textual.css.query import NoMatches
 
 from ..diff import SOURCES, Changes, collect
+from ..filesystem import assignment_change_blocked, assignment_change_refusal
 from ..supervisor import request
 from .diff import DiffView, summary_markup, summary_tooltip
 from .terminal import TerminalDisplay, TerminalPane, TerminalView
@@ -41,6 +42,14 @@ COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed")
 FREE_STEPS = {("backlog", "todo"), ("todo", "backlog")}
 RPC_TIMEOUT = 10.0
 SWITCH_RPC_TIMEOUT = 360.0
+
+
+def slot_change_refusal(ticket: dict[str, Any], snapshot: dict[str, Any]) -> str | None:
+    column = str(ticket.get("column") or "")
+    execution = str(snapshot.get("execution") or "")
+    if assignment_change_blocked(column, execution):
+        return assignment_change_refusal(str(ticket.get("id") or ""), column)
+    return None
 
 
 class Confirm(BackdropModal[bool]):
@@ -127,6 +136,7 @@ class TicketView(BackdropModal[None]):
 
     def compose(self) -> ComposeResult:
         state = self.ticket.get("state") or {}
+        refusal = slot_change_refusal(self.ticket, self.app.snapshot)
         with Vertical(classes="full"):
             with Horizontal(classes="modal-header"):
                 yield Static(
@@ -151,7 +161,12 @@ class TicketView(BackdropModal[None]):
                 yield Static("HARNESS SLOTS", classes="section-title")
                 with Horizontal(classes="slot-row"):
                     yield Static("Developer", classes="slot-name")
-                    yield Button("Configure", id="dev-config")
+                    yield Button(
+                        "Configure",
+                        id="dev-config",
+                        disabled=bool(refusal),
+                        tooltip=refusal,
+                    )
                     yield Button(
                         "Terminal",
                         id="dev-terminal",
@@ -170,7 +185,12 @@ class TicketView(BackdropModal[None]):
                     sid = slot.get("id", "reviewer")
                     with Horizontal(classes="slot-row"):
                         yield Static(sid, classes="slot-name")
-                        yield Button("Configure", id="conf-" + sid)
+                        yield Button(
+                            "Configure",
+                            id="conf-" + sid,
+                            disabled=bool(refusal),
+                            tooltip=refusal,
+                        )
                         yield Button(
                             "Terminal",
                             id="terminal-" + sid,
@@ -180,13 +200,23 @@ class TicketView(BackdropModal[None]):
                             ),
                         )
                         yield Button("Logs", id="log-" + sid)
-                        yield Button("Remove", id="remove-" + sid)
+                        yield Button(
+                            "Remove",
+                            id="remove-" + sid,
+                            disabled=bool(refusal),
+                            tooltip=refusal,
+                        )
                         yield Static(
                             self.runtime_label(state, sid),
                             classes=self.status_classes(state, sid),
                             id="runtime-" + sid,
                         )
-                yield Button("+ Reviewer", id="add-reviewer")
+                yield Button(
+                    "+ Reviewer",
+                    id="add-reviewer",
+                    disabled=bool(refusal),
+                    tooltip=refusal,
+                )
                 yield Static(
                     "OpenCode, Codex and Claude sessions reattach live. Pi requires Board Stop.",
                     classes="hint",
@@ -195,6 +225,18 @@ class TicketView(BackdropModal[None]):
                 "Ticket Markdown is read-only here. Edit its .md file in your editor.",
                 classes="hint",
             )
+
+    def update_assignment_controls(self, ticket: dict[str, Any]) -> None:
+        refusal = slot_change_refusal(ticket, self.app.snapshot)
+        ids = ["dev-config", "add-reviewer"]
+        for slot in (ticket.get("state") or {}).get("reviewers") or []:
+            ids.extend(["conf-" + slot["id"], "remove-" + slot["id"]])
+        for button_id in ids:
+            button = self.query("#" + button_id)
+            if button:
+                widget = button.first(Button)
+                widget.disabled = bool(refusal)
+                widget.tooltip = refusal
 
     def on_mount(self) -> None:
         self.set_interval(1.5, self.refresh_ticket)
@@ -254,6 +296,7 @@ class TicketView(BackdropModal[None]):
                 button.first(Button).disabled = running and (
                     live_session(latest, slot["id"]) is None
                 )
+        self.update_assignment_controls(latest)
         self.ticket = latest
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -312,6 +355,7 @@ class Assignment(BackdropModal[None]):
 
     def compose(self) -> ComposeResult:
         state = self.ticket.get("state") or {}
+        refusal = slot_change_refusal(self.ticket, self.app.snapshot)
         value = (
             state.get("developer", {})
             if self.slot == "developer"
@@ -349,7 +393,23 @@ class Assignment(BackdropModal[None]):
                         and live_session(self.ticket, self.slot) is None
                     ),
                 )
-                yield Button("Save", id="save", variant="primary")
+                yield Button(
+                    "Save",
+                    id="save",
+                    variant="primary",
+                    disabled=bool(refusal),
+                    tooltip=refusal,
+                )
+
+    def on_mount(self) -> None:
+        self.set_interval(1.5, self.refresh_rule)
+
+    def refresh_rule(self) -> None:
+        latest = self.app.find_ticket(self.ticket["id"]) or self.ticket
+        refusal = slot_change_refusal(latest, self.app.snapshot)
+        button = self.query_one("#save", Button)
+        button.disabled = bool(refusal)
+        button.tooltip = refusal
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         name = event.button.id
@@ -380,6 +440,11 @@ class Assignment(BackdropModal[None]):
         elif name == "open-harness":
             await self.app.open_harness_config(self.query_one("#harness", Select).value)
         elif name == "save":
+            latest = self.app.find_ticket(self.ticket["id"]) or self.ticket
+            refusal = slot_change_refusal(latest, self.app.snapshot)
+            if refusal:
+                self.app.notify(refusal, severity="error")
+                return
             harness = self.query_one("#harness", Select).value
             cp = self.query_one("#cp", TextArea).text
             ok = await self.app.execute(
