@@ -26,7 +26,7 @@ from .claude_history import read_claude_history
 from .claude_runtime import session_missing
 from .codex_history import read_codex_history
 from .codex_host import CodexHostError, CodexRpcError, thread_missing
-from .config_keys import HARNESSES
+from .config_keys import HARNESSES, HARNESS_LABELS
 from .native import available
 from .native_settings import cli_args
 from .opencode_history import read_opencode_history
@@ -408,6 +408,10 @@ def _progress(groups: Any, message: str, level: str = "information") -> None:
     report = getattr(groups, "progress", None)
     if callable(report):
         report(message, level)
+
+
+def _harness_label(harness: Any) -> str:
+    return HARNESS_LABELS.get(harness, str(harness))
 
 
 async def _target_present(groups: Any, harness: str, session_id: str) -> bool:
@@ -982,7 +986,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     _store_ledger(entry, ledger)
     groups.state.save()
 
-    _progress(groups, f"Delivering the conversation to {target}")
+    _progress(groups, f"Delivering the conversation to {_harness_label(target)}")
     try:
         delivery = await _deliver(
             groups, str(target), target_id, plan, context_path, created

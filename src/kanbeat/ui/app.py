@@ -539,6 +539,7 @@ class KanbeatApp(App[None], inherit_bindings=False):
         self._initial_snapshot = True
         self._pulse_bright = False
         self.embedded_terminal: str | None = None
+        self._pending_switches: set[str] = set()
         self.changes: Changes | None = None
         self._diff_signature = ""
         self._diff_updating = False

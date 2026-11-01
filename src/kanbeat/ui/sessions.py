@@ -23,6 +23,10 @@ TERMINAL_MIN_WIDTH = 60
 SHELL = "shell"
 SWITCH_BLOCKED_STATES = ("starting", "running", "stopping", "recovery_blocked")
 SWITCH_EXCLUDED_ROLES = ("config", "hook")
+SWITCH_TIMEOUT_MESSAGE = (
+    "The harness switch timed out, so its outcome is unknown. Check the session "
+    "card before retrying; the supervisor may still be switching."
+)
 
 
 def switch_eligible(entry: dict[str, Any]) -> bool:
@@ -38,9 +42,26 @@ def switch_locked(entry: dict[str, Any]) -> bool:
 
 
 def switch_tooltip(entry: dict[str, Any]) -> str:
-    if entry.get("status") in ("starting", "running"):
+    status = entry.get("status")
+    if status in ("starting", "running"):
         return "Stop the session before switching its harness."
+    if status == "recovery_blocked":
+        return "Resolve orphan recovery before switching its harness."
     return "Wait until the session has stopped before switching its harness."
+
+
+def switch_failure_message(error: BaseException) -> str:
+    text = " ".join(str(error).split())
+    for marker in (" The source ", " The active session "):
+        index = text.find(marker)
+        if index < 0:
+            continue
+        head = text[:index]
+        colon = head.rfind(": ")
+        if colon >= 0:
+            text = head[:colon] + "." + text[index:]
+        break
+    return text
 
 
 def harness_name(value: Any) -> str:
@@ -338,6 +359,21 @@ class SessionEdit(BackdropModal[None]):
         super().__init__()
         self.entry = entry
         self.saving = False
+        self.finishing = False
+
+    def dismiss(self, result: Any = None) -> Any:
+        if self.saving and not self.finishing:
+            self.app.notify(
+                "Wait for the harness switch to finish.",
+                severity="warning",
+                markup=False,
+            )
+            return None
+        return super().dismiss(result)
+
+    def finish(self) -> None:
+        self.finishing = True
+        self.dismiss(None)
 
     def compose(self) -> ComposeResult:
         eligible = switch_eligible(self.entry)
@@ -420,14 +456,17 @@ class SessionEdit(BackdropModal[None]):
         if self.saving:
             return
         self.saving = True
-        button = self.query_one("#session-save", Button)
-        button.disabled = True
+        save_button = self.query_one("#session-save", Button)
+        cancel_button = self.query_one("#cancel", Button)
+        save_button.disabled = True
+        cancel_button.disabled = True
         try:
             await self._save_changes()
         finally:
             self.saving = False
-            if self.is_mounted:
-                self.query_one("#session-save", Button).disabled = False
+            for button in (save_button, cancel_button):
+                if button.is_mounted:
+                    button.disabled = False
 
     async def _save_changes(self) -> None:
         title, group, native = self.field_values()
@@ -461,7 +500,7 @@ class SessionEdit(BackdropModal[None]):
             if source != SHELL:
                 self.entry["native_session"] = native or None
         if not switching:
-            self.dismiss(None)
+            self.finish()
             return
         await self.switch_to(str(target))
 
@@ -471,10 +510,36 @@ class SessionEdit(BackdropModal[None]):
             "terminal": self.entry["id"],
             "harness": target,
         }
+        identifier = self.entry["id"]
+        pending = getattr(self.app, "_pending_switches", None)
+        if isinstance(pending, set) and identifier in pending:
+            self.app.notify(
+                "A harness switch is already in progress for this session.",
+                severity="warning",
+                markup=False,
+            )
+            return
+        if isinstance(pending, set):
+            pending.add(identifier)
+        try:
+            await self._switch_loop(request, target)
+        finally:
+            if isinstance(pending, set):
+                pending.discard(identifier)
+
+    async def _switch_loop(self, request: dict[str, Any], target: str) -> None:
         while True:
             try:
                 result = await self.app.rpc(dict(request))
             except (RuntimeError, ValueError, OSError) as exc:
+                if isinstance(exc, TimeoutError):
+                    self.app.notify(
+                        SWITCH_TIMEOUT_MESSAGE,
+                        severity="error",
+                        timeout=10,
+                        markup=False,
+                    )
+                    return
                 details = getattr(exc, "details", None)
                 reason = details.get("reason") if isinstance(details, dict) else None
                 if reason == "transfer_too_large":
@@ -495,7 +560,12 @@ class SessionEdit(BackdropModal[None]):
                         return
                     request["fresh_session"] = True
                     continue
-                self.app.notify(str(exc), severity="error", timeout=10, markup=False)
+                self.app.notify(
+                    switch_failure_message(exc),
+                    severity="error",
+                    timeout=10,
+                    markup=False,
+                )
                 return
             await self.app.refresh_snapshot(force=True)
             self.app.notify(
@@ -504,7 +574,7 @@ class SessionEdit(BackdropModal[None]):
                 markup=False,
             )
             if self.is_mounted:
-                self.dismiss(None)
+                self.finish()
             return
 
     def large_transfer_choice(

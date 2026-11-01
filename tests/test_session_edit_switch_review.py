@@ -509,7 +509,7 @@ async def test_the_switch_reports_its_stages_before_the_done_notice(
     assert [message for message, _ in groups.messages] == [
         "Reading conversation history",
         "Preparing the target session",
-        "Delivering the conversation to pi",
+        "Delivering the conversation to Pi",
     ]
     assert result["delivered"] == 1
 

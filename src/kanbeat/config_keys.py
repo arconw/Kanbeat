@@ -3,6 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 HARNESSES = ("codex", "claude", "opencode", "pi")
+HARNESS_LABELS = {
+    "codex": "Codex",
+    "claude": "Claude Code",
+    "opencode": "OpenCode",
+    "pi": "Pi",
+}
 TEXT_LIMIT = 20000
 TEXT_LIMITS = {"transition_hook.prompt": 8000}
 BYTE_LIMITS = {"transition_hook.prompt": 12000}
