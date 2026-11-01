@@ -278,9 +278,7 @@ async def terminal_request(
             text = request.get("text")
             if not isinstance(text, str):
                 raise ValueError("Paste must be text")
-            accepted = supervisor.pastes.chunk(
-                terminal, paste_id, text, client, now
-            )
+            accepted = supervisor.pastes.chunk(terminal, paste_id, text, client, now)
         elif phase == "end":
             accepted = supervisor.pastes.end(terminal, paste_id, client, now)
         elif phase == "abort":

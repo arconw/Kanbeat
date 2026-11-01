@@ -63,10 +63,7 @@ class TerminalInput:
                 return
             if rejected_since is None:
                 rejected_since = asyncio.get_running_loop().time()
-            if (
-                not warned
-                and asyncio.get_running_loop().time() - rejected_since >= 1
-            ):
+            if not warned and asyncio.get_running_loop().time() - rejected_since >= 1:
                 self.report("Terminal is not accepting input; waiting for space")
                 warned = True
             await asyncio.sleep(backoff)
