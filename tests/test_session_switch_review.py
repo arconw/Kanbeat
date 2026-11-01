@@ -1,5 +1,8 @@
+import asyncio
 import json
+import os
 import stat
+import sys
 import uuid
 from types import SimpleNamespace
 
@@ -13,7 +16,12 @@ from kanbeat.opencode_host import (
     OpenCodeServeHost,
 )
 from kanbeat.session_groups import SessionGroups
-from kanbeat.session_switch import SessionSwitchRefused, switch_harness
+from kanbeat.session_switch import (
+    SessionSwitchRefused,
+    _ensure_no_native_writer,
+    _one_shot,
+    switch_harness,
+)
 from kanbeat.session_transfer import IMPORT_NOTE, find_import_markers
 
 THREAD = "01a18660-9ca4-71c0-ba25-81426f4ca65d"
@@ -1030,3 +1038,108 @@ async def test_codex_and_opencode_delivery_parameters_are_explicit():
             )
     with pytest.raises(OpenCodeHostError):
         await opencode.send_message("ses_abc", message_id="msgfixture", text="")
+
+
+async def wait_for_process_exit(pid, timeout=5.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+PID_SCRIPT = (
+    "import os, sys, time; "
+    "open(sys.argv[1], 'w').write(str(os.getpid())); "
+    "time.sleep(60)"
+)
+
+
+@pytest.mark.asyncio
+async def test_writer_guard_fails_closed_and_allows_a_missing_thread(tmp_path):
+    groups = FakeGroups(tmp_path)
+    groups.codex.threads[THREAD] = []
+
+    async def unreadable(thread_id):
+        raise CodexHostError("Codex app-server is unreachable")
+
+    groups.codex.read_thread = unreadable
+    with pytest.raises(ValueError, match="Could not check whether the Codex"):
+        await _ensure_no_native_writer(
+            groups, {"codex": {"id": THREAD, "status": "available"}}, "opencode"
+        )
+
+    groups.codex_host = None
+    with pytest.raises(ValueError, match="Codex host provider is unavailable"):
+        await _ensure_no_native_writer(
+            groups, {"codex": {"id": THREAD, "status": "available"}}, "opencode"
+        )
+
+    groups = FakeGroups(tmp_path)
+    await _ensure_no_native_writer(
+        groups, {"codex": {"id": thread_id(99), "status": "available"}}, "opencode"
+    )
+
+    groups.opencode.sessions["ses_busy"] = True
+    groups.opencode.messages["ses_busy"] = []
+    rows = {"opencode": {"id": "ses_busy", "status": "available"}}
+    await _ensure_no_native_writer(groups, rows, "codex")
+
+    async def malformed():
+        return []
+
+    groups.opencode.statuses = malformed
+    with pytest.raises(ValueError, match="status response was malformed"):
+        await _ensure_no_native_writer(groups, rows, "codex")
+
+    async def unreadable_status():
+        return {"ses_busy": SimpleNamespace(status="")}
+
+    groups.opencode.statuses = unreadable_status
+    with pytest.raises(ValueError, match="session status was malformed"):
+        await _ensure_no_native_writer(groups, rows, "codex")
+
+    async def unreachable_status():
+        raise OpenCodeHostError("OpenCode server unreachable")
+
+    groups.opencode.statuses = unreachable_status
+    with pytest.raises(ValueError, match="Could not check whether the OpenCode"):
+        await _ensure_no_native_writer(groups, rows, "codex")
+
+    groups.opencode_host = None
+    with pytest.raises(ValueError, match="OpenCode host provider is unavailable"):
+        await _ensure_no_native_writer(groups, rows, "codex")
+
+
+@pytest.mark.asyncio
+async def test_delivery_timeout_kills_and_reaps_the_child(tmp_path, monkeypatch):
+    pid_path = tmp_path / "pid"
+    monkeypatch.setattr("kanbeat.session_switch.DELIVERY_TIMEOUT", 0.2)
+    code, output = await _one_shot(
+        [sys.executable, "-c", PID_SCRIPT, str(pid_path)], tmp_path, None
+    )
+    assert code is None
+    assert "delivery timeout" in output
+    pid = int(pid_path.read_text())
+    assert await wait_for_process_exit(pid)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_delivery_kills_and_reaps_the_child(tmp_path):
+    pid_path = tmp_path / "pid"
+    task = asyncio.create_task(
+        _one_shot([sys.executable, "-c", PID_SCRIPT, str(pid_path)], tmp_path, None)
+    )
+    for _ in range(250):
+        if pid_path.exists() and pid_path.read_text():
+            break
+        await asyncio.sleep(0.02)
+    assert pid_path.exists()
+    pid = int(pid_path.read_text())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await wait_for_process_exit(pid)
