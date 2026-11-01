@@ -23,6 +23,7 @@ from kanbeat.ui.sessions import (
     switch_question,
     switch_result_message,
     switch_tooltip,
+    unsupported_summary,
 )
 
 
@@ -188,6 +189,33 @@ def test_done_message_reports_delivery_and_one_line_of_unsupported_categories():
     assert "\n" not in message
     empty = switch_result_message(entry(), "pi", {"delivered": 0, "unsupported": []})
     assert empty == "Switched Work to Pi; there was no new conversation."
+
+
+def test_protocol_part_names_are_summarized_for_the_notice():
+    message = switch_result_message(
+        entry(),
+        "opencode",
+        {
+            "delivered": 1,
+            "unsupported": [
+                "step-start",
+                "patch",
+                "reasoning",
+                "file",
+                "subtask",
+                "agent",
+            ],
+        },
+    )
+    assert message.endswith(
+        "Not transferred: attachments, harness bookkeeping, hidden reasoning, "
+        "sub-agent activity."
+    )
+    assert unsupported_summary(["images", "thinking", "images"]) == [
+        "images",
+        "thinking",
+    ]
+    assert unsupported_summary("step-start") == ["harness bookkeeping"]
 
 
 @pytest.mark.asyncio

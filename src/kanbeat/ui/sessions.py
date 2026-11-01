@@ -140,6 +140,36 @@ def switch_question(entry: dict[str, Any], target: str, title: str) -> str:
     )
 
 
+_UNSUPPORTED_SUMMARIES = {
+    "agent": "harness bookkeeping",
+    "compaction": "compaction summaries",
+    "context compaction": "compaction summaries",
+    "file": "attachments",
+    "ignored": "harness bookkeeping",
+    "patch": "harness bookkeeping",
+    "reasoning": "hidden reasoning",
+    "retry": "harness bookkeeping",
+    "snapshot": "harness bookkeeping",
+    "step-finish": "harness bookkeeping",
+    "step-start": "harness bookkeeping",
+    "subtask": "sub-agent activity",
+    "synthetic": "harness bookkeeping",
+    "unknown part": "unknown content",
+}
+
+
+def unsupported_summary(values: Any) -> list[str]:
+    """Summarize reader categories without exposing harness part names."""
+    if isinstance(values, str):
+        values = [values]
+    labels = set()
+    for value in values or []:
+        label = str(value).strip()
+        if label:
+            labels.add(_UNSUPPORTED_SUMMARIES.get(label, label))
+    return sorted(labels)
+
+
 def switch_result_message(
     entry: dict[str, Any], target: str, result: dict[str, Any]
 ) -> str:
@@ -154,9 +184,7 @@ def switch_result_message(
         )
     else:
         message = f"Switched {name} to {product}; there was no new conversation."
-    unsupported = sorted(
-        {str(item) for item in result.get("unsupported") or [] if str(item).strip()}
-    )
+    unsupported = unsupported_summary(result.get("unsupported"))
     if unsupported:
         message += " Not transferred: " + ", ".join(unsupported) + "."
     return message
@@ -652,13 +680,7 @@ class SessionEdit(BackdropModal[None]):
                     label += f" ({text})"
             options.append((label, {"reduction": reduction}))
         message = str(error)
-        unsupported = sorted(
-            {
-                str(item)
-                for item in details.get("unsupported") or []
-                if str(item).strip()
-            }
-        )
+        unsupported = unsupported_summary(details.get("unsupported"))
         if unsupported:
             message += (
                 "\nNot transferred from the source: " + ", ".join(unsupported) + "."
