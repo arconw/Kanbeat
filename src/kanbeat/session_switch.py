@@ -867,11 +867,14 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
             session_id = row.get("id")
             if not isinstance(session_id, str) or not session_id:
                 continue
+            if row.get("status") == MISSING:
+                continue
             read = await _read_history(groups, harness, session_id, ledger)
             if read.outcome == MISSING:
                 rows[harness] = {"id": session_id, "status": MISSING}
                 entry["native_sessions"] = rows
                 groups.state.save()
+                continue
             _require_complete(read, source=False)
             reads.append(read)
         source_read = await _read_history(groups, str(source), source_id, ledger)
