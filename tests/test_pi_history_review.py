@@ -435,6 +435,43 @@ def test_review_unsupported_categories_and_tool_labels(tmp_path):
     assert "PRIVATE_REVIEW_CUSTOM" not in repr(result.events)
 
 
+def test_review_bash_excluded_from_context_is_not_exported(tmp_path):
+    records = [
+        header(),
+        message("user-one", None, {"role": "user", "content": "Run the fixture"}),
+        message(
+            "bash-excluded",
+            "user-one",
+            {
+                "role": "bashExecution",
+                "command": "cat fixture",
+                "output": "PRIVATE_REVIEW_EXCLUDED",
+                "excludeFromContext": True,
+            },
+        ),
+        message(
+            "bash-visible",
+            "bash-excluded",
+            {
+                "role": "bashExecution",
+                "command": "pwd",
+                "output": "/fixture",
+                "excludeFromContext": False,
+            },
+        ),
+    ]
+    sessions, path = write_session(tmp_path, records)
+    before = path.read_bytes(), path.stat().st_mtime_ns
+
+    result = pi_history.read_pi_history(SESSION, sessions_dir=sessions)
+
+    assert result.available and result.complete
+    assert [event.event_id for event in result.events] == ["user-one", "bash-visible"]
+    assert "PRIVATE_REVIEW_EXCLUDED" not in repr(result.events)
+    assert result.unsupported == ("excluded bash output",)
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+
+
 def test_review_invalid_session_id_is_rejected(tmp_path):
     sessions, _ = write_session(tmp_path, [header()])
 
