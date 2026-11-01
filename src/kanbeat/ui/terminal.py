@@ -180,7 +180,6 @@ class TerminalDisplay(Monitor):
 WAIT_SECONDS = 5
 RETRY_SECONDS = 0.5
 MAX_RETRY_SECONDS = 8
-MAX_DISPLAY_RETRIES = 6
 LIVE_STATUSES = ("starting", "running", "stopping")
 ENDED_STATUSES = ("exited", "stopped", "failed", "interrupted")
 SELECTION_STYLE = Style(color="#ffffff", bgcolor="#2f5f9e", bold=True)
@@ -203,11 +202,9 @@ class TerminalSession:
         return text
 
     def show_heading(self, text: str) -> None:
-        if text == self.heading:
-            return
+        self.heading = text
         heading = self.part("#terminal-heading", Static)
         if heading is not None:
-            self.heading = text
             heading.update(self.heading_text(text))
 
     def reset_terminal(self, terminal_id: str | None) -> None:
@@ -276,7 +273,6 @@ class TerminalSession:
         failed = False
         retry = RETRY_SECONDS
         display_retry = RETRY_SECONDS
-        display_failures = 0
         try:
             while True:
                 try:
@@ -301,15 +297,11 @@ class TerminalSession:
                                 return
                             if not self.is_attached or self.terminal_id is None:
                                 return
-                            display_failures += 1
-                            if display_failures > MAX_DISPLAY_RETRIES:
-                                self.show_heading("TERMINAL DISPLAY UNAVAILABLE")
-                                return
+                            self.show_heading("TERMINAL DISPLAY UNAVAILABLE")
                             await asyncio.sleep(display_retry)
                             display_retry = min(display_retry * 2, MAX_RETRY_SECONDS)
                             continue
                     display_retry = RETRY_SECONDS
-                    display_failures = 0
                     if self.was_live and snapshot["status"] in ENDED_STATUSES:
                         self.detach_ended(snapshot)
                         return
