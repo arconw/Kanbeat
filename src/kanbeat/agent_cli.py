@@ -240,21 +240,68 @@ def ticket_index(
     return tickets
 
 
+def changed_text(applied: list[int], requests: list[dict[str, Any]]) -> str:
+    tickets = [str(requests[index].get("ticket", "")) for index in applied]
+    if not tickets:
+        return "No ticket was changed"
+    return "Changed " + ", ".join("#" + ticket for ticket in tickets)
+
+
+def with_applied(
+    error: Exception,
+    applied: list[int],
+    requests: list[dict[str, Any]],
+    play_error: Exception | None = None,
+    play_failed: bool = False,
+) -> Exception:
+    summary = changed_text(applied, requests)
+    if play_failed:
+        message = f"{summary}, but the board could not be played again: {error}"
+    else:
+        message = f"{summary} before the change was refused: {error}"
+        if play_error is not None:
+            message += f". The board could not be played again: {play_error}"
+    if isinstance(error, ValueError):
+        return ValueError(message)
+    if isinstance(error, RuntimeError):
+        return RuntimeError(message)
+    return error
+
+
 async def apply_requests(
     send: Send,
     snapshot: dict[str, Any],
     requests: list[dict[str, Any]],
     restart: bool,
-) -> None:
+) -> list[int]:
     was_running = snapshot.get("execution") == "running"
     if was_running and not restart:
         raise running_error()
+    applied: list[int] = []
+    failure: Exception | None = None
+    play_failure: Exception | None = None
     if was_running:
         await send({"op": "stop"})
-    for request in requests:
-        await send(request)
-    if was_running:
-        await send({"op": "play"})
+    try:
+        try:
+            for index, request in enumerate(requests):
+                await send(request)
+                applied.append(index)
+        except Exception as error:
+            failure = error
+    finally:
+        if was_running:
+            try:
+                await send({"op": "play"})
+            except Exception as error:
+                play_failure = error
+    if failure is not None:
+        raise with_applied(failure, applied, requests, play_failure) from failure
+    if play_failure is not None:
+        raise with_applied(
+            play_failure, applied, requests, play_failed=True
+        ) from play_failure
+    return applied
 
 
 def change_text(values: dict[str, str]) -> str:

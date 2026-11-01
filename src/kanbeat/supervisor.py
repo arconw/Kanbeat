@@ -1446,6 +1446,15 @@ class Supervisor:
                     "Stop the board with kanbeat stop before changing worker "
                     "assignments, then start it with kanbeat play"
                 )
+            if any(
+                e.get("ticket") == ticket_id
+                and e.get("slot") == slot
+                and e.get("status") == "running"
+                for e in self.terminals.entries.values()
+            ):
+                raise ValueError(
+                    "Stop the interactive slot terminal before changing its assignment"
+                )
             if slot == "developer":
                 target = state.setdefault("developer", {})
             else:
@@ -1460,15 +1469,6 @@ class Supervisor:
                 if target is None:
                     target = {"id": slot}
                     state["reviewers"].append(target)
-            if any(
-                e.get("ticket") == ticket_id
-                and e.get("slot") == slot
-                and e.get("status") == "running"
-                for e in self.terminals.entries.values()
-            ):
-                raise ValueError(
-                    "Stop the interactive slot terminal before changing its assignment"
-                )
             old_harness = target.get("harness")
             for field in ("harness", "cp"):
                 if field in config:
