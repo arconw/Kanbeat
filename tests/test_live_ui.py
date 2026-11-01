@@ -1125,3 +1125,112 @@ async def test_ticket_controls_follow_the_rule_when_the_board_and_ticket_move(
         await app.refresh_snapshot(force=True)
         await view.refresh_ticket()
         assert not view.query_one("#dev-config", Button).disabled
+
+
+@pytest.mark.asyncio
+async def test_ticket_dialog_reconciles_external_reviewer_changes(
+    tmp_path, monkeypatch
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Reconcile", column="todo")
+    state = supervisor.ticket_state(ticket.id)
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(120, 45)) as pilot:
+        view = TicketView(app.find_ticket(ticket.id))
+        app.push_screen(view)
+        await pilot.pause()
+        assert [row.name for row in view.query(".slot-row")] == ["developer"]
+
+        state["reviewers"] = [{"id": "reviewer-1"}]
+        await app.refresh_snapshot(force=True)
+        await view.refresh_ticket()
+        await pilot.pause()
+        assert [row.name for row in view.query(".slot-row")] == [
+            "developer",
+            "reviewer-1",
+        ]
+        first = view.query_one("#slot-row-reviewer-1")
+        configure = view.query_one("#conf-reviewer-1", Button)
+        assert not configure.disabled
+        assert (
+            str(view.query_one("#runtime-reviewer-1", Static).render()) == "not started"
+        )
+
+        configure.focus()
+        await pilot.pause()
+        state["reviewers"].append({"id": "reviewer-2"})
+        await app.refresh_snapshot(force=True)
+        await view.refresh_ticket()
+        await pilot.pause()
+        assert [row.name for row in view.query(".slot-row")] == [
+            "developer",
+            "reviewer-1",
+            "reviewer-2",
+        ]
+        assert view.query_one("#slot-row-reviewer-1") is first
+        assert app.focused is configure
+
+        state["reviewers"] = [{"id": "reviewer-2"}]
+        await app.refresh_snapshot(force=True)
+        await view.refresh_ticket()
+        await pilot.pause()
+        assert [row.name for row in view.query(".slot-row")] == [
+            "developer",
+            "reviewer-2",
+        ]
+        assert view.query_one("#slot-row-reviewer-2")
+        assert not view.query("#conf-reviewer-1")
+
+
+@pytest.mark.asyncio
+async def test_ticket_dialog_refresh_preserves_scroll_position(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path)
+    body = "\n\n".join("Paragraph " + str(index) for index in range(60))
+    ticket = supervisor.board.create("Scroll", body, column="todo")
+    state = supervisor.ticket_state(ticket.id)
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(120, 45)) as pilot:
+        view = TicketView(app.find_ticket(ticket.id))
+        app.push_screen(view)
+        await pilot.pause()
+        content = view.query_one(".content", VerticalScroll)
+        content.scroll_to(y=20, animate=False)
+        await pilot.pause()
+        offset = content.scroll_offset
+        assert offset.y > 0
+
+        state["reviewers"] = [{"id": "reviewer-1"}]
+        await app.refresh_snapshot(force=True)
+        await view.refresh_ticket()
+        await pilot.pause()
+        assert view.query_one("#slot-row-reviewer-1")
+        assert content.scroll_offset == offset
+
+
+@pytest.mark.asyncio
+async def test_add_reviewer_row_appears_when_the_slot_form_closes(
+    tmp_path, monkeypatch
+):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Add reviewer", column="todo")
+    supervisor.ticket_state(ticket.id)["reviewers"] = [{"id": "reviewer-1"}]
+    app = client(supervisor, monkeypatch)
+    async with app.run_test(size=(120, 45)) as pilot:
+        view = TicketView(app.find_ticket(ticket.id))
+        app.push_screen(view)
+        await pilot.pause()
+        await pilot.click("#add-reviewer")
+        await pilot.pause()
+        form = app.screen
+        assert isinstance(form, Assignment)
+        assert form.slot == "reviewer-2"
+        await pilot.click("#save")
+        await pilot.pause()
+        assert [row.name for row in view.query(".slot-row")] == [
+            "developer",
+            "reviewer-1",
+            "reviewer-2",
+        ]
+        assert (
+            str(view.query_one("#runtime-reviewer-2", Static).render()) == "not started"
+        )

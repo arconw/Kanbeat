@@ -271,7 +271,9 @@ class TicketView(BackdropModal[None]):
                 )
                 return
             if latest["body"] != self.ticket["body"]:
-                await self.query_one("#ticket-markdown", Markdown).update(latest["body"])
+                await self.query_one("#ticket-markdown", Markdown).update(
+                    latest["body"]
+                )
             if (
                 latest["filename"] != self.ticket["filename"]
                 or latest["column"] != self.ticket["column"]
