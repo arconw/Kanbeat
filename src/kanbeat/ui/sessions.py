@@ -956,7 +956,10 @@ class SessionsView(Horizontal):
         return self.size.width >= EMBED_MIN_WIDTH
 
     def show_terminal(self, terminal_id: str) -> None:
-        self.query_one(TerminalPane).open_terminal(terminal_id)
+        pane = next(iter(self.query(TerminalPane)), None)
+        if pane is None:
+            return
+        pane.open_terminal(terminal_id)
         self.mark_active(terminal_id)
 
     async def update_snapshot(self, snapshot: dict[str, Any]) -> None:

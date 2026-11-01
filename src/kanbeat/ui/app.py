@@ -983,7 +983,9 @@ class KanbeatApp(App[None], inherit_bindings=False):
             )
             return
         self.run_worker(pane.send_input({"kind": "paste", "text": reference + " "}))
-        pane.query_one(TerminalDisplay).focus()
+        display = next(iter(pane.query(TerminalDisplay)), None)
+        if display is not None:
+            display.focus()
 
     async def show_diff(self, focus: bool = False) -> None:
         view = self.diff_view()
