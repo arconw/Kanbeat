@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .config_keys import CONFIG_KEYS
+from .config_keys import CONFIG_KEYS, HARNESSES
 from .events import format_event
 
 Send = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -15,6 +15,17 @@ COLUMN_ORDER = ("backlog", "todo", "progress", "review", "done", "failed", "arch
 LINE_PREVIEW = 60
 WATCH_RETRIES = 120
 EVENT_BATCH = 200
+RUNNING_WORKER_STATUSES = (
+    "starting",
+    "running",
+    "stopping",
+    "recovering",
+    "recovery_blocked",
+)
+RESTART_HELP = (
+    "Stop the board, apply the change, and play again only if it was running; "
+    "this interrupts running workers, which resume from their native sessions"
+)
 
 
 def one_line(value: Any) -> str:
@@ -23,14 +34,50 @@ def one_line(value: Any) -> str:
     return repr(text[:LINE_PREVIEW] + ("…" if len(text) > LINE_PREVIEW else ""))
 
 
-def read_value(value: str | None, source: str | None) -> str:
+def read_value(value: str | None, source: str | None, flag: str = "--file") -> str:
     if source is not None and value is not None:
-        raise ValueError("Give either a value or --file, not both")
+        raise ValueError(f"Give either a value or {flag}, not both")
     if source is not None:
         return Path(source).read_text(encoding="utf-8")
     if value is None:
-        raise ValueError("Give a value, --file PATH, or - to read standard input")
+        raise ValueError(f"Give a value, {flag} PATH, or - to read standard input")
     return sys.stdin.read() if value == "-" else value
+
+
+def check_slot(value: str) -> str:
+    if value == "developer" or (value.startswith("reviewer-") and value[9:].isdigit()):
+        return value
+    raise ValueError(
+        f"Invalid slot {value!r}. Use developer or reviewer-N, for example reviewer-1"
+    )
+
+
+def check_reviewer(value: str) -> str:
+    slot = check_slot(value)
+    if slot == "developer":
+        raise ValueError("The developer slot is not a Reviewer slot; use reviewer-N")
+    return slot
+
+
+def check_harness(value: str) -> str:
+    if value not in HARNESSES:
+        raise ValueError(
+            f"Unknown harness {value!r}. Valid harnesses: " + ", ".join(HARNESSES)
+        )
+    return value
+
+
+def reviewer_number(value: str) -> int | None:
+    if value.startswith("reviewer-") and value[9:].isdigit():
+        return int(value[9:])
+    return None
+
+
+def running_error() -> ValueError:
+    return ValueError(
+        "The board is running. Stop it with kanbeat stop, apply the change, then "
+        "start it with kanbeat play; or pass --restart."
+    )
 
 
 async def config_command(send: Send, args: Any) -> None:
@@ -77,9 +124,50 @@ def report_entry(entry: dict[str, Any] | None, verb: str) -> None:
         )
 
 
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def ticket_reviewers(ticket: dict[str, Any]) -> list[dict[str, Any]]:
+    state = as_dict(ticket.get("state"))
+    return [
+        row
+        for row in state.get("reviewers") or []
+        if isinstance(row, dict) and row.get("id")
+    ]
+
+
+def slot_row(
+    ticket: dict[str, Any], slot: str, assignment: dict[str, Any], default: str
+) -> dict[str, Any]:
+    runtime = as_dict(as_dict(ticket.get("state")).get("runtime"))
+    status = str(as_dict(runtime.get(slot)).get("status") or "")
+    return {
+        "slot": slot,
+        "harness": str(assignment.get("harness") or default),
+        "custom_prompt": bool(str(assignment.get("cp") or "")),
+        "running": status in RUNNING_WORKER_STATUSES,
+    }
+
+
+def ticket_slots(ticket: dict[str, Any], default: str) -> dict[str, Any]:
+    state = as_dict(ticket.get("state"))
+    return {
+        "developer": slot_row(
+            ticket, "developer", as_dict(state.get("developer")), default
+        ),
+        "reviewers": [
+            slot_row(ticket, str(row["id"]), row, default)
+            for row in ticket_reviewers(ticket)
+        ],
+    }
+
+
 def board_rows(snapshot: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     rows: dict[str, list[dict[str, Any]]] = {column: [] for column in COLUMN_ORDER}
+    default = str(as_dict(snapshot.get("config")).get("default_harness") or "")
     for ticket in snapshot.get("tickets", []):
+        slots = ticket_slots(ticket, default)
         rows.setdefault(ticket["column"], []).append(
             {
                 "id": ticket["id"],
@@ -89,9 +177,18 @@ def board_rows(snapshot: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
                     for row in ticket.get("blocked_by", [])
                     if not row.get("satisfied")
                 ],
+                "slots": slots,
+                "straight_to_done": not slots["reviewers"],
             }
         )
     return rows
+
+
+def slot_text(slot: dict[str, Any]) -> str:
+    harness = slot["harness"] or "project default"
+    custom = "custom prompt" if slot["custom_prompt"] else "no custom prompt"
+    worker = "worker running" if slot["running"] else "no worker"
+    return f"harness {harness}, {custom}, {worker}"
 
 
 async def status_command(send: Send, as_json: bool) -> None:
@@ -119,6 +216,134 @@ async def status_command(send: Send, as_json: bool) -> None:
                 else ""
             )
             print(f"  #{ticket['id']} {ticket['title']}{waiting}")
+            print(f"    developer: {slot_text(ticket['slots']['developer'])}")
+            for reviewer in ticket["slots"]["reviewers"]:
+                print(f"    {reviewer['slot']}: {slot_text(reviewer)}")
+            if ticket["straight_to_done"]:
+                print(
+                    "    no Reviewer slot: goes straight to Done when development "
+                    "finishes"
+                )
+
+
+def ticket_index(
+    snapshot: dict[str, Any], ticket_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    tickets = {
+        str(ticket["id"]): ticket
+        for ticket in snapshot.get("tickets", [])
+        if ticket.get("id")
+    }
+    missing = [ticket_id for ticket_id in ticket_ids if ticket_id not in tickets]
+    if missing:
+        raise ValueError("Unknown ticket: " + ", ".join("#" + _id for _id in missing))
+    return tickets
+
+
+async def apply_requests(
+    send: Send,
+    snapshot: dict[str, Any],
+    requests: list[dict[str, Any]],
+    restart: bool,
+) -> None:
+    was_running = snapshot.get("execution") == "running"
+    if was_running and not restart:
+        raise running_error()
+    if was_running:
+        await send({"op": "stop"})
+    for request in requests:
+        await send(request)
+    if was_running:
+        await send({"op": "play"})
+
+
+def change_text(values: dict[str, str]) -> str:
+    parts = []
+    if "harness" in values:
+        parts.append("harness " + values["harness"])
+    if "cp" in values:
+        parts.append("custom prompt" if values["cp"] else "no custom prompt")
+    return ", ".join(parts)
+
+
+async def assign_command(send: Send, args: Any) -> None:
+    ticket_ids = list(dict.fromkeys(str(ticket) for ticket in args.tickets))
+    slot = check_slot(str(args.slot))
+    harness = None if args.harness is None else check_harness(str(args.harness))
+    custom = None
+    if args.cp is not None or args.cp_file is not None:
+        custom = read_value(args.cp, args.cp_file, flag="--cp-file")
+    if harness is None and custom is None:
+        raise ValueError("Give --harness, --cp or --cp-file to change the slot")
+    values: dict[str, str] = {}
+    if harness is not None:
+        values["harness"] = harness
+    if custom is not None:
+        values["cp"] = custom
+    snapshot = await send({"op": "snapshot"})
+    ticket_index(snapshot, ticket_ids)
+    requests = [
+        {"op": "set_assignment", "ticket": ticket_id, "slot": slot, "values": values}
+        for ticket_id in ticket_ids
+    ]
+    await apply_requests(send, snapshot, requests, bool(args.restart))
+    for ticket_id in ticket_ids:
+        print(f"assigned {slot} on #{ticket_id}: {change_text(values)}")
+
+
+async def reviewers_add_command(send: Send, args: Any) -> None:
+    ticket_id = str(args.ticket)
+    harness = check_harness(str(args.harness))
+    snapshot = await send({"op": "snapshot"})
+    ticket = ticket_index(snapshot, [ticket_id])[ticket_id]
+    used = {
+        number
+        for row in ticket_reviewers(ticket)
+        if (number := reviewer_number(str(row["id"]))) is not None
+    }
+    number = 1
+    while number in used:
+        number += 1
+    slot = f"reviewer-{number}"
+    request = {
+        "op": "set_assignment",
+        "ticket": ticket_id,
+        "slot": slot,
+        "values": {"harness": harness},
+    }
+    await apply_requests(send, snapshot, [request], bool(args.restart))
+    print(f"assigned {slot} on #{ticket_id}: harness {harness}")
+
+
+async def reviewers_remove_command(send: Send, args: Any) -> None:
+    ticket_id = str(args.ticket)
+    slot = check_reviewer(str(args.slot))
+    snapshot = await send({"op": "snapshot"})
+    ticket = ticket_index(snapshot, [ticket_id])[ticket_id]
+    reviewers = ticket_reviewers(ticket)
+    if not any(str(row["id"]) == slot for row in reviewers):
+        raise ValueError(f"Ticket #{ticket_id} has no {slot} Reviewer slot")
+    remaining = [row for row in reviewers if str(row["id"]) != slot]
+    request = {"op": "remove_reviewer", "ticket": ticket_id, "slot": slot}
+    await apply_requests(send, snapshot, [request], bool(args.restart))
+    print(f"removed {slot} from #{ticket_id}")
+    if not remaining:
+        print(
+            f"No Reviewer left on #{ticket_id}: it goes straight to Done when its "
+            "development finishes."
+        )
+
+
+async def reviewers_command(send: Send, args: Any) -> None:
+    if args.reviewers_command == "add":
+        await reviewers_add_command(send, args)
+    else:
+        await reviewers_remove_command(send, args)
+
+
+async def board_control_command(send: Send, action: str) -> None:
+    result = await send({"op": action})
+    print(f"execution: {result.get('execution', 'unknown')}")
 
 
 def emit(event: dict[str, Any], as_json: bool) -> None:

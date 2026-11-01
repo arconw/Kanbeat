@@ -67,11 +67,29 @@ files and the `kanbeat` command. Run the command from the project directory.
 
 - See the board: `kanbeat status` (add `--json` for a machine-readable form) or
   `kanbeat list`.
+- Slots: `kanbeat status` lists each ticket's Developer and Reviewer slots with
+  their harness, whether the slot has a custom prompt, and whether a worker is
+  running. A ticket with no Reviewer slot goes straight to Done when its
+  development finishes.
+- Set a slot with `kanbeat assign TICKET [TICKET ...] [--slot
+  developer|reviewer-N] [--harness NAME] [--cp TEXT | --cp-file FILE]`. The
+  default slot is `developer`; a missing `reviewer-N` is created. Harnesses are
+  `codex`, `claude`, `opencode` and `pi`. `--cp -` reads standard input, and
+  several tickets get the same change.
+- `kanbeat reviewers add TICKET --harness NAME` picks the next free
+  `reviewer-N` and prints it. `kanbeat reviewers remove TICKET reviewer-N`
+  removes one; removing the last makes the ticket go straight to Done.
+- Slot changes are refused while the board runs, unless `--restart` is given,
+  and while that slot's interactive terminal runs. Stop with `kanbeat stop`,
+  apply the change, and start again with `kanbeat play`; `--restart` stops and
+  plays again only if the board was running, and workers resume from their
+  native sessions. Slot changes are not recorded in the settings history.
 - Queue work by moving a ticket from `backlog/` to `todo/` (`mv`, or
   `kanbeat move 004 todo`). While the board is running Kanbeat moves it on
   through `progress/`, `review/` and `done/` itself. Do not move a ticket that
   is in `progress/` or `review/`, and do not create `done/` entries by hand.
-- `kanbeat play` starts the board and `kanbeat stop` stops it.
+- `kanbeat play` starts the board and `kanbeat stop` stops it; both print the
+  resulting execution state.
 - Never edit `.kanbeat/.state/`. It is the supervisor's private runtime state,
   kept in memory and rewritten from there, so a hand edit is lost or corrupts
   it. Status never lives there; it is the folder.
@@ -97,6 +115,7 @@ LEGACY_INSTRUCTION_HASHES = frozenset(
         "91b1a7999b9b6d3ee5f282ba786da785d85e4fc8876d39bfc493f78aed3626c1",
         "cca0e0df29cef497c96fce72141ccba86438f8c902f8d433b74383d510167584",
         "a101523d49b881ab841947b74e4de997bb98d93e1978acd7aafb44a1061713a2",
+        "a71c706fecbfbd748e9e6bd120abc3af9873e8e98fc692f4d74d510b533ce54d",
     }
 )
 

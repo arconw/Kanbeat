@@ -1434,8 +1434,18 @@ class Supervisor:
                 slot.startswith("reviewer-") and slot[9:].isdigit()
             ):
                 raise ValueError("Invalid reviewer slot identifier")
+            if "harness" in config:
+                harness = str(config["harness"])
+                if harness and harness not in HARNESS_NAMES:
+                    raise ValueError(
+                        f"Unknown harness {harness!r}. Valid harnesses: "
+                        + ", ".join(HARNESS_NAMES)
+                    )
             if self.runtime.data["execution"] == "running":
-                raise ValueError("Stop board before changing worker assignments")
+                raise ValueError(
+                    "Stop the board with kanbeat stop before changing worker "
+                    "assignments, then start it with kanbeat play"
+                )
             if slot == "developer":
                 target = state.setdefault("developer", {})
             else:
@@ -1480,7 +1490,10 @@ class Supervisor:
             state = self.ticket_state(str(request["ticket"]))
             slot = str(request["slot"])
             if self.runtime.data["execution"] == "running":
-                raise ValueError("Stop board before changing reviewer slots")
+                raise ValueError(
+                    "Stop the board with kanbeat stop before changing reviewer "
+                    "slots, then start it with kanbeat play"
+                )
             state["reviewers"] = [
                 r for r in state.get("reviewers", []) if r.get("id") != slot
             ]
