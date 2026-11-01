@@ -22,6 +22,8 @@ from .filesystem import (
     Board,
     Ticket,
     ACTIVE,
+    assignment_change_blocked,
+    assignment_change_refusal,
     dependencies,
     dependency_problems,
     unblocked,
@@ -1252,6 +1254,10 @@ class Supervisor:
             "brand": "Kanbeat",
             "project": str(self.board.project),
             "execution": self.runtime.data["execution"],
+            "assignment": {
+                "running": self.runtime.data["execution"] == "running",
+                "locked_columns": list(ACTIVE),
+            },
             "tickets": [
                 {
                     "id": t.id,
@@ -1424,7 +1430,7 @@ class Supervisor:
                 self.board.remove_archived(ticket_id)
         elif op == "set_assignment":
             ticket_id = str(request["ticket"])
-            self.board.find(ticket_id)
+            ticket = self.board.find(ticket_id)
             state = self.ticket_state(ticket_id)
             slot = str(request.get("slot") or "developer")
             config = request.get("values")
@@ -1441,11 +1447,10 @@ class Supervisor:
                         f"Unknown harness {harness!r}. Valid harnesses: "
                         + ", ".join(HARNESS_NAMES)
                     )
-            if self.runtime.data["execution"] == "running":
-                raise ValueError(
-                    "Stop the board with kanbeat stop before changing worker "
-                    "assignments, then start it with kanbeat play"
-                )
+            if assignment_change_blocked(
+                ticket.column, self.runtime.data["execution"]
+            ):
+                raise ValueError(assignment_change_refusal(ticket_id, ticket.column))
             if any(
                 e.get("ticket") == ticket_id
                 and e.get("slot") == slot
@@ -1487,16 +1492,15 @@ class Supervisor:
             self.save()
         elif op == "remove_reviewer":
             ticket_id = str(request["ticket"])
-            self.board.find(ticket_id)
+            ticket = self.board.find(ticket_id)
             state = self.ticket_state(ticket_id)
             slot = str(request["slot"])
             if not is_reviewer_slot(slot):
                 raise ValueError("Invalid reviewer slot identifier. Use reviewer-N")
-            if self.runtime.data["execution"] == "running":
-                raise ValueError(
-                    "Stop the board with kanbeat stop before changing reviewer "
-                    "slots, then start it with kanbeat play"
-                )
+            if assignment_change_blocked(
+                ticket.column, self.runtime.data["execution"]
+            ):
+                raise ValueError(assignment_change_refusal(ticket_id, ticket.column))
             if any(
                 e.get("ticket") == ticket_id
                 and e.get("slot") == slot

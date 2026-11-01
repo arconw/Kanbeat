@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from .config_keys import CONFIG_KEYS, HARNESSES, is_reviewer_slot
 from .events import format_event
+from .filesystem import assignment_change_blocked, assignment_change_refusal
 
 Send = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 COLUMN_ORDER = ("backlog", "todo", "progress", "review", "done", "failed", "archive")
@@ -71,10 +72,12 @@ def reviewer_number(value: str) -> int | None:
     return int(value[9:]) if is_reviewer_slot(value) else None
 
 
-def running_error() -> ValueError:
+def assignment_error(locked: list[tuple[str, str]]) -> ValueError:
     return ValueError(
-        "The board is running. Stop it with kanbeat stop, apply the change, then "
-        "start it with kanbeat play; or pass --restart."
+        " ".join(
+            assignment_change_refusal(ticket_id, column)
+            for ticket_id, column in locked
+        )
     )
 
 
@@ -288,6 +291,24 @@ def running_slot_terminals(
     return busy
 
 
+def locked_requests(
+    snapshot: dict[str, Any], requests: list[dict[str, Any]]
+) -> list[tuple[str, str]]:
+    tickets = {
+        str(ticket.get("id")): ticket
+        for ticket in snapshot.get("tickets", [])
+        if isinstance(ticket, dict)
+    }
+    execution = str(snapshot.get("execution") or "")
+    locked: list[tuple[str, str]] = []
+    for request in requests:
+        ticket_id = str(request.get("ticket") or "")
+        column = str(as_dict(tickets.get(ticket_id)).get("column") or "")
+        if assignment_change_blocked(column, execution):
+            locked.append((ticket_id, column))
+    return locked
+
+
 async def apply_requests(
     send: Send,
     snapshot: dict[str, Any],
@@ -295,8 +316,9 @@ async def apply_requests(
     restart: bool,
 ) -> list[int]:
     was_running = snapshot.get("execution") == "running"
-    if was_running and not restart:
-        raise running_error()
+    locked = locked_requests(snapshot, requests)
+    if was_running and locked and not restart:
+        raise assignment_error(locked)
     busy = running_slot_terminals(snapshot, requests)
     if busy:
         raise ValueError(
@@ -306,7 +328,7 @@ async def apply_requests(
     applied: list[int] = []
     failure: Exception | None = None
     play_failure: Exception | None = None
-    if was_running:
+    if was_running and restart:
         await send({"op": "stop"})
     try:
         try:
@@ -316,7 +338,7 @@ async def apply_requests(
         except Exception as error:
             failure = error
     finally:
-        if was_running:
+        if was_running and restart:
             try:
                 await send({"op": "play"})
             except Exception as error:
