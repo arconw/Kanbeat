@@ -730,6 +730,46 @@ async def test_restart_reconciles_uncertain_delivery_before_retry(
 
 
 @pytest.mark.asyncio
+async def test_missing_third_harness_is_skipped_and_stays_skipped(
+    tmp_path, installed, monkeypatch
+):
+    groups = FakeGroups(tmp_path)
+    groups.opencode.sessions["ses_source"] = True
+    groups.opencode.messages["ses_source"] = [
+        opencode_message("msg_user_source", "user", "OpenCode question"),
+        opencode_message("msg_reply_source", "assistant", "OpenCode reply"),
+    ]
+    groups.entries["t1"] = entry_for(
+        harness="opencode",
+        native="ses_source",
+        native_sessions={
+            "claude": {"id": "claude-missing", "status": "available"},
+        },
+    )
+
+    result = await switch_harness(groups, {"terminal": "t1", "harness": "codex"})
+    entry = groups.entries["t1"]
+    assert result["changed"] is True
+    assert result["delivered"] == 2
+    assert result["harness"] == "codex"
+    assert entry["native_sessions"]["claude"] == {
+        "id": "claude-missing",
+        "status": "missing",
+    }
+    assert "OpenCode question" in groups.codex.turns[-1]["text"]
+    assert "OpenCode reply" in groups.codex.turns[-1]["text"]
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("a recorded missing history must not be read again")
+
+    monkeypatch.setattr("kanbeat.session_switch.read_claude_history", forbidden)
+    back = await switch_harness(groups, {"terminal": "t1", "harness": "opencode"})
+    assert back["delivered"] == 0
+    assert back["native_session"] == "ses_source"
+    assert entry["native_sessions"]["claude"]["status"] == "missing"
+
+
+@pytest.mark.asyncio
 async def test_read_prepare_and_delivery_failures_leave_source_active(
     tmp_path, installed
 ):
