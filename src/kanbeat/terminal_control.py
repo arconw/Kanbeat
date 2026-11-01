@@ -429,11 +429,16 @@ class PasteAssembler:
         while len(pastes) >= MAX_PASTES_PER_TERMINAL:
             evicted = False
             for oldest in sorted(pastes, key=lambda key: pastes[key]["updated"]):
-                if self._close(pastes[oldest]):
+                state = pastes[oldest]
+                if not state.get("closing") and (
+                    now - state["updated"] <= PASTE_STALE_SECONDS
+                ):
+                    continue
+                if self._close(state):
                     del pastes[oldest]
                     evicted = True
                     break
-                self._hold(pastes[oldest], now)
+                self._hold(state, now)
             if not evicted:
                 return False
         bracketed = bool(terminal.board.modes.bracketed_paste)
@@ -459,7 +464,10 @@ class PasteAssembler:
     ) -> bool:
         state = self._state(terminal.id, paste_id, client)
         state["updated"] = now
-        return bool(terminal.queue_bytes(text.encode("utf-8")))
+        accepted = bool(terminal.queue_bytes(text.encode("utf-8")))
+        if accepted:
+            state.pop("closing", None)
+        return accepted
 
     def end(
         self,

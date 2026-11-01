@@ -6,7 +6,11 @@ import pytest
 import pytest_asyncio
 
 from kanbeat.supervisor import Supervisor
-from kanbeat.terminal_control import PasteAssembler, prune_pastes
+from kanbeat.terminal_control import (
+    MAX_PASTES_PER_TERMINAL,
+    PasteAssembler,
+    prune_pastes,
+)
 from kanbeat.ui.terminal_input import TerminalInput, split_paste
 
 
@@ -486,3 +490,33 @@ async def test_pinned_terminal_input_sender_survives_reset():
             "paste": "p1",
         }
     ]
+
+
+def test_eviction_does_not_close_a_live_paste_mid_stream():
+    writes = []
+
+    class FakeTerminal:
+        id = "t1"
+
+        def __init__(self):
+            self.board = SimpleNamespace(modes=SimpleNamespace(bracketed_paste=True))
+            self.allow_end = False
+
+        def queue_bytes(self, payload):
+            if payload == b"\x1b[201~" and not self.allow_end:
+                return False
+            writes.append(payload)
+            return True
+
+    terminal = FakeTerminal()
+    assembler = PasteAssembler()
+    now = 1000.0
+    for index in range(MAX_PASTES_PER_TERMINAL):
+        assert assembler.begin(terminal, f"p{index}", f"c{index}", now)
+    writes.clear()
+    assert not assembler.begin(terminal, "new", "new-client", now)
+    terminal.allow_end = True
+    assert assembler.chunk(terminal, "p0", "more", "c0", now + 1)
+    assert assembler.prune(now + 2) == []
+    assert "p0" in assembler.terminals["t1"]
+    assert b"\x1b[201~" not in writes
