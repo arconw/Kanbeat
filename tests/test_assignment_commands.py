@@ -454,6 +454,80 @@ def test_restart_stops_and_plays_only_when_the_board_was_running(tmp_path, monke
     ]
 
 
+def test_restart_replays_a_board_it_stopped_when_a_change_is_refused(
+    tmp_path, monkeypatch
+):
+    import kanbeat.supervisor as module
+
+    monkeypatch.setattr(module, "available", lambda _name: True)
+    supervisor = Supervisor(tmp_path)
+    first = supervisor.board.create("First", column="review")
+    second = supervisor.board.create("Second", column="review")
+    supervisor.terminals.entries["terminal"] = {
+        "ticket": second.id,
+        "slot": "developer",
+        "status": "running",
+        "owner": "custom",
+    }
+    supervisor.runtime.data["execution"] = "running"
+    operations = []
+
+    async def send(request):
+        operations.append(request["op"])
+        return await supervisor.dispatch(request)
+
+    with pytest.raises(ValueError) as info:
+        asyncio.run(
+            assign_command(
+                send,
+                args(
+                    tickets=[first.id, second.id],
+                    slot="developer",
+                    harness="codex",
+                    cp=None,
+                    cp_file=None,
+                    restart=True,
+                ),
+            )
+        )
+    message = str(info.value)
+    assert f"Changed #{first.id} before the change was refused" in message
+    assert "Stop the interactive slot terminal" in message
+    assert operations == [
+        "snapshot",
+        "stop",
+        "set_assignment",
+        "set_assignment",
+        "play",
+    ]
+    assert supervisor.runtime.data["execution"] == "running"
+    assert supervisor.ticket_state(first.id)["developer"] == {"harness": "codex"}
+    assert not supervisor.ticket_state(second.id)["developer"]
+
+
+def test_refusing_a_slot_with_a_running_terminal_changes_nothing(tmp_path):
+    supervisor = Supervisor(tmp_path)
+    ticket = supervisor.board.create("Reviewed", column="review")
+    supervisor.terminals.entries["terminal"] = {
+        "ticket": ticket.id,
+        "slot": "reviewer-1",
+        "status": "running",
+        "owner": "custom",
+    }
+    with pytest.raises(ValueError, match="interactive slot terminal"):
+        asyncio.run(
+            supervisor.dispatch(
+                {
+                    "op": "set_assignment",
+                    "ticket": ticket.id,
+                    "slot": "reviewer-1",
+                    "values": {"harness": "codex"},
+                }
+            )
+        )
+    assert supervisor.ticket_state(ticket.id)["reviewers"] == []
+
+
 def test_invalid_values_change_nothing(tmp_path):
     supervisor = Supervisor(tmp_path)
     ticket = supervisor.board.create("Reviewed", column="review")
