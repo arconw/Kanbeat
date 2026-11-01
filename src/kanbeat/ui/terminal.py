@@ -189,7 +189,7 @@ NOT_RUNNING_ERROR = "Terminal is no longer running"
 DEFAULT_HINT = "Ctrl+\\ Detach · Wheel scroll · Shift+wheel output history · Detach keeps it running"
 MONITOR_HINT = (
     "Live worker monitor: input is disabled until this turn ends. "
-    "Ctrl+\\ Detach · Shift+wheel output history"
+    "Ctrl+\\ Detach · Wheel scroll · Shift+wheel output history"
 )
 DEFAULT_HEADING = "INTERACTIVE TERMINAL"
 
@@ -402,27 +402,16 @@ class TerminalSession:
         snapshot = self.last_snapshot
         if not snapshot:
             return
-        if not self.read_only and not event.shift and self.scroll_position is None:
-            if snapshot.get("mouse_tracking") or snapshot.get("alternate_scroll"):
-                await self.send_input(
-                    {
-                        "kind": "wheel",
-                        "direction": direction,
-                        "x": int(event.x) + 1,
-                        "y": int(event.y) + 1,
-                        "modifiers": [
-                            key for key in ("meta", "ctrl") if getattr(event, key)
-                        ],
-                    }
-                )
+        if self.scroll_position is None:
+            if not event.shift and await self.forward_wheel(direction, event):
                 return
-            if snapshot.get("alternate_screen"):
-                await self.send_input(
-                    {
-                        "kind": "key",
-                        "key": "pageup" if direction == "up" else "pagedown",
-                    }
-                )
+            if (
+                event.shift
+                and self.can_forward_wheel(snapshot)
+                and not self.has_local_history(snapshot)
+                and (self.read_only or snapshot.get("owner") == "attach")
+                and await self.forward_wheel(direction, event)
+            ):
                 return
         current = (
             self.scroll_position
@@ -434,6 +423,60 @@ class TerminalSession:
             max(snapshot["history_start"], current + (-3 if direction == "up" else 3)),
         )
         await self.refresh_view()
+
+    @staticmethod
+    def has_local_history(snapshot: dict) -> bool:
+        return snapshot["history_total"] > snapshot["history_start"]
+
+    @staticmethod
+    def can_forward_wheel(snapshot: dict) -> bool:
+        return bool(
+            snapshot.get("mouse_tracking")
+            or snapshot.get("alternate_scroll")
+            or snapshot.get("alternate_screen")
+        )
+
+    async def forward_wheel(self, direction: str, event) -> bool:
+        snapshot = self.last_snapshot
+        if not self.can_forward_wheel(snapshot):
+            return False
+        if self.read_only:
+            return await self.navigate_monitor(direction, event)
+        if snapshot.get("mouse_tracking") or snapshot.get("alternate_scroll"):
+            await self.send_input(
+                {
+                    "kind": "wheel",
+                    "direction": direction,
+                    "x": int(event.x) + 1,
+                    "y": int(event.y) + 1,
+                    "modifiers": [
+                        key for key in ("meta", "ctrl") if getattr(event, key)
+                    ],
+                }
+            )
+            return True
+        await self.send_input(
+            {"kind": "key", "key": "pageup" if direction == "up" else "pagedown"}
+        )
+        return True
+
+    async def navigate_monitor(self, direction: str, event) -> bool:
+        self.view_epoch += 1
+        epoch = self.view_epoch
+        try:
+            snapshot = await self.rpc(
+                "terminal_navigate",
+                direction=direction,
+                x=int(event.x) + 1,
+                y=int(event.y) + 1,
+                modifiers=[key for key in ("meta", "ctrl") if getattr(event, key)],
+            )
+            if epoch == self.view_epoch:
+                self.apply_snapshot(snapshot)
+            return True
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.report_input_error(str(exc))
+            return False
 
     async def resize_terminal(self, rows: int, cols: int) -> None:
         try:
