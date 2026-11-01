@@ -42,7 +42,7 @@ A ticket is a Markdown file, its status is the directory it lives in, and one pe
 - **Bring your own CLI.** Codex CLI, Claude Code, OpenCode and Pi run through their native modes with your own login, permissions and sandbox. Kanbeat embeds no agent and never overrides those settings.
 - **Dependencies and parallel work.** A ticket can say `Blocked by: #002`. Independent tickets run in parallel, blocked ones wait in Todo, and a whole batch drops into Todo and works through itself in order.
 - **Developer, then Review/QA.** A developer turn moves a ticket to Review/QA, where zero or more reviewer slots with isolated contexts approve it or send it back with feedback.
-- **Native terminals and sessions.** Attach to a running harness live, or keep independent sessions in groups. Every session has a native id, so it resumes where it stopped.
+- **Native terminals and sessions.** Attach to a running harness live, or keep independent sessions in groups. Every session keeps a native id for each harness it has used, so it resumes where it stopped, including after a harness switch.
 - **Changes panel.** A button next to Detach shows `3 files | +35 -11` and opens the project's uncommitted diff beside the terminal, with a clickable file list, wrapped lines, highlighted words and an `[ ask ]` button that drops a file reference into the open session.
 - **Agents can run the board.** A ticket's status is its folder, and `kanbeat status`, `events`, `watch`, `config get/set` (with a history you can revert in Settings) and `INSTRUCTIONS.md` let an agent manage tickets and settings without an extra server.
 - **Transition hook.** Optionally keep one session, "Transition hook", that Kanbeat wakes with the numbered board events (ticket created, moved, deleted, board started or stopped), including when it is stopped.
@@ -275,7 +275,8 @@ flowchart TB
 - Sessions is the first tab. Groups and sessions sit in a list beside an embedded terminal; clicking a session switches to it.
 - Every independent session gets a native id (Codex thread, OpenCode session, Claude and Pi session id), so **clicking a stopped session resumes it** where it left off. The id can be set in Edit.
 - Besides a harness, a session can be a plain **Terminal** running your shell. Its working directory is remembered: after Stop or a restart, clicking the session opens a fresh shell in the directory you last `cd`-ed to.
-- The session menu has Edit, Stop, **Remove from Kanbeat** (the record goes, the conversation stays in the harness) and **Delete session and history** (also deletes the conversation in the harness).
+- The session menu has Edit, Stop, **Remove from Kanbeat** (the record goes, every conversation stays in its harness) and **Delete session and history** (also deletes every conversation Kanbeat recorded for it, in each harness it has used).
+- For an independent agent session that is stopped, Edit also offers a harness switch. Kanbeat confirms before reading the native history, carries the conversation over as text and keeps the earlier harness sessions, so switching back sends only what is new. Permissions, sandbox and native settings do not move. See [Switching a session's harness](docs/guide.md#switching-a-sessions-harness).
 - Select text with a plain left drag; it is copied when you release. Shift+drag keeps your terminal's own selection.
 - The **files** button opens the [changes panel](docs/guide.md#changes-panel) on the right: it is closed until you open it, remembers your choice, steps aside when the terminal needs the room, and covers the whole page on a very narrow window.
 - Independent sessions keep running when you detach, close the TUI or press Board Stop. Board task slots can be attached live while the board runs (OpenCode, Codex and Claude; Pi needs Board Stop).
@@ -293,6 +294,7 @@ flowchart TB
 - Kanbeat does not manage Git: no worktrees, branches, resets or cleanups. Parallel tickets all edit the same working tree, so declare a dependency whenever two tickets touch the same files.
 - The TUI shows ticket Markdown read-only; edit the files externally.
 - Attached views are monitor-only while a structured worker turn is active, so Kanbeat never runs two writers against one native session.
+- Harness switching moves conversation text only. Hidden reasoning and binary attachments do not move, permissions, sandbox and native settings stay with each harness, and agent behavior can differ. Some Claude and Pi paths are not yet verified against live CLIs, and a context file does not extend a model's context window.
 - The transition hook is woken by typing into its terminal when it is quiet, so it can misread a message sent while the harness waits for an answer; keep its prompt specific and its actions safe to repeat.
 - Native terminals do not forward mouse reporting or clipboard requests.
 - A terminal of at least 80 × 24 is required; about 190 columns show all six board columns without scrolling, narrower terminals scroll the board sideways.
