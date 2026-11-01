@@ -78,14 +78,22 @@ A saved directory that no longer exists falls back to the project directory. Sto
 hangs up the shell first, then escalates like any other session. Terminals exist only
 in Sessions: board task slots and hooks always use a native harness.
 
-Clicking a stopped session resumes it. The session menu offers Edit (title, group and,
-for harnesses, the native session ID), Stop, **Remove from Kanbeat** (removes the
-record; the conversation stays in the harness) and **Delete session and history**
-(also deletes the native Codex, OpenCode, Claude or Pi session). Stop interrupts the
-process at once without confirmation; removing and deleting ask for confirmation.
-Group removal requires an empty group; first move or remove its session records.
-Removing a record does not delete native CLI history unless you choose Delete session
-and history, and retained local output logs stay.
+Clicking a stopped session resumes it. The session menu offers Edit (title, group,
+for harnesses the native session ID, and for an independent agent session a harness
+selector), Stop, **Remove from Kanbeat** (removes the record; every conversation
+stays in its harness) and **Delete session and history** (also deletes every native
+session Kanbeat recorded for it, in each harness it has used, plus private transfer
+files). Stop interrupts the process at once without confirmation; removing and
+deleting ask for confirmation. Group removal requires an empty group; first move or
+remove its session records. Removing a record does not delete native CLI histories
+unless you choose Delete session and history, and retained local output logs stay.
+
+Harness switching is available only for an independent agent session that is
+stopped; the selector is disabled while the session runs and its tooltip asks you to
+stop it first. See
+[Switching a session's harness](guide.md#switching-a-sessions-harness) for the
+confirmation, the privacy rule, what moves between harnesses, limits and the
+fresh-session fallback.
 
 Groups, session IDs, titles, prompts, ownership and known native IDs persist in
 `.state`. Restart after supervisor recovery reuses the same local session ID;

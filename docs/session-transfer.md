@@ -1,8 +1,8 @@
 # Harness history and import markers
 
-Developer reference for the harness-switching feature. It records what each harness exposes, what a later ticket may rely on, and what still needs a live check. It is not a user guide.
+Developer reference for the harness-switching feature. It records what each harness exposes, what the implementation relies on, and what still needs a live check. It is not a user guide; the user-facing behavior, privacy rule and limits are in [guide.md](guide.md#switching-a-sessions-harness).
 
-Inspected on 2026-10-31 against Codex CLI 0.166.0, OpenCode 1.19.3, Claude Code 2.1.316 and Pi 1.4.0. No model call was made, no harness session was started, and no conversation content was read into this document.
+Inspected on 2026-10-31 against Codex CLI 0.166.0, OpenCode 1.19.3, Claude Code 2.1.316 and Pi 1.4.0. No model call was made, no harness session was started, and no conversation content was read into this document. The readers and switch were implemented afterwards with fixture transcripts, deterministic fake hosts and fake CLIs; no live harness or model was exercised for this document either. The implementation status records that distinction.
 
 Source tags in square brackets refer to the list at the end.
 
@@ -15,11 +15,35 @@ Source tags in square brackets refer to the list at the end.
 | Kanbeat chooses the message id | yes, `clientUserMessageId` | yes, `messageID` | impossible | impossible |
 | Marker survives in stored text | yes, from source | yes, from source | expected, unverified live | expected, unverified live |
 | Silent delivery | `thread/inject_items`, not yet suitable for reconciliation | `noReply: true` | no documented API | no documented API |
-| Delivery that starts a turn | `turn/start` | `POST /session/{id}/message` | `claude --resume … -p` | Pi RPC `prompt` or `pi -p` |
+| Delivery endpoint | `turn/start` (starts a turn) | `POST /session/{id}/message` (starts a turn unless `noReply`) | `claude --resume … -p` (starts a turn) | Pi RPC `prompt` or `pi -p` (starts a turn) |
 
 Marker approach: Codex and OpenCode work from source inspection; Claude and Pi are unverified and need a live check. Client-chosen message id: Codex and OpenCode work; Claude and Pi are impossible.
 
-For every harness the safe delivery shape is the same: put the full conversation in a private context file and send a short message that tells the agent to read that file. The file only solves input size and command-line arguments; it does not extend the model's context window.
+Delivery shape differs by harness. Codex receives the envelope as a `turn/start` user message, and OpenCode stores it as a no-reply message; neither uses a context file. Claude and Pi cannot take the full conversation on a command line, so Kanbeat writes the private context file and sends a short prompt that points at it. The file only solves input size and command-line arguments; it does not extend the model's context window.
+
+## Implementation status
+
+The feature is implemented in `src/kanbeat` and covered by focused tests. The tests use fixture transcripts, deterministic fake hosts and fake one-shot processes, so they prove the bookkeeping and wiring, not live vendor compatibility.
+
+- **Readers.** `codex_history.py`, `opencode_history.py`, `claude_history.py` and `pi_history.py` return `available`, `missing` or `unreachable`, a completeness flag and unsupported categories. None writes to native history or logs conversation content.
+- **Source scope.** `session_switch.py` reads the current source harness and every earlier harness with a recorded native session. A missing earlier third harness is marked missing and skipped. The source history must be available and complete, and the target session must exist or be created through the explicit fresh fallback.
+- **Ordinals and checkpoints.** Readers number events within one harness; the supervisor maps their stable keys to one monotonic ordinal sequence for the logical session. Per-target checkpoints and import records live in the session record in `.kanbeat/.state/supervisor.json`.
+- **Codex delivery.** `turn/start` with the full envelope and `clientUserMessageId=<import id>`. A successful turn start is treated as delivery confirmation; the switch does not wait for the assistant turn to finish and does not search the thread for the marker afterwards.
+- **OpenCode delivery.** `POST /session/{id}/message` with `messageID=msg<import id>`, `noReply: true` and the import note as the per-message `system` string. The returned message id is the target id. No model turn starts.
+- **Claude and Pi delivery.** A private context file plus a short prompt wrapped in import markers. Claude uses `claude --resume <id> -p` (or `--session-id` for a new session); Pi uses `pi -p --session-id <id>`. Both wait for the one-shot process to exit successfully (300-second delivery timeout) and only then look for the import marker in the target history.
+- **Context files.** `.kanbeat/.state/transfers/<terminal-id>/<import-id>.md`, directory 0700 and file 0600, written once and removed after confirmed delivery. It is kept while an import is uncertain so a retry can reconcile it, and removed when the session is deleted.
+- **Limits.** A full plan above 1,048,576 bytes is refused. The offered reductions are the newest 50, 20 or 10 events and user/assistant text only. Nothing is truncated automatically. This limit is on the rendered text, not on the target model's context window.
+- **Writer guard.** A switch is refused while the source record is starting, running, stopping or blocked, and Codex thread metadata or OpenCode session status is checked for another active writer. A failure to run that check leaves the source active rather than guessing.
+- **Failures.** The active harness changes only after delivery is confirmed. An unconfirmed import is reconciled against the target history before a retry; an incomplete read keeps it uncertain.
+- **Deletion.** "Delete session and history" deletes every recorded native session for the logical session in every harness it has used, plus its context files. "Remove from Kanbeat" deletes no native session.
+
+## Corrections found while implementing the switch
+
+- Codex and OpenCode were documented with a context-file recommendation. The implementation sends the envelope through their own message APIs instead: Codex starts a turn, OpenCode stores the message silently. The context file is used only for Claude and Pi.
+- Codex `thread/inject_items` is not used. It remains an unverified silent alternative, not the delivery path.
+- The OpenCode reader retries an oversized response by halving the page limit on the same cursor down to one message; a single message that is still over the host's 1 MiB response limit is an explicit unreachable failure. This replaces the older note that a full read can simply fail on a large session.
+- Codex and OpenCode can also recognize an import by the target message id recorded in the ledger. Claude and Pi recognize a complete import envelope in the stored user text; a bare marker quoted inside a longer message is not an import.
+- A new Claude or Pi session is created directly with the target harness's own configured settings. The source harness's model, provider, effort, permissions, authentication and sandbox are not copied.
 
 ## Codex
 
@@ -51,8 +75,9 @@ Use the shared app-server host in `src/kanbeat/codex_host.py`. The v2 protocol e
 ### 4. Delivering a long context
 
 - `turn/start` with `input: [{"type":"text","text":"…"}]` starts a turn. It rejects text longer than 1,048,576 characters (`1 << 20`) with `Input exceeds the maximum length of 1048576 characters.` The limit counts characters, not bytes, across the text inputs of the turn. [C-SRC]
-- Deliver a short message that points at the context file. The model reads the file through its normal tools; the model's own context window still applies. A short prompt also avoids the argument-length limits of the interactive launcher. [C-SRC]
-- `thread/inject_items` is the only silent append found. It accepts raw Responses API items, persists them and adds them to the next model request without starting a turn. It is not a substitute for a turn when the target must produce a reply, and its long-term visibility through the item list is not confirmed. [C-SCHEMA, C-SRC, C-TEST]
+- The implementation sends the full envelope through `turn/start` with `clientUserMessageId`, while the envelope is at most 1 MiB. That stays below the 1,048,576-character input limit because UTF-8 bytes are never fewer than characters. The target model's own context window still applies. [C-SRC, K]
+- The documented short-prompt-plus-context-file shape also works, but switching does not use it for Codex because the API accepts the text directly. [C-SRC, K]
+- `thread/inject_items` is the only silent append found. It accepts raw Responses API items, persists them and adds them to the next model request without starting a turn. It is not a substitute for a turn when the target must produce a reply, and its long-term visibility through the item list is not confirmed. It is not used by the switch. [C-SCHEMA, C-SRC, C-TEST]
 
 ### 5. What cannot be exported
 
@@ -80,7 +105,7 @@ Use the shared host in `src/kanbeat/opencode_host.py`; the server route root is 
 - Parts carry the conversation: `text`, `reasoning`, `file`, `tool`, `step-start`, `step-finish`, `snapshot`, `patch`, `agent`, `retry`, `compaction` and `subtask`. Tool parts contain `callID`, `tool`, and a state with `status`, `input`, and for completed calls `output`, `title`, `metadata` and attachments. [O-SRC]
 - `time.completed` on an assistant message is not a run-completion signal. `SessionProcessor.cleanup` sets it at the end of every LLM step, and a message can get it from a completed subtask tool or shell command while the loop continues. The run exits only when the latest assistant message has `finish` set, `finish` is not `tool-calls` or `unknown`, it has no tool part that is neither provider-executed (`metadata.providerExecuted`) nor an orphaned interrupted tool, and its `parentID` is the latest user message id; a compaction stop or an error can also end it. The runner then goes idle, which removes the session from the status map. [O-SRC]
 - A synchronous `POST /session/{id}/message` returns after that loop; `prompt_async` returns as soon as the prompt is accepted. For async delivery, confirm completion from the message state and from the session's absence in `GET /session/status`: `SessionStatus.list` omits idle sessions and `SessionStatus.get` returns `idle` for an absent id. Absence from the status map is not evidence that the session is missing; use `GET /session/{id}` for existence. Do not use `time.completed` alone. [O-SRC]
-- Read in pages. Kanbeat's HTTP client reads at most 1 MiB per response and fails with `OpenCode response is too large` above that, so a full-history request without `limit` can fail on a large session. [K]
+- Read in pages. Kanbeat's HTTP client reads at most 1 MiB per response and fails with `OpenCode response is too large` above that, so a full-history request without `limit` can fail on a large session. The reader starts at 50 messages, halves the limit on the same cursor when a page is too large, and fails explicitly if a single message still exceeds the response limit. [O-SRC, K]
 
 ### 2. Identifiers and ordering
 
@@ -99,7 +124,7 @@ Use the shared host in `src/kanbeat/opencode_host.py`; the server route root is 
 - `POST /session/{sessionID}/message` with `messageID`, `system`, and `parts: [{"type":"text","text":"…"}]` creates the user message. `noReply: true` returns immediately after the message is created: no model loop runs and no assistant turn starts. [O-SRC]
 - The per-message `system` string is stored on the user message and is added to the system messages of the next model request; it applies while that user message is the latest one. Put the "context transferred from another harness" note there rather than in the conversation text. [O-SRC]
 - Delivery can therefore be silent and exact. The route schema declares no body-size limit. A large body is still limited by the model context and by any limit the local server or intermediary imposes; that limit was not measured. Kanbeat's 64 KiB `MAX_PROMPT_BYTES` applies only to the command-line `--prompt` path, not to this HTTP path. [O-SRC, K]
-- For a long conversation, the preferred shape is still a short message that points at a private context file. That keeps the request small and leaves the file readable until delivery is confirmed. [O-SRC]
+- The implementation stores the whole envelope in one no-reply message and uses the import note as the per-message `system` string. It does not use a context file for OpenCode because this route already accepts the text and needs no model turn. [O-SRC, K]
 
 ### 5. What cannot be exported
 
@@ -219,25 +244,29 @@ The reader in `src/kanbeat/pi_history.py` follows the entry tree and found these
 - System messages carry prompt sections and tool declarations, not conversation, so the reader skips them. `compaction`, `branch_summary`, `context_edit` and `custom_message` entries, plus `custom`, `branchSummary` and `compactionSummary` message roles, are reported as unsupported categories. Bookkeeping entry types (`custom`, `label`, `model_change`, `thinking_level_change`, `usage` and `session_info`) are skipped; an unknown entry type is reported as `unknown content` instead of being exported. [P-DOCS]
 - An import is recognized only when a user message is a complete import envelope: the start marker must be at the beginning and the matching end marker at the end. A bare marker quoted inside a longer message is not an import. The reader joins the text blocks of one user message before that check, so an envelope split across several blocks is still recognized as a whole message. [K]
 
-## What later tickets should rely on
+## What the implementation relies on
 
-- **Codex:** `thread/items/list` with item ids and `turn/start` with `clientUserMessageId`; treat `thread/inject_items` as an unverified silent alternative. [C-SCHEMA, C-SRC, C-TEST]
-- **OpenCode:** `GET /session/{id}/message` paging with `limit`/`before`; the reader in `src/kanbeat/opencode_history.py` distinguishes available, missing and unreachable history; `POST /session/{id}/message` with `messageID`, `noReply: true`, a `system` note and a text part. [O-SRC, K]
-- **Claude:** transcript records with `uuid`/`parentUuid`; delivery through `claude --resume … -p` and a context file; recognize imports by marker and then record the user record's `uuid`. [CL-FILES, CLI]
-- **Pi:** session entries with `id`/`parentId`; the reader in `src/kanbeat/pi_history.py` distinguishes available, missing and unreachable history, follows the last appended `parentId` chain and reports unsupported categories; delivery through the RPC `prompt` or `pi -p --session-id`; recognize imports by marker and then record the user entry's `id`. [P-DOCS, K]
+- **Codex:** `thread/items/list` paging with item ids; imports are recognized by a complete marker or by a recorded `clientId`; delivery is `turn/start` with `clientUserMessageId`, confirmed when the turn is accepted. `thread/inject_items` is not used. [C-SCHEMA, C-SRC, K]
+- **OpenCode:** paged `GET /session/{id}/message` with `limit`/`before`; the reader distinguishes available, missing and unreachable history; delivery is `POST /session/{id}/message` with `messageID`, `noReply: true`, a `system` note and a text part; imports are recognized by marker or recorded message id. [O-SRC, K]
+- **Claude:** transcript records with `uuid`/`parentUuid`; delivery is a context file plus `claude --resume … -p` (or `--session-id` for a new session); the import marker is recognized in the stored user text and confirmation reads the target history after the one-shot process exits. [CL-FILES, CLI, K]
+- **Pi:** session entries with `id`/`parentId`; the reader follows the last appended `parentId` chain and reports unsupported categories; delivery is a context file plus `pi -p --session-id`; the import marker is recognized in the stored user text and confirmation reads the target history after the process exits. [P-DOCS, K]
 
-## Unverified because it needs a live model
+## Unverified because it needs a live harness
 
-These were not tested because the ticket forbids starting a harness session:
+Automated tests use fixture transcripts, deterministic fake hosts and fake one-shot processes. The following were not exercised against installed vendor CLIs or a real model:
 
 1. Claude Code and Pi marker survival after a real prompt. The file formats store user text as supplied, but no live run confirmed byte-for-byte preservation.
-2. The exact transcript record written by `claude --resume … -p`, including whether the user record is appended before the process exits and whether Claude normalizes the prompt.
+2. The exact transcript record written by `claude --resume … -p`, including whether the user record is appended before the process exits, whether Claude normalizes the prompt, and whether the marker is already visible when the process exits.
 3. Pi's handling of a marker that resembles a slash command or template; avoid a leading `/` and recheck live.
-4. Whether Codex `thread/inject_items` makes the injected item visible through `thread/items/list` and `thread/items/read`. The source test only checks the rollout and the next model request.
-5. The actual server body-size limit for an OpenCode `POST /session/{id}/message`, and for a Pi RPC `prompt` or one-shot prompt.
-6. Whether OpenCode's `noReply` message is immediately visible in a subsequent paged `GET /session/{id}/message` after a restart. The source stores it before returning, but this was not exercised.
-7. Non-text fidelity: images, audio, tool attachments, signatures and provider-specific metadata are intentionally excluded or reduced to references; no round trip was tested.
-8. Any behavior that differs between harness releases. The versions above are the only ones inspected.
+4. Codex accepting the imported turn and the model actually seeing the transferred text. The switch treats a successful `turn/start` as delivery confirmation before any assistant turn exists, and no live run checked the model's view.
+5. Whether Codex `thread/inject_items` makes the injected item visible through `thread/items/list` and `thread/items/read`. The source test only checks the rollout and the next model request. Switching does not use it.
+6. The actual server body-size limit for an OpenCode `POST /session/{id}/message`, and for a Pi RPC `prompt` or one-shot prompt.
+7. Whether OpenCode's `noReply` message is visible in a subsequent paged `GET /session/{id}/message` after a restart and whether its `system` note reaches the next model request as documented. The source stores it before returning, but this was not exercised.
+8. The writer guard against a real active Codex thread or OpenCode session; fixtures only simulate the status values.
+9. The 300-second one-shot delivery timeout and process termination against real Claude Code and Pi CLIs.
+10. Non-text fidelity: images, audio, tool attachments, signatures and provider-specific metadata are intentionally excluded or reduced to references; no round trip was tested.
+11. A real conversation large enough for the 1 MiB refusal and each reduced transfer. The paths are unit-tested, but no model consumed a reduced conversation.
+12. Any behavior that differs between harness releases. The versions above are the only ones inspected.
 
 ## Sources
 
@@ -252,4 +281,4 @@ These were not tested because the ticket forbids starting a harness session:
 - **[CL-BIN]** Error strings found in the installed Claude Code 2.1.316 binary: `No conversation found with session ID:` and `No conversation found to continue`.
 - **[P-DOCS]** Pi 1.4.0 package documentation installed at `~/.nvm/versions/node/v24.21.0/lib/node_modules/@earendil-works/pi-coding-agent/docs/`: `session-format.md`, `sessions.md`, `message-types.md`, `rpc-commands.md`, `rpc.md`, `json.md`, `cli-integration.md` and `cli.md`.
 - **[P-FILES]** Local Pi session files under `~/.pi/agent/sessions/--<path>--/*.jsonl`, inspected structurally without reading conversation content.
-- **[K]** Kanbeat source: `src/kanbeat/codex_host.py`, `src/kanbeat/opencode_host.py`, `src/kanbeat/claude_runtime.py`, `src/kanbeat/session_groups.py`.
+- **[K]** Kanbeat source: `src/kanbeat/codex_host.py`, `src/kanbeat/opencode_host.py`, `src/kanbeat/claude_runtime.py`, `src/kanbeat/codex_history.py`, `src/kanbeat/opencode_history.py`, `src/kanbeat/claude_history.py`, `src/kanbeat/pi_history.py`, `src/kanbeat/session_transfer.py`, `src/kanbeat/session_switch.py`, `src/kanbeat/session_groups.py`, `src/kanbeat/ui/sessions.py`.
