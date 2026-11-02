@@ -187,6 +187,81 @@ def switch_result_message(
     return message
 
 
+def fork_eligible(entry: dict[str, Any]) -> bool:
+    return switch_eligible(entry)
+
+
+def fork_blocker(entry: dict[str, Any]) -> str:
+    if switch_locked(entry):
+        return "Stop the session before forking it."
+    session = entry.get("native_session")
+    if not isinstance(session, str) or not session:
+        return "This session has no conversation to fork yet. Start it first."
+    return ""
+
+
+def fork_title(title: Any) -> str:
+    text = str(title or "Session").strip()
+    suffix = " (fork)"
+    return text[: 64 - len(suffix)].rstrip() + suffix
+
+
+def fork_question(entry: dict[str, Any], target: str, title: str) -> str:
+    product = harness_name(target)
+    name = escape(entry.get("title") or "this session")
+    return (
+        f"Fork {name} to {product} as {escape(title)}?\n\n"
+        f"The whole conversation, including tool output, will be sent to "
+        f"{product} and its provider.\n\n"
+        "Permissions and settings are not transferred, and the new agent may "
+        "behave differently. The original session is not changed."
+    )
+
+
+def fork_result_message(result: dict[str, Any], title: str) -> str:
+    delivered = result.get("delivered")
+    if isinstance(delivered, int) and not isinstance(delivered, bool) and delivered > 0:
+        unit = "event" if delivered == 1 else "events"
+        message = f"Forked {title}; transferred {delivered} conversation {unit}."
+    else:
+        message = f"Forked {title}; there was no conversation to transfer."
+    unsupported = unsupported_summary(result.get("unsupported"))
+    if unsupported:
+        message += " Not transferred: " + ", ".join(unsupported) + "."
+    return message
+
+
+def large_transfer_choice(
+    error: BaseException, details: dict[str, Any]
+) -> SwitchChoice:
+    options: list[tuple[str, dict[str, Any]]] = []
+    for row in details.get("options") or []:
+        if not isinstance(row, dict):
+            continue
+        kind = row.get("kind")
+        if kind == "newest":
+            count = row.get("count")
+            if isinstance(count, bool) or not isinstance(count, int):
+                continue
+            reduction = {"kind": "newest", "count": count}
+        elif kind == "text_only":
+            reduction = {"kind": "text_only"}
+        else:
+            continue
+        label = str(row.get("description") or kind)
+        size = row.get("size")
+        if isinstance(size, dict):
+            text = byte_size(size.get("bytes"))
+            if text:
+                label += f" ({text})"
+        options.append((label, {"reduction": reduction}))
+    message = str(error)
+    unsupported = unsupported_summary(details.get("unsupported"))
+    if unsupported:
+        message += "\nNot transferred from the source: " + ", ".join(unsupported) + "."
+    return SwitchChoice("CONVERSATION TOO LARGE", message, options)
+
+
 def group_title(group, count):
     return f"[{count}]: {group['name']}"
 
@@ -655,34 +730,7 @@ class SessionEdit(BackdropModal[None]):
     def large_transfer_choice(
         self, error: BaseException, details: dict[str, Any]
     ) -> SwitchChoice:
-        options: list[tuple[str, dict[str, Any]]] = []
-        for row in details.get("options") or []:
-            if not isinstance(row, dict):
-                continue
-            kind = row.get("kind")
-            if kind == "newest":
-                count = row.get("count")
-                if isinstance(count, bool) or not isinstance(count, int):
-                    continue
-                reduction = {"kind": "newest", "count": count}
-            elif kind == "text_only":
-                reduction = {"kind": "text_only"}
-            else:
-                continue
-            label = str(row.get("description") or kind)
-            size = row.get("size")
-            if isinstance(size, dict):
-                text = byte_size(size.get("bytes"))
-                if text:
-                    label += f" ({text})"
-            options.append((label, {"reduction": reduction}))
-        message = str(error)
-        unsupported = unsupported_summary(details.get("unsupported"))
-        if unsupported:
-            message += (
-                "\nNot transferred from the source: " + ", ".join(unsupported) + "."
-            )
-        return SwitchChoice("CONVERSATION TOO LARGE", message, options)
+        return large_transfer_choice(error, details)
 
     def missing_target_choice(self, target: str) -> SwitchChoice:
         product = harness_name(target)
@@ -698,6 +746,124 @@ class SessionEdit(BackdropModal[None]):
         )
 
 
+class SessionFork(BackdropModal[None]):
+    forking = False
+
+    def __init__(self, entry: dict[str, Any]):
+        super().__init__()
+        self.entry = entry
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(classes="sm"):
+            yield Static("FORK SESSION", classes="section-title")
+            yield Static("Name", classes="field")
+            yield Input(fork_title(self.entry.get("title")), id="fork-title")
+            yield Static("Group", classes="field")
+            yield Select(
+                group_options(self.app.snapshot),
+                value=self.entry.get("group", ""),
+                allow_blank=False,
+                id="fork-group",
+            )
+            yield Static("Harness", classes="field")
+            yield Select(
+                HARNESS,
+                value=self.entry.get("harness"),
+                allow_blank=False,
+                id="fork-harness",
+            )
+            yield Static(
+                "The new session starts with the whole conversation of this one. "
+                "The original session is not changed.",
+                classes="hint",
+            )
+            with Horizontal(classes="modal-actions"):
+                yield Button("Cancel", id="cancel")
+                yield Button("Fork", id="fork-start", variant="primary")
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        if event.button.id == "cancel":
+            self.dismiss(None)
+        elif event.button.id == "fork-start":
+            self.start_fork()
+
+    @work
+    async def start_fork(self) -> None:
+        if self.forking:
+            return
+        self.forking = True
+        buttons = list(self.query("Button"))
+        for button in buttons:
+            button.disabled = True
+        try:
+            await self._start_fork()
+        finally:
+            self.forking = False
+            for button in buttons:
+                if button.is_mounted:
+                    button.disabled = False
+
+    async def _start_fork(self) -> None:
+        app = self.app
+        title = self.query_one("#fork-title", Input).value
+        target = str(self.query_one("#fork-harness", Select).value)
+        blocker = fork_blocker(
+            app.snapshot.get("terminals", {}).get(self.entry["id"], self.entry)
+        )
+        if blocker:
+            app.notify(blocker, severity="warning", markup=False)
+            return
+        if target != self.entry.get("harness"):
+            from .app import Confirm
+
+            if not await app.push_screen_wait(
+                Confirm(fork_question(self.entry, target, title))
+            ):
+                return
+        request: dict[str, Any] = {
+            "op": "session_fork",
+            "terminal": self.entry["id"],
+            "title": title,
+            "group": self.query_one("#fork-group", Select).value,
+            "harness": target,
+        }
+        while True:
+            try:
+                result = await app.rpc(dict(request))
+            except (RuntimeError, ValueError, OSError) as exc:
+                if isinstance(exc, TimeoutError):
+                    app.notify(
+                        "The fork timed out, so its outcome is unknown. Check the "
+                        "session list before retrying.",
+                        severity="error",
+                        timeout=10,
+                        markup=False,
+                    )
+                    return
+                details = getattr(exc, "details", None)
+                reason = details.get("reason") if isinstance(details, dict) else None
+                if reason == "transfer_too_large":
+                    choice = await app.push_screen_wait(
+                        large_transfer_choice(exc, details)
+                    )
+                    if choice is None:
+                        return
+                    request["reduction"] = choice["reduction"]
+                    continue
+                app.notify(str(exc), severity="error", timeout=10, markup=False)
+                return
+            await app.refresh_snapshot(force=True)
+            app.notify(
+                fork_result_message(result, title.strip() or "the session"),
+                timeout=8,
+                markup=False,
+            )
+            if self.is_mounted:
+                self.dismiss(None)
+            return
+
+
 class SessionActions(PopupMenu):
     def __init__(self, entry: dict[str, Any], anchor: Region | None = None):
         super().__init__(anchor)
@@ -709,6 +875,14 @@ class SessionActions(PopupMenu):
         with Vertical(classes="menu"):
             yield Static(self.entry["title"], classes="section-title", markup=False)
             yield Button("Edit", id="session-edit")
+            if fork_eligible(self.entry):
+                blocker = fork_blocker(self.entry)
+                yield Button(
+                    "Fork",
+                    id="session-fork",
+                    disabled=bool(blocker),
+                    tooltip=blocker or None,
+                )
             if running and self.entry.get("attached"):
                 yield Button("Stop", id="session-stop")
             if status != "stopping":
@@ -729,6 +903,10 @@ class SessionActions(PopupMenu):
             app = self.app
             self.dismiss(None)
             app.push_screen(SessionEdit(self.entry))
+        elif name == "session-fork":
+            app = self.app
+            self.dismiss(None)
+            app.push_screen(SessionFork(self.entry))
         elif name == "session-stop":
             if await self.app.execute(
                 {"op": "terminal_stop", "terminal": self.entry["id"], "confirmed": True}

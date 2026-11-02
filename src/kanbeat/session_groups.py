@@ -13,6 +13,7 @@ from .codex_host import CodexHostError, CodexRpcError, thread_missing
 from .native import available, process_identity
 from .native_settings import cli_args
 from .opencode_host import OpenCodeHostError, OpenCodeHttpError, OpenCodeModel
+from .session_fork import fork_session
 from .session_switch import (
     native_sessions,
     remove_contexts,
@@ -68,6 +69,9 @@ class SessionGroups:
         if entry is None or entry.get("owner") != "custom":
             raise ValueError("Unknown independent session")
         return entry
+
+    def register_session(self, entry: dict[str, Any]) -> None:
+        self.terminals.entries[entry["id"]] = entry
 
     def inactive(self, entry: dict[str, Any]) -> None:
         if entry.get("status") == "recovery_blocked":
@@ -712,6 +716,17 @@ class SessionGroups:
             return {"terminal": terminal_id}
         elif op == "session_switch_harness":
             result = await switch_harness(self, request)
+        elif op == "session_fork":
+            source = self.custom(str(request.get("terminal") or ""))
+            group_id = (
+                request["group"] if "group" in request else source.get("group") or ""
+            )
+            result = await fork_session(
+                self,
+                request,
+                display_name(request.get("title") or f"{source.get('title')} (fork)"),
+                self.group(str(group_id)),
+            )
         elif op in ("session_update", "session_restart", "session_delete"):
             terminal_id = str(request.get("terminal") or "")
             entry = self.custom(terminal_id)

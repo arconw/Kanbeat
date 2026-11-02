@@ -419,6 +419,7 @@ class TransferPlan:
     events: tuple[ConversationEvent, ...] = ()
     unsupported: tuple[str, ...] = ()
     import_id: str | None = None
+    includes_target_events: bool = False
 
     def __post_init__(self) -> None:
         _check_harness(self.target, "target harness")
@@ -426,7 +427,7 @@ class TransferPlan:
         for event in events:
             if not isinstance(event, ConversationEvent):
                 raise ValueError("Plan events must be ConversationEvent objects")
-            if event.harness == self.target:
+            if event.harness == self.target and not self.includes_target_events:
                 raise ValueError("A plan cannot contain events from its target")
             if _looks_like_import(event):
                 raise ValueError("A plan cannot contain import events")
@@ -497,7 +498,12 @@ class TransferPlan:
             raise ValueError("count must be a positive integer")
         if count >= len(self.events):
             return self
-        return TransferPlan(self.target, self.events[-count:], self.unsupported)
+        return TransferPlan(
+            self.target,
+            self.events[-count:],
+            self.unsupported,
+            includes_target_events=self.includes_target_events,
+        )
 
     def reduce_to_roles(
         self, roles: Iterable[str] = CONVERSATION_ROLES
@@ -512,7 +518,12 @@ class TransferPlan:
         events = tuple(event for event in self.events if event.role in selected)
         if len(events) == len(self.events):
             return self
-        return TransferPlan(self.target, events, self.unsupported)
+        return TransferPlan(
+            self.target,
+            events,
+            self.unsupported,
+            includes_target_events=self.includes_target_events,
+        )
 
     def reduction_options(
         self, newest_counts: Sequence[int] = DEFAULT_NEWEST_COUNTS
@@ -741,6 +752,37 @@ class TransferLedger:
             record.target == event.harness
             and record.target_message_id == event.event_id
             for record in self.imports.values()
+        )
+
+    def fork_plan(
+        self,
+        histories: Iterable[HarnessHistory | ConversationEvent],
+        target: str,
+    ) -> TransferPlan:
+        """Plan the whole conversation for a brand-new session of ``target``."""
+        _check_harness(target, "target harness")
+        rows = tuple(histories)
+        events, _ = self._collect(rows, target)
+        unsupported = tuple(
+            sorted(
+                _check_categories(
+                    category
+                    for row in rows
+                    if isinstance(row, HarnessHistory)
+                    for category in row.unsupported
+                )
+            )
+        )
+        unique: dict[EventKey, ConversationEvent] = {}
+        for event in events:
+            if self.is_import_event(event):
+                continue
+            unique.setdefault(event.key, event)
+        return TransferPlan(
+            target=target,
+            events=tuple(unique.values()),
+            unsupported=unsupported,
+            includes_target_events=True,
         )
 
     def plan(

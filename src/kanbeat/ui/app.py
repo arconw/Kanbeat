@@ -20,6 +20,7 @@ from textual.css.query import NoMatches
 
 from ..diff import SOURCES, Changes, collect
 from ..filesystem import assignment_change_blocked, assignment_change_refusal
+from ..ipc import socket_path
 from ..supervisor import request
 from .diff import DiffView, summary_markup, summary_tooltip
 from .terminal import TerminalDisplay, TerminalPane, TerminalView
@@ -42,6 +43,13 @@ COLUMNS = ("backlog", "todo", "progress", "review", "done", "failed")
 FREE_STEPS = {("backlog", "todo"), ("todo", "backlog")}
 RPC_TIMEOUT = 10.0
 SWITCH_RPC_TIMEOUT = 360.0
+SHUTDOWN_WAIT_STEPS = 400
+SHUTDOWN_WAIT_STEP = 0.05
+SHUTDOWN_QUESTION = (
+    "Shut down the supervisor of this project?\n\n"
+    "Board workers and independent sessions are stopped and this TUI closes. "
+    "Tickets stay as files."
+)
 
 
 def slot_change_refusal(ticket: dict[str, Any], snapshot: dict[str, Any]) -> str | None:
@@ -511,6 +519,25 @@ class Assignment(BackdropModal[None]):
                 self.dismiss(None)
 
 
+class NavMenu(PopupMenu):
+    def compose(self) -> ComposeResult:
+        running = self.app.snapshot.get("execution") == "running"
+        with Vertical(classes="menu"):
+            for tab in TABS:
+                yield Button(tab.title(), id="nav-" + tab, disabled=tab == self.app.tab)
+            yield Button(
+                "■ STOP" if running else "▶ PLAY",
+                id="execution",
+                variant="error" if running else "success",
+            )
+            yield Button("Shutdown", id="shutdown", variant="error")
+            yield Button("Quit", id="quit")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.dismiss(event.button.id)
+
+
 class ColumnMenu(PopupMenu):
     def __init__(self, ticket: dict[str, Any], anchor: Region | None = None):
         super().__init__(anchor)
@@ -624,6 +651,10 @@ class ArchiveView(VerticalScroll):
 TABS = ("sessions", "board", "archive", "settings")
 COMPACT_LABEL_WIDTH = 160
 COMPACT_ALWAYS_WIDTH = 100
+NAV_COMPACT_WIDTH = 136
+NAV_WIDE_EMBEDDED_WIDTH = 150
+NAV_COLLAPSE_WIDTH = 108
+NAV_COLLAPSE_EMBEDDED_WIDTH = 125
 DIFF_HIDDEN_KEY = "diff-panel-hidden"
 DIFF_HIDDEN_DEFAULT = True
 
@@ -678,7 +709,9 @@ class KanbeatApp(App[None], inherit_bindings=False):
                 for tab in TABS:
                     yield Button(tab.title(), id="nav-" + tab, classes="nav-button")
                 yield Button("▶ PLAY", id="execution", variant="success")
+                yield Button("Shutdown", id="shutdown", variant="error")
                 yield Button("Quit", id="quit")
+                yield Button("≡", id="nav-menu")
             yield Vertical(id="content")
             yield Static("Local supervisor · " + str(self.project), id="bottom")
 
@@ -716,7 +749,7 @@ class KanbeatApp(App[None], inherit_bindings=False):
     async def rpc(self, message: dict[str, Any]) -> dict[str, Any]:
         timeout = (
             SWITCH_RPC_TIMEOUT
-            if message.get("op") == "session_switch_harness"
+            if message.get("op") in ("session_switch_harness", "session_fork")
             else RPC_TIMEOUT
         )
         return await request(self.project, message, timeout=timeout)
@@ -919,6 +952,20 @@ class KanbeatApp(App[None], inherit_bindings=False):
             return None
         return next(iter(self.screen_stack[0].query(DiffView)), None)
 
+    def nav_compact(self) -> bool:
+        width = self.size.width
+        if width < NAV_COMPACT_WIDTH:
+            return True
+        return self.embedded_terminal is not None and width < NAV_WIDE_EMBEDDED_WIDTH
+
+    def nav_collapsed(self) -> bool:
+        width = self.size.width
+        if width < NAV_COLLAPSE_WIDTH:
+            return True
+        return (
+            self.embedded_terminal is not None and width < NAV_COLLAPSE_EMBEDDED_WIDTH
+        )
+
     def compact_diff_label(self) -> bool:
         width = self.size.width
         if width < COMPACT_ALWAYS_WIDTH:
@@ -973,6 +1020,9 @@ class KanbeatApp(App[None], inherit_bindings=False):
     def update_diff_button(self) -> None:
         try:
             button = self.query_one("#diff-toggle", Button)
+            nav = self.query_one("#nav")
+            nav.set_class(self.nav_collapsed(), "-collapsed")
+            nav.set_class(self.nav_compact(), "-compact")
         except NoMatches:
             return
         button.label = summary_markup(self.changes, self.compact_diff_label())
@@ -1095,20 +1145,18 @@ class KanbeatApp(App[None], inherit_bindings=False):
         name = event.button.id or ""
         if name == "diff-toggle":
             await self.toggle_diff()
-        elif name.startswith("nav-"):
-            self.tab = name[4:]
-            await self.render_page()
+        elif name == "nav-menu":
+            region = event.button.region
+            self.push_screen(
+                NavMenu(Region(region.x, region.y + 1, region.width, region.height)),
+                self.nav_menu_chosen,
+            )
+        elif name.startswith("nav-") or name in ("shutdown", "quit", "execution"):
+            await self.run_nav_action(name)
         elif name.startswith("terminal-"):
             pane = next(iter(self.screen_stack[0].query(TerminalPane)), None)
             if pane is not None:
                 await pane.press_control(name)
-        elif name == "quit":
-            self.exit()
-        elif name == "execution":
-            if self.snapshot.get("execution") == "running":
-                await self.execute({"op": "stop"})
-            else:
-                await self.execute({"op": "play"})
         elif name == "select-mode":
             self.select_mode = not self.select_mode
             self.selection.clear()
@@ -1221,6 +1269,47 @@ class KanbeatApp(App[None], inherit_bindings=False):
             self.selection.clear()
             self.select_mode = False
             await self.render_page()
+
+    async def run_nav_action(self, name: str) -> None:
+        if name == "shutdown":
+            self.confirm_shutdown()
+        elif name == "quit":
+            self.exit()
+        elif name == "execution":
+            if self.snapshot.get("execution") == "running":
+                await self.execute({"op": "stop"})
+            else:
+                await self.execute({"op": "play"})
+        elif name.startswith("nav-"):
+            self.tab = name[4:]
+            await self.render_page()
+
+    async def nav_menu_chosen(self, name: str | None) -> None:
+        if name:
+            await self.run_nav_action(name)
+
+    @work
+    async def confirm_shutdown(self) -> None:
+        if not await self.push_screen_wait(Confirm(SHUTDOWN_QUESTION)):
+            return
+        try:
+            await self.rpc({"op": "shutdown", "confirmed": True})
+        except (RuntimeError, ValueError, OSError) as exc:
+            self.notify(str(exc), severity="error", timeout=7, markup=False)
+            return
+        self.notify("Shutting down the supervisor...", markup=False)
+        for _ in range(SHUTDOWN_WAIT_STEPS):
+            if not socket_path(self.project).exists():
+                self.exit()
+                return
+            await asyncio.sleep(SHUTDOWN_WAIT_STEP)
+        self.notify(
+            "Shutdown was requested but not confirmed within 20 seconds; cleanup "
+            "may still be running.",
+            severity="error",
+            timeout=10,
+            markup=False,
+        )
 
     @work
     async def confirm_delete(self, ticket_id: str) -> None:

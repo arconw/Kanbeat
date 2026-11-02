@@ -22,14 +22,20 @@ Button:focus { text-style: bold; background-tint: #ffffff 10%; }
 #diff-toggle.selected { background: #2f5f9e; color: #ffffff; text-style: bold; }
 #diff-toggle.diff-unseen { color: #ffd479; text-style: bold; }
 #diff-toggle.diff-pulse { background: #3f6aa0; color: #ffffff; }
-.-narrow #brand { width: 16%; min-width: 18; }
-.-narrow .nav-button { min-width: 0; padding: 0; }
-.-narrow #terminal-controls Button { min-width: 6; margin-right: 0; }
-.-narrow #quit { min-width: 7; }
-.-narrow #diff-toggle { min-width: 6; margin-right: 0; padding: 0; }
+#nav.-compact #brand { width: 16%; min-width: 18; }
+#nav.-compact .nav-button { min-width: 0; padding: 0; }
+#nav.-compact #terminal-controls Button { min-width: 6; margin-right: 0; }
+#nav.-compact #quit { min-width: 7; }
+#nav.-compact #shutdown { min-width: 0; margin-left: 0; padding: 0; }
+#nav-menu { display: none; height: 1; width: 5; min-width: 5; padding: 0; margin-left: 1; }
+#nav.-collapsed #nav-menu { display: block; }
+#nav.-collapsed .nav-button, #nav.-collapsed #execution, #nav.-collapsed #shutdown, #nav.-collapsed #quit { display: none; }
+NavMenu .menu { width: 18; }
+#nav.-compact #diff-toggle { min-width: 6; margin-right: 0; padding: 0; }
 .nav-button { height: 1; min-width: 11; border: none; color: #9eafc2; background: #141d2c; }
 .nav-button.selected { color: #7ee5d5; background: #213447; text-style: bold; }
 #execution { height: 1; min-width: 11; }
+#shutdown { height: 1; min-width: 12; margin-left: 1; }
 #quit { height: 1; min-width: 9; margin-left: 1; }
 #content { height: 1fr; width: 100%; }
 #bottom { height: 1; padding-left: 2; color: #92a2b4; background: #1c293b; }
@@ -136,11 +142,12 @@ BackdropModal {
     max-width: 90%;
     height: auto;
     max-height: 85%;
+    overflow-y: auto;
     background: #182638;
     padding: 1;
 }
 .sm TextArea { height: 7; }
-SessionActions, GroupActions, ColumnMenu, SourceMenu { align: left top; background: transparent; }
+SessionActions, GroupActions, ColumnMenu, SourceMenu, NavMenu { align: left top; background: transparent; }
 .menu { width: 34; height: auto; background: #182638; padding: 1; }
 .menu Button { width: 100%; min-width: 0; height: 1; border: none; margin: 0; padding: 0 1; background: #223146; content-align: left middle; text-align: left; }
 .menu Button:hover, .menu Button:focus { background: #2f4660; text-style: bold; }

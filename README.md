@@ -166,7 +166,7 @@ kanbeat stop
 
 Commit `.kanbeat/` with your project so the board travels with it, and add `.kanbeat/.state/` to your `.gitignore`: it holds local runtime data and logs.
 
-Keys: `1` Sessions, `2` Board, `3` Archive, `4` Settings, `Ctrl+R` refresh, `Ctrl+Q` quit, and `Ctrl+\` detaches from a terminal.
+Keys: `1` Sessions, `2` Board, `3` Archive, `4` Settings, `Ctrl+R` refresh, `Ctrl+Q` quit, and `Ctrl+\` detaches from a terminal. The **Shutdown** button next to Play stops the supervisor with all its sessions, like `kanbeat shutdown --yes`; Quit only closes the TUI. On a narrow terminal these buttons fold into a small **≡** menu.
 
 ## Tickets and dependencies
 
@@ -275,8 +275,8 @@ flowchart TB
 - Sessions is the first tab. Groups and sessions sit in a list beside an embedded terminal; clicking a session switches to it.
 - Every independent session gets a native id (Codex thread, OpenCode session, Claude and Pi session id), so **clicking a stopped session resumes it** where it left off. The id can be set in Edit.
 - Besides a harness, a session can be a plain **Terminal** running your shell. Its working directory is remembered: after Stop or a restart, clicking the session opens a fresh shell in the directory you last `cd`-ed to.
-- The session menu has Edit, Stop, **Remove from Kanbeat** (the record goes, every conversation stays in its harness) and **Delete session and history** (also deletes every conversation Kanbeat recorded for it, in each harness it has used).
-- For an independent agent session that is stopped, Edit also offers a harness switch. Kanbeat confirms before reading the native history, carries the conversation over as text and keeps the earlier harness sessions, so switching back sends only what is new. Permissions, sandbox and native settings do not move. See [Switching a session's harness](docs/guide.md#switching-a-sessions-harness).
+- The session menu has Edit, **Fork**, Stop, **Remove from Kanbeat** (the record goes, every conversation stays in its harness) and **Delete session and history** (also deletes every conversation Kanbeat recorded for it, in each harness it has used).
+- For an independent agent session that is stopped, Edit also offers a harness switch. Kanbeat confirms before reading the native history, carries the conversation over as text and keeps the earlier harness sessions, so switching back sends only what is new. Permissions, sandbox and native settings do not move. See [Switching a session's harness](docs/guide.md#switching-a-sessions-harness). **Fork** copies a stopped agent session into a new card, on the same harness by default or on another one, carrying the conversation over the same way; the original stays unchanged. See [Forking a session](docs/guide.md#forking-a-session).
 - Select text with a plain left drag; it is copied when you release. Shift+drag keeps your terminal's own selection.
 - The **files** button opens the [changes panel](docs/guide.md#changes-panel) on the right: it is closed until you open it, remembers your choice, steps aside when the terminal needs the room, and covers the whole page on a very narrow window.
 - Independent sessions keep running when you detach, close the TUI or press Board Stop. Board task slots can be attached live while the board runs (OpenCode, Codex and Claude; Pi needs Board Stop).
