@@ -146,6 +146,16 @@ async def test_assignment_actions_remain_reachable_in_compact_terminal(
         assert form.query_one("#save", Button).region.bottom <= 24
 
 
+async def open_tab(app, pilot, tab):
+    if app.query_one("#nav-" + tab, Button).display:
+        await pilot.click("#nav-" + tab)
+        return
+    await pilot.click("#nav-menu")
+    await pilot.pause(0.2)
+    await pilot.click("#nav-" + tab)
+    await pilot.pause(0.2)
+
+
 @pytest.mark.asyncio
 async def test_invalid_harness_setting_has_visible_warning(tmp_path, monkeypatch):
     from kanbeat.ui.settings import Settings
@@ -153,7 +163,7 @@ async def test_invalid_harness_setting_has_visible_warning(tmp_path, monkeypatch
     supervisor = Supervisor(tmp_path)
     app = client(supervisor, monkeypatch)
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.click("#nav-settings")
+        await open_tab(app, pilot, "settings")
         page = app.query_one(Settings)
         supervisor.runtime.config["default_harness"] = "removed-harness"
         supervisor.runtime.config["transition_hook"]["harness"] = "missing-hook"
@@ -530,7 +540,7 @@ async def test_open_harness_config_reattaches_the_same_terminal(tmp_path, monkey
     app = client(supervisor, monkeypatch)
     try:
         async with app.run_test(size=(100, 35)) as pilot:
-            await pilot.click("#nav-settings")
+            await open_tab(app, pilot, "settings")
             await pilot.pause()
             await pilot.click("#cfg-open-harness")
             await pilot.pause()

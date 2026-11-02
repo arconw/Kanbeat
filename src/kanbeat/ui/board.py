@@ -233,6 +233,9 @@ class BoardView(Vertical):
                             ticket, self.select_mode, ticket["id"] in self.selection
                         )
 
+    def on_mount(self) -> None:
+        self.call_after_refresh(self.fit_lanes)
+
     def on_resize(self) -> None:
         self.fit_lanes()
 
