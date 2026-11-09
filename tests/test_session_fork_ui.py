@@ -7,14 +7,13 @@ from kanbeat.ui.sessions import (
     SessionActions,
     SessionEdit,
     SessionFork,
-    SwitchChoice,
     fork_blocker,
     fork_eligible,
     fork_question,
     fork_result_message,
     fork_title,
 )
-from test_session_edit_switch_review import FakeRpc, entry, refusal, settle
+from test_session_edit_switch_review import FakeRpc, entry, settle
 
 
 class ForkRpc(FakeRpc):
@@ -126,34 +125,6 @@ async def test_forking_to_another_harness_asks_first_and_cancel_sends_nothing(
         await pilot.click("#yes")
         await closed(app, pilot, SessionFork)
         assert [fork["harness"] for fork in fake.forks] == ["claude"]
-
-
-@pytest.mark.asyncio
-async def test_a_too_large_conversation_offers_a_reduction_and_retries(
-    tmp_path, monkeypatch
-):
-    row = entry()
-    fake = ForkRpc({"t1": row})
-    fake.outcomes.append(
-        refusal(
-            "transfer_too_large",
-            "The planned conversation is too large",
-            options=[{"kind": "newest", "count": 10, "description": "Newest 10"}],
-        )
-    )
-    fake.outcomes.append({"delivered": 1, "unsupported": []})
-    app = KanbeatApp(tmp_path)
-    monkeypatch.setattr(app, "rpc", fake)
-    async with app.run_test(size=(140, 40)) as pilot:
-        await pilot.pause(0.3)
-        await open_fork(app, pilot, row)
-        await pilot.click("#fork-start")
-        await settle(app, pilot, SwitchChoice)
-        await pilot.click("#switch-choice-0")
-        await closed(app, pilot, SwitchChoice)
-        await closed(app, pilot, SessionFork)
-        assert "reduction" not in fake.forks[0]
-        assert fake.forks[1]["reduction"] == {"kind": "newest", "count": 10}
 
 
 @pytest.mark.asyncio

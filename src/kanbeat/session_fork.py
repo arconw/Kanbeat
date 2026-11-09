@@ -19,7 +19,6 @@ from .config_keys import HARNESSES
 from .native import available
 from .session_switch import (
     AVAILABLE,
-    MAX_TRANSFER_BYTES,
     MISSING,
     _apply_reduction,
     _assign_ordinals,
@@ -39,7 +38,6 @@ from .session_switch import (
     _opencode_message_id,
     _progress,
     _read_history,
-    _refuse_large,
     _remove_context,
     _require_complete,
     _store_ledger,
@@ -122,8 +120,6 @@ async def fork_session(
                 "The selected reduction removed every event; choose another "
                 "transfer or cancel"
             )
-    if plan.size_bytes > MAX_TRANSFER_BYTES:
-        _refuse_large(plan, MAX_TRANSFER_BYTES)
 
     terminal_id = uuid.uuid4().hex
     _progress(groups, "Preparing the new session")
@@ -178,22 +174,20 @@ async def fork_session(
             groups.state.save()
             return result
 
-        context_path = None
         chosen_id = None
         if target == "codex":
             chosen_id = _client_message_id(plan)
         elif target == "opencode":
             chosen_id = _opencode_message_id(plan)
-        else:
-            context_path = _context_path(groups.state, terminal_id, str(plan.import_id))
-            try:
-                _write_context(context_path, plan.text)
-            except OSError as error:
-                _remove_context(context_path)
-                raise ValueError(
-                    f"Could not prepare the transfer context file: {error}. "
-                    "Nothing was forked; retry"
-                ) from error
+        context_path = _context_path(groups.state, terminal_id, str(plan.import_id))
+        try:
+            _write_context(context_path, plan.text)
+        except OSError as error:
+            _remove_context(context_path)
+            raise ValueError(
+                f"Could not prepare the transfer context file: {error}. "
+                "Nothing was forked; retry"
+            ) from error
         record = ledger.begin_delivery(plan, chosen_id)
 
         _progress(groups, f"Delivering the conversation to {_harness_label(target)}")
@@ -202,15 +196,13 @@ async def fork_session(
                 groups, str(target), target_id, plan, context_path, created
             )
         except (_DeliveryMissing, _DeliveryUncertain, _DeliveryFailed) as error:
-            if context_path is not None:
-                _remove_context(context_path)
+            _remove_context(context_path)
             raise ValueError(
                 f"Delivery to {target} did not complete: {_error_text(error)}. "
                 "Nothing was forked; the source session is unchanged. Retry the fork"
             ) from error
         except Exception as error:
-            if context_path is not None:
-                _remove_context(context_path)
+            _remove_context(context_path)
             raise ValueError(
                 f"Delivery to {target} could not be completed: {_error_text(error)}. "
                 "Nothing was forked; the source session is unchanged. Retry the fork"
@@ -220,8 +212,6 @@ async def fork_session(
         _store_ledger(entry, ledger)
         groups.register_session(entry)
         groups.state.save()
-        if context_path is not None:
-            _remove_context(context_path)
         result["import_id"] = record.import_id
         result["target_message_id"] = delivery.target_message_id
         return result

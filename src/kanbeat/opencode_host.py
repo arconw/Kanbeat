@@ -474,6 +474,7 @@ class OpenCodeServeHost:
         text: str,
         system: str | None = None,
         no_reply: bool = True,
+        wait: bool = True,
     ) -> dict[str, Any]:
         if not isinstance(text, str) or not text or "\x00" in text:
             raise OpenCodeHostError("Invalid OpenCode message text")
@@ -487,9 +488,15 @@ class OpenCodeServeHost:
             body["system"] = system
         if no_reply:
             body["noReply"] = True
+        # A reply turn on the synchronous route only returns when the model
+        # loop ends, far beyond the request timeout; prompt_async returns as
+        # soon as the prompt is accepted.
+        route = "message" if wait else "prompt_async"
         payload = await self._call(
-            "POST", f"/session/{validate_session_id(session_id)}/message", body
+            "POST", f"/session/{validate_session_id(session_id)}/{route}", body
         )
+        if not wait and payload is None:
+            return {"info": {"id": body["messageID"]}}
         if not isinstance(payload, dict):
             raise OpenCodeHostError("OpenCode message response is malformed")
         return payload

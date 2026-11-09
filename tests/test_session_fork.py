@@ -3,10 +3,11 @@ import copy
 import pytest
 
 from kanbeat.session_fork import fork_session
-from kanbeat.session_switch import SessionSwitchRefused, switch_harness
+from kanbeat.session_switch import switch_harness
 from test_session_switch_review import (
     THREAD,
     FakeGroups,
+    codex_assistant,
     installed,
     make_groups,
     start_marker_count,
@@ -59,9 +60,9 @@ async def test_fork_to_another_harness_creates_a_new_card_and_keeps_the_source(
     assert result["delivered"] == 2
     (sent,) = groups.opencode.sent
     assert sent["session_id"] == result["native_session"]
-    assert "Codex question" in sent["text"]
-    assert "Codex answer" in sent["text"]
-    assert start_marker_count(sent["text"]) == 1
+    assert "Codex question" in sent["context"]
+    assert "Codex answer" in sent["context"]
+    assert start_marker_count(sent["context"]) == 1
     assert groups.codex.turns == []
 
 
@@ -80,8 +81,8 @@ async def test_fork_into_the_same_harness_starts_a_separate_session(
     assert result["delivered"] == 2
     (turn,) = groups.codex.turns
     assert turn["thread_id"] == card["native_session"]
-    assert "Codex question" in turn["text"]
-    assert "Codex answer" in turn["text"]
+    assert "Codex question" in turn["context"]
+    assert "Codex answer" in turn["context"]
     assert groups.entries["t1"]["native_session"] == THREAD
 
 
@@ -102,8 +103,8 @@ async def test_fork_carries_the_conversation_of_every_harness_the_card_used(
     assert card["native_session"] != THREAD
     (turn,) = groups.codex.turns
     for text in ("Codex question", "Codex answer", "OpenCode answer"):
-        assert text in turn["text"]
-    assert start_marker_count(turn["text"]) == 1
+        assert text in turn["context"]
+    assert start_marker_count(turn["context"]) == 1
     assert groups.entries["t1"]["native_session"] == first["native_session"]
     assert set(groups.entries["t1"]["native_sessions"]) == {"codex", "opencode"}
 
@@ -136,21 +137,28 @@ async def test_failed_delivery_registers_no_card(tmp_path, installed):
 
 
 @pytest.mark.asyncio
-async def test_fork_offers_a_reduction_when_the_conversation_is_too_large(
-    tmp_path, installed, monkeypatch
+@pytest.mark.parametrize("harness", ["codex", "opencode"])
+async def test_fork_never_asks_for_a_smaller_transfer_and_writes_the_whole_file(
+    tmp_path, installed, harness
 ):
     groups = forking_groups(tmp_path)
-    monkeypatch.setattr("kanbeat.session_fork.MAX_TRANSFER_BYTES", 390)
+    groups.codex.threads[THREAD] = [
+        codex_assistant(f"assistant-{index}", f"text-{index} " + "x" * 20000)
+        for index in range(60)
+    ]
 
-    with pytest.raises(SessionSwitchRefused) as raised:
-        await fork(groups, harness="opencode")
+    result = await fork(groups, harness=harness)
 
-    assert raised.value.reason == "transfer_too_large"
-    assert list(groups.entries) == ["t1"]
-    result = await fork(
-        groups, harness="opencode", reduction={"kind": "newest", "count": 1}
-    )
-    assert result["delivered"] == 1
+    assert result["delivered"] == 60
+    assert result["transfer"]["bytes"] > 1024 * 1024
+    delivered = groups.codex.turns if harness == "codex" else groups.opencode.sent
+    message = delivered[-1]
+    assert len(message["text"]) < 4000
+    assert "text-0 " in message["context"]
+    assert "text-59 " in message["context"]
+    assert (
+        groups.state.board.root / ".state" / "transfers" / result["terminal"]
+    ).is_dir()
 
 
 @pytest.mark.asyncio

@@ -15,11 +15,11 @@ Source tags in square brackets refer to the list at the end.
 | Kanbeat chooses the message id | yes, `clientUserMessageId` | yes, `messageID` | impossible | impossible |
 | Marker survives in stored text | yes, from source | yes, from source | expected, unverified live | expected, unverified live |
 | Silent delivery | `thread/inject_items`, not yet suitable for reconciliation | `noReply: true` | no documented API | no documented API |
-| Delivery endpoint | `turn/start` (starts a turn) | `POST /session/{id}/message` (starts a turn unless `noReply`) | `claude --resume … -p` (starts a turn) | Pi RPC `prompt` or `pi -p` (starts a turn) |
+| Delivery endpoint used | `turn/start` (starts a turn) | `POST /session/{id}/prompt_async` (starts a turn, returns when accepted) | `claude --resume … -p` (starts a turn) | Pi RPC `prompt` or `pi -p` (starts a turn) |
 
 Marker approach: Codex and OpenCode work from source inspection; Claude and Pi are unverified and need a live check. Client-chosen message id: Codex and OpenCode work; Claude and Pi are impossible.
 
-Delivery shape differs by harness. Codex receives the envelope as a `turn/start` user message, and OpenCode stores it as a no-reply message; neither uses a context file. Claude and Pi cannot take the full conversation on a command line, so Kanbeat writes the private context file and sends a short prompt that points at it. The file only solves input size and command-line arguments; it does not extend the model's context window.
+Delivery shape is the same for every harness. Kanbeat writes the whole envelope to the private context file and sends a short prompt that points at it and tells the agent to read it completely; the transport differs (`turn/start` for Codex, `prompt_async` for OpenCode, a one-shot `-p` process for Claude and Pi). Earlier versions sent the envelope itself to Codex and OpenCode and refused conversations above 1 MiB; both are gone. The file solves input size and command-line arguments; it does not extend the model's context window, and Kanbeat cannot verify that the agent read all of it.
 
 ## Implementation status
 
@@ -28,11 +28,11 @@ The feature is implemented in `src/kanbeat` and covered by focused tests. The te
 - **Readers.** `codex_history.py`, `opencode_history.py`, `claude_history.py` and `pi_history.py` return `available`, `missing` or `unreachable`, a completeness flag and unsupported categories. None writes to native history or logs conversation content.
 - **Source scope.** `session_switch.py` reads the current source harness and every earlier harness with a recorded native session. A missing earlier third harness is marked missing and skipped. The source history must be available and complete. A target that has not been used before is created; a saved target that no longer exists is replaced only through the explicit fresh fallback.
 - **Ordinals and checkpoints.** Readers number events within one harness; the supervisor maps their stable keys to one monotonic ordinal sequence for the logical session. Per-target checkpoints and import records live in the session record in `.kanbeat/.state/supervisor.json`.
-- **Codex delivery.** `turn/start` with the full envelope and `clientUserMessageId=<import id>`. A successful turn start is treated as delivery confirmation; the switch does not wait for the assistant turn to finish and does not search the thread for the marker afterwards.
-- **OpenCode delivery.** `POST /session/{id}/message` with `messageID=msg<import id>`, `noReply: true` and the import note as the per-message `system` string. The returned message id is the target id. No model turn starts.
-- **Claude and Pi delivery.** A private context file plus a short prompt wrapped in import markers. Claude uses `claude --resume <id> -p` (or `--session-id` for a new session); Pi uses `pi -p --session-id <id>`. Both wait for the one-shot process to exit successfully (300-second delivery timeout) and only then look for the import marker in the target history.
-- **Context files.** `.kanbeat/.state/transfers/<terminal-id>/<import-id>.md`, directory 0700 and file 0600, written once and removed after confirmed delivery. It is kept while an import is uncertain so a retry can reconcile it, and removed when the session is deleted.
-- **Limits.** A full plan above 1,048,576 bytes is refused. The offered reductions are the newest 50, 20 or 10 events and user/assistant text only. Nothing is truncated automatically. This limit is on the rendered text, not on the target model's context window.
+- **Codex delivery.** `turn/start` with the short prompt and `clientUserMessageId=<import id>`. A successful turn start is treated as delivery confirmation; the switch does not wait for the assistant turn to finish and does not search the thread for the marker afterwards.
+- **OpenCode delivery.** `POST /session/{id}/prompt_async` with `messageID=msg<import id>`, the short prompt and the import note as the per-message `system` string, without `noReply`, so a model turn starts. The route answers as soon as the prompt is accepted; the target id is the chosen message id. The synchronous `/message` route would block until the whole turn ends, past the host's request timeout.
+- **Claude and Pi delivery.** The same short prompt wrapped in import markers. Claude uses `claude --resume <id> -p` (or `--session-id` for a new session); Pi uses `pi -p --session-id <id>`. Both wait for the one-shot process to exit successfully (300-second delivery timeout) and only then look for the import marker in the target history.
+- **Context files.** `.kanbeat/.state/transfers/<terminal-id>/<import-id>.md`, directory 0700 and file 0600, written once for every delivery. It is not removed after a confirmed delivery, because Codex and OpenCode read it while the turn runs after the request returns. It is removed when the session is deleted, on a failed or missing delivery, when a retry reconciles an uncertain import, and by the sweep at the start of the session's next switch.
+- **Limits.** No size limit and no prompt for a smaller transfer. An explicit `reduction` in the request (newest N events, user and assistant text only) is still honored by the supervisor, but nothing in the TUI sends it. The target model's context window still applies to whatever the agent reads.
 - **Writer guard.** A switch is refused while the source record is starting, running, stopping or blocked, and Codex thread metadata or OpenCode session status is checked for another active writer. A failure to run that check leaves the source active rather than guessing. Claude Code and Pi expose no equivalent live-activity check, so a session running in another client cannot be detected; the user guide asks the user to stop it first.
 - **Initial prompt.** A successful switch clears the stored initial prompt only after the user event that carries it is already in the target's own history or has been delivered to the target, including delivery in an earlier import. That prompt was seeded into the source native session and is already part of the target conversation; replaying it into the target would duplicate it, and Pi and a new Claude session would otherwise receive it on their first launch. The prompt is kept when it is not found in the readable source history, when every source history is empty, and when an explicit reduction leaves its event out. A later full transfer clears it.
 - **Failures.** The active harness changes only after delivery is confirmed. An unconfirmed import is reconciled against the target history before a retry; an incomplete read keeps it uncertain.
@@ -40,7 +40,7 @@ The feature is implemented in `src/kanbeat` and covered by focused tests. The te
 
 ## Corrections found while implementing the switch
 
-- Codex and OpenCode were documented with a context-file recommendation. The implementation sends the envelope through their own message APIs instead: Codex starts a turn, OpenCode stores the message silently. The context file is used only for Claude and Pi.
+- Codex and OpenCode were documented with a context-file recommendation, then implemented with their own message APIs (Codex `turn/start` with the envelope, OpenCode a silent `noReply` message) and a 1 MiB limit. That is reversed: every harness now gets the context file and a short prompt that makes the agent read it, and the size limit and reductions dialog are removed. OpenCode therefore starts a turn on delivery.
 - Codex `thread/inject_items` is not used. It remains an unverified silent alternative, not the delivery path.
 - The OpenCode reader retries an oversized response by halving the page limit on the same cursor down to one message; a single message that is still over the host's 1 MiB response limit is an explicit unreachable failure. This replaces the older note that a full read can simply fail on a large session.
 - Codex and OpenCode can also recognize an import by the target message id recorded in the ledger. Claude and Pi recognize a complete import envelope in the stored user text; a bare marker quoted inside a longer message is not an import.
@@ -76,8 +76,8 @@ Use the shared app-server host in `src/kanbeat/codex_host.py`. The v2 protocol e
 ### 4. Delivering a long context
 
 - `turn/start` with `input: [{"type":"text","text":"…"}]` starts a turn. It rejects text longer than 1,048,576 characters (`1 << 20`) with `Input exceeds the maximum length of 1048576 characters.` The limit counts characters, not bytes, across the text inputs of the turn. [C-SRC]
-- The implementation sends the full envelope through `turn/start` with `clientUserMessageId`, while the envelope is at most 1 MiB. That stays below the 1,048,576-character input limit because UTF-8 bytes are never fewer than characters. The target model's own context window still applies. [C-SRC, K]
-- The documented short-prompt-plus-context-file shape also works, but switching does not use it for Codex because the API accepts the text directly. [C-SRC, K]
+- The implementation sends only the short prompt through `turn/start` with `clientUserMessageId`, far below the 1,048,576-character input limit; the conversation travels in the context file. The target model's own context window still applies to what the agent reads. [C-SRC, K]
+- The short-prompt-plus-context-file shape is the one switching and forking use for Codex. [C-SRC, K]
 - `thread/inject_items` is the only silent append found. It accepts raw Responses API items, persists them and adds them to the next model request without starting a turn. It is not a substitute for a turn when the target must produce a reply, and its long-term visibility through the item list is not confirmed. It is not used by the switch. [C-SCHEMA, C-SRC, C-TEST]
 
 ### 5. What cannot be exported
@@ -124,8 +124,9 @@ Use the shared host in `src/kanbeat/opencode_host.py`; the server route root is 
 
 - `POST /session/{sessionID}/message` with `messageID`, `system`, and `parts: [{"type":"text","text":"…"}]` creates the user message. `noReply: true` returns immediately after the message is created: no model loop runs and no assistant turn starts. [O-SRC]
 - The per-message `system` string is stored on the user message and is added to the system messages of the next model request; it applies while that user message is the latest one. Put the "context transferred from another harness" note there rather than in the conversation text. [O-SRC]
-- Delivery can therefore be silent and exact. The route schema declares no body-size limit. A large body is still limited by the model context and by any limit the local server or intermediary imposes; that limit was not measured. Kanbeat's 64 KiB `MAX_PROMPT_BYTES` applies only to the command-line `--prompt` path, not to this HTTP path. [O-SRC, K]
-- The implementation stores the whole envelope in one no-reply message and uses the import note as the per-message `system` string. It does not use a context file for OpenCode because this route already accepts the text and needs no model turn. [O-SRC, K]
+- The synchronous route would block the host's 15-second request client until a started turn ends, so a turn is started through `prompt_async` instead (not exercised live; see the unverified list). A silent delivery with `noReply` is possible but cannot make the agent read a file.
+- A `noReply` delivery would be silent and exact. The route schema declares no body-size limit. A large body is still limited by the model context and by any limit the local server or intermediary imposes; that limit was not measured. Kanbeat's 64 KiB `MAX_PROMPT_BYTES` applies only to the command-line `--prompt` path, not to this HTTP path. [O-SRC, K]
+- The implementation sends the short prompt through `prompt_async` (no `noReply`) with the import note as the per-message `system` string, and the conversation in the context file. A turn starts so that the agent actually reads the file. [O-SRC, K]
 
 ### 5. What cannot be exported
 
@@ -248,7 +249,7 @@ The reader in `src/kanbeat/pi_history.py` follows the entry tree and found these
 ## What the implementation relies on
 
 - **Codex:** `thread/items/list` paging with item ids; imports are recognized by a complete marker or by a recorded `clientId`; delivery is `turn/start` with `clientUserMessageId`, confirmed when the turn is accepted. `thread/inject_items` is not used. [C-SCHEMA, C-SRC, K]
-- **OpenCode:** paged `GET /session/{id}/message` with `limit`/`before`; the reader distinguishes available, missing and unreachable history; delivery is `POST /session/{id}/message` with `messageID`, `noReply: true`, a `system` note and a text part; imports are recognized by marker or recorded message id. [O-SRC, K]
+- **OpenCode:** paged `GET /session/{id}/message` with `limit`/`before`; the reader distinguishes available, missing and unreachable history; delivery is `POST /session/{id}/prompt_async` with `messageID`, a `system` note and a short text part that points at the context file; imports are recognized by marker or recorded message id. [O-SRC, K]
 - **Claude:** transcript records with `uuid`/`parentUuid`; delivery is a context file plus `claude --resume … -p` (or `--session-id` for a new session); the import marker is recognized in the stored user text and confirmation reads the target history after the one-shot process exits. [CL-FILES, CLI, K]
 - **Pi:** session entries with `id`/`parentId`; the reader follows the last appended `parentId` chain and reports unsupported categories; delivery is a context file plus `pi -p --session-id`; the import marker is recognized in the stored user text and confirmation reads the target history after the process exits. [P-DOCS, K]
 
@@ -262,11 +263,11 @@ Automated tests use fixture transcripts, deterministic fake hosts and fake one-s
 4. Codex accepting the imported turn and the model actually seeing the transferred text. The switch treats a successful `turn/start` as delivery confirmation before any assistant turn exists, and no live run checked the model's view.
 5. Whether Codex `thread/inject_items` makes the injected item visible through `thread/items/list` and `thread/items/read`. The source test only checks the rollout and the next model request. Switching does not use it.
 6. The actual server body-size limit for an OpenCode `POST /session/{id}/message`, and for a Pi RPC `prompt` or one-shot prompt.
-7. Whether OpenCode's `noReply` message is visible in a subsequent paged `GET /session/{id}/message` after a restart and whether its `system` note reaches the next model request as documented. The source stores it before returning, but this was not exercised.
+7. Whether OpenCode's `prompt_async` route accepts a chosen `messageID` and a per-message `system` note like the synchronous route, whether the stored user message shows the import marker, and whether the agent then reads the whole context file. Written from source inspection of the earlier synchronous route; not exercised.
 8. The writer guard against a real active Codex thread or OpenCode session; fixtures only simulate the status values.
 9. The 300-second one-shot delivery timeout and process termination against real Claude Code and Pi CLIs.
 10. Non-text fidelity: images, audio, tool attachments, signatures and provider-specific metadata are intentionally excluded or reduced to references; no round trip was tested.
-11. A real conversation large enough for the 1 MiB refusal and each reduced transfer. The paths are unit-tested, but no model consumed a reduced conversation.
+11. A real conversation of several megabytes delivered through the context file: whether each agent reads all of it in parts, and what it does when the file exceeds its context window. Tests only check that the whole file is written and the prompt stays short.
 12. Any behavior that differs between harness releases. The versions above are the only ones inspected.
 
 ## Sources
