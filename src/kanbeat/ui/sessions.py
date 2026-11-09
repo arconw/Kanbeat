@@ -115,16 +115,6 @@ def removal_question(entry: dict[str, Any], native: bool) -> str:
     return f"Remove {name} from Kanbeat? Its conversation stays in {product}."
 
 
-def byte_size(value: Any) -> str:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        return ""
-    if value < 1024:
-        return f"{value} B"
-    if value < 1024 * 1024:
-        return f"{value / 1024:.0f} KB"
-    return f"{value / (1024 * 1024):.1f} MB"
-
-
 def switch_question(entry: dict[str, Any], target: str, title: str) -> str:
     product = harness_name(target)
     name = escape(title or entry.get("title") or "this session")
@@ -229,37 +219,6 @@ def fork_result_message(result: dict[str, Any], title: str) -> str:
     if unsupported:
         message += " Not transferred: " + ", ".join(unsupported) + "."
     return message
-
-
-def large_transfer_choice(
-    error: BaseException, details: dict[str, Any]
-) -> SwitchChoice:
-    options: list[tuple[str, dict[str, Any]]] = []
-    for row in details.get("options") or []:
-        if not isinstance(row, dict):
-            continue
-        kind = row.get("kind")
-        if kind == "newest":
-            count = row.get("count")
-            if isinstance(count, bool) or not isinstance(count, int):
-                continue
-            reduction = {"kind": "newest", "count": count}
-        elif kind == "text_only":
-            reduction = {"kind": "text_only"}
-        else:
-            continue
-        label = str(row.get("description") or kind)
-        size = row.get("size")
-        if isinstance(size, dict):
-            text = byte_size(size.get("bytes"))
-            if text:
-                label += f" ({text})"
-        options.append((label, {"reduction": reduction}))
-    message = str(error)
-    unsupported = unsupported_summary(details.get("unsupported"))
-    if unsupported:
-        message += "\nNot transferred from the source: " + ", ".join(unsupported) + "."
-    return SwitchChoice("CONVERSATION TOO LARGE", message, options)
 
 
 def group_title(group, count):
@@ -692,14 +651,6 @@ class SessionEdit(BackdropModal[None]):
                     return
                 details = getattr(exc, "details", None)
                 reason = details.get("reason") if isinstance(details, dict) else None
-                if reason == "transfer_too_large":
-                    choice = await self.app.push_screen_wait(
-                        self.large_transfer_choice(exc, details)
-                    )
-                    if choice is None:
-                        return
-                    request["reduction"] = choice["reduction"]
-                    continue
                 if reason == "target_session_missing" and not request.get(
                     "fresh_session"
                 ):
@@ -726,11 +677,6 @@ class SessionEdit(BackdropModal[None]):
             if self.is_mounted:
                 self.finish()
             return
-
-    def large_transfer_choice(
-        self, error: BaseException, details: dict[str, Any]
-    ) -> SwitchChoice:
-        return large_transfer_choice(error, details)
 
     def missing_target_choice(self, target: str) -> SwitchChoice:
         product = harness_name(target)
@@ -841,16 +787,6 @@ class SessionFork(BackdropModal[None]):
                         markup=False,
                     )
                     return
-                details = getattr(exc, "details", None)
-                reason = details.get("reason") if isinstance(details, dict) else None
-                if reason == "transfer_too_large":
-                    choice = await app.push_screen_wait(
-                        large_transfer_choice(exc, details)
-                    )
-                    if choice is None:
-                        return
-                    request["reduction"] = choice["reduction"]
-                    continue
                 app.notify(str(exc), severity="error", timeout=10, markup=False)
                 return
             await app.refresh_snapshot(force=True)

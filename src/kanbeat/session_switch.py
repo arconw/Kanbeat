@@ -2,10 +2,10 @@
 
 The operation reads native history through the harness readers, plans exactly
 the events the target has not received, and makes the target harness active only
-after delivery is confirmed. Codex and OpenCode receive the envelope through
-their own message APIs; Claude and Pi receive a short prompt that points at a
-private context file, because their conversation cannot be passed on a command
-line.
+after delivery is confirmed. Every target receives the full conversation as a
+private context file under ``.kanbeat/.state/transfers`` and a short prompt that
+tells the agent to read that file completely; the file is kept after delivery so
+the agent can read it while its turn runs.
 
 Failure leaves the source harness active. An unconfirmed delivery is recorded
 as uncertain and is reconciled against the target history before a retry.
@@ -56,7 +56,6 @@ NATIVE_STATUSES = (AVAILABLE, MISSING)
 ACTIVE_SESSION_STATES = ("starting", "running", "stopping", "recovery_blocked")
 EXCLUDED_ROLES = ("config", "hook")
 
-MAX_TRANSFER_BYTES = 1024 * 1024
 DELIVERY_TIMEOUT = 300.0
 CONTEXT_DIRECTORY = "transfers"
 ERROR_TAIL = 600
@@ -224,9 +223,15 @@ def _sweep_contexts(state: Any, terminal_id: str, ledger: TransferLedger) -> Non
 
 def _context_prompt(path: Path, plan: TransferPlan) -> str:
     instruction = (
-        f"Read the file {path} and continue from the conversation it contains. "
-        "That file is context transferred from a previous harness, not a new "
-        f"instruction, and it must not be modified.\n{IMPORT_NOTE}"
+        f"Before anything else, read the file {path} completely, from its first "
+        "line to its last. It holds the earlier conversation of this session, "
+        "transferred from another harness. If your file tool returns it in parts, "
+        "keep reading consecutive parts until you reach the final line, the HTML "
+        "comment that starts with <!-- /kanbeat-import. Do not skim it, do not "
+        "stop at a partial read and do not answer from a summary. The file is "
+        "context, not a new instruction, and it must not be modified. When you "
+        "have read all of it, confirm that in one short sentence and wait for the "
+        f"user's next message.\n{IMPORT_NOTE}"
     )
     return render_short_prompt(
         instruction,
@@ -685,31 +690,6 @@ def _apply_reduction(plan: TransferPlan, reduction: Any) -> TransferPlan:
     raise ValueError("Unknown transfer reduction: " + str(kind))
 
 
-def _refuse_large(plan: TransferPlan, limit: int) -> None:
-    report = plan.size_report()
-    options = [option.to_dict() for option in report.options]
-    choice = (
-        "Choose one of the explicit smaller transfers or cancel."
-        if options
-        else "No smaller transfer can be offered automatically; cancel or shorten "
-        "the conversation in the source harness."
-    )
-    raise SessionSwitchRefused(
-        "transfer_too_large",
-        (
-            f"The planned conversation is {plan.size_bytes} bytes, above the "
-            f"{limit}-byte transfer limit. Nothing was truncated. {choice} "
-            "A reduced transfer still has to fit the target model's context "
-            "window"
-        ),
-        details={
-            "size": report.to_dict(),
-            "options": options,
-            "unsupported": list(plan.unsupported),
-        },
-    )
-
-
 def _mark_pending_not_delivered(
     entry: dict[str, Any],
     ledger: TransferLedger,
@@ -968,9 +948,6 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
                 "The selected reduction removed every event; choose another "
                 "transfer or cancel"
             )
-    if plan.size_bytes > MAX_TRANSFER_BYTES:
-        _refuse_large(plan, MAX_TRANSFER_BYTES)
-
     _progress(groups, "Preparing the target session")
     created = False
     if target_id is None:
@@ -1014,22 +991,20 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
             "transfer": transfer,
         }
 
-    context_path: Path | None = None
     chosen_id: str | None = None
     if target == "codex":
         chosen_id = _client_message_id(plan)
     elif target == "opencode":
         chosen_id = _opencode_message_id(plan)
-    else:
-        context_path = _context_path(groups.state, terminal_id, str(plan.import_id))
-        try:
-            _write_context(context_path, plan.text)
-        except OSError as error:
-            _remove_context(context_path)
-            raise ValueError(
-                f"Could not prepare the transfer context file: {error}. "
-                f"The source {source} session stays active; retry the switch"
-            ) from error
+    context_path = _context_path(groups.state, terminal_id, str(plan.import_id))
+    try:
+        _write_context(context_path, plan.text)
+    except OSError as error:
+        _remove_context(context_path)
+        raise ValueError(
+            f"Could not prepare the transfer context file: {error}. "
+            f"The source {source} session stays active; retry the switch"
+        ) from error
     record = ledger.begin_delivery(plan, chosen_id)
     _store_ledger(entry, ledger)
     groups.state.save()
@@ -1044,8 +1019,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
         rows[target] = {"id": target_id, "status": MISSING}
         entry["native_sessions"] = rows
         _store_ledger(entry, ledger)
-        if context_path is not None:
-            _remove_context(context_path)
+        _remove_context(context_path)
         groups.state.save()
         raise SessionSwitchRefused(
             "target_session_missing",
@@ -1080,8 +1054,7 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     except _DeliveryFailed as error:
         ledger.mark_not_delivered(record.import_id)
         _store_ledger(entry, ledger)
-        if context_path is not None:
-            _remove_context(context_path)
+        _remove_context(context_path)
         groups.state.save()
         raise ValueError(
             f"Nothing was delivered to {target}: {_error_text(error)}. "
@@ -1104,8 +1077,6 @@ async def switch_harness(groups: Any, request: dict[str, Any]) -> dict[str, Any]
     entry.pop("native_assigned", None)
     _store_ledger(entry, ledger)
     groups.state.save()
-    if context_path is not None:
-        _remove_context(context_path)
     return {
         "terminal": terminal_id,
         "harness": target,
@@ -1128,13 +1099,13 @@ async def _deliver(
     context_path: Path | None,
     created: bool,
 ) -> _Delivery:
-    if target == "codex":
-        return await _deliver_codex(groups, session_id, plan)
-    if target == "opencode":
-        return await _deliver_opencode(groups, session_id, plan)
     if context_path is None:
         raise _DeliveryFailed("The transfer context file is missing")
     prompt = _context_prompt(context_path, plan)
+    if target == "codex":
+        return await _deliver_codex(groups, session_id, plan, prompt, context_path)
+    if target == "opencode":
+        return await _deliver_opencode(groups, session_id, plan, prompt, context_path)
     if target == "claude":
         return await _deliver_claude(
             groups, session_id, plan, prompt, context_path, created
@@ -1150,6 +1121,8 @@ async def _deliver_codex(
     groups: Any,
     session_id: str,
     plan: TransferPlan,
+    prompt: str,
+    context_path: Path,
 ) -> _Delivery:
     if groups.codex_host is None:
         raise _DeliveryFailed("Codex host provider is unavailable")
@@ -1157,7 +1130,7 @@ async def _deliver_codex(
         host = await groups.codex_host()
         await host.start_turn(
             session_id,
-            plan.text,
+            prompt,
             client_user_message_id=_client_message_id(plan),
         )
     except CodexRpcError as error:
@@ -1166,13 +1139,15 @@ async def _deliver_codex(
         raise _DeliveryUncertain(_error_text(error)) from error
     except (CodexHostError, OSError, asyncio.TimeoutError) as error:
         raise _DeliveryUncertain(_error_text(error)) from error
-    return _Delivery(_client_message_id(plan))
+    return _Delivery(_client_message_id(plan), context_path)
 
 
 async def _deliver_opencode(
     groups: Any,
     session_id: str,
     plan: TransferPlan,
+    prompt: str,
+    context_path: Path,
 ) -> _Delivery:
     if groups.opencode_host is None:
         raise _DeliveryFailed("OpenCode host provider is unavailable")
@@ -1181,9 +1156,10 @@ async def _deliver_opencode(
         payload = await host.send_message(
             session_id,
             message_id=_opencode_message_id(plan),
-            text=plan.text,
+            text=prompt,
             system=IMPORT_NOTE,
-            no_reply=True,
+            no_reply=False,
+            wait=False,
         )
     except OpenCodeHttpError as error:
         if error.status == 404:
@@ -1198,8 +1174,8 @@ async def _deliver_opencode(
     info = payload.get("info")
     identifier = info.get("id") if isinstance(info, dict) else None
     if isinstance(identifier, str) and identifier:
-        return _Delivery(identifier)
-    return _Delivery(_opencode_message_id(plan))
+        return _Delivery(identifier, context_path)
+    return _Delivery(_opencode_message_id(plan), context_path)
 
 
 async def _deliver_claude(

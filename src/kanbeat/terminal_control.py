@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import time
+from contextlib import suppress
+from datetime import datetime
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 import uuid
 
@@ -22,6 +26,66 @@ PASTE_BEGIN = b"\x1b[200~"
 PASTE_END = b"\x1b[201~"
 PASTE_STALE_SECONDS = 60.0
 MAX_PASTES_PER_TERMINAL = 8
+PASTE_DIRECTORY = "pastes"
+
+
+def paste_directory(state_dir: Path, terminal_id: str) -> Path:
+    return Path(state_dir) / PASTE_DIRECTORY / terminal_id
+
+
+def remove_pastes(state_dir: Path, terminal_id: str) -> None:
+    """Remove the files that large pastes left for one session."""
+    directory = paste_directory(state_dir, terminal_id)
+    if not directory.is_dir():
+        return
+    for path in directory.iterdir():
+        if path.is_file() or path.is_symlink():
+            with suppress(OSError):
+                path.unlink()
+    with suppress(OSError):
+        directory.rmdir()
+    with suppress(OSError):
+        directory.parent.rmdir()
+
+
+def open_paste_file(directory: Path) -> tuple[Any, Path]:
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with suppress(OSError):
+        os.chmod(directory, 0o700)
+    name = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}.txt"
+    path = directory / name
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    handle = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(handle, 0o600)
+        return os.fdopen(handle, "wb"), path
+    except BaseException:
+        os.close(handle)
+        with suppress(OSError):
+            path.unlink()
+        raise
+
+
+def readable_size(size: int) -> str:
+    if size < 1024:
+        return f"{size} bytes"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.0f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def paste_reference(path: Path, size: int, lines: int) -> str:
+    """One line that points the agent at a pasted text kept in a file."""
+    text = str(path)
+    if any(char.isspace() for char in text):
+        text = '"' + text + '"'
+    word = "line" if lines == 1 else "lines"
+    return (
+        f"[Pasted text: {lines} {word}, {readable_size(size)}. "
+        f"Read the whole file {text}] "
+    )
 
 
 async def terminal_request(
@@ -273,7 +337,12 @@ async def terminal_request(
             raise ValueError("Invalid paste client")
         now = time.monotonic()
         if phase == "begin":
-            accepted = supervisor.pastes.begin(terminal, paste_id, client, now)
+            # Agents get a long text as a file they can read; a shell has no way
+            # to read a file reference, so it still receives the text itself.
+            spool = None
+            if request.get("file") is True and terminal.entry["harness"] != "shell":
+                spool = paste_directory(supervisor.state_dir, terminal.id)
+            accepted = supervisor.pastes.begin(terminal, paste_id, client, now, spool)
         elif phase == "chunk":
             text = request.get("text")
             if not isinstance(text, str):
@@ -416,12 +485,13 @@ class PasteAssembler:
         paste_id: str,
         client: str | None,
         now: float,
+        spool: Path | None = None,
     ) -> bool:
         pastes = self.terminals.setdefault(terminal.id, {})
         for existing, state in list(pastes.items()):
             if client and state.get("client") == client:
                 if self._close(state):
-                    pastes.pop(existing, None)
+                    self._forget(pastes, existing)
                 else:
                     self._hold(state, now)
         if paste_id in pastes:
@@ -435,12 +505,33 @@ class PasteAssembler:
                 ):
                     continue
                 if self._close(state):
-                    del pastes[oldest]
+                    self._forget(pastes, oldest)
                     evicted = True
                     break
                 self._hold(state, now)
             if not evicted:
                 return False
+        if spool is not None:
+            try:
+                stream, path = open_paste_file(spool)
+            except OSError as error:
+                if not pastes:
+                    self.terminals.pop(terminal.id, None)
+                raise ValueError(f"Could not store the pasted text: {error}") from error
+            # The text goes to a file, so nothing reaches the terminal until the
+            # end: there is no bracketed paste to close if the client vanishes.
+            pastes[paste_id] = {
+                "bracketed": False,
+                "updated": now,
+                "client": client,
+                "terminal": terminal,
+                "file": stream,
+                "path": path,
+                "bytes": 0,
+                "lines": 0,
+                "last": b"",
+            }
+            return True
         bracketed = bool(terminal.board.modes.bracketed_paste)
         if bracketed and not terminal.queue_bytes(PASTE_BEGIN):
             if not pastes:
@@ -464,6 +555,17 @@ class PasteAssembler:
     ) -> bool:
         state = self._state(terminal.id, paste_id, client)
         state["updated"] = now
+        if "file" in state:
+            data = text.encode("utf-8")
+            try:
+                state["file"].write(data)
+            except (OSError, ValueError) as error:
+                raise ValueError(f"Could not store the pasted text: {error}") from error
+            if data:
+                state["bytes"] += len(data)
+                state["lines"] += data.count(b"\n")
+                state["last"] = data[-1:]
+            return True
         accepted = bool(terminal.queue_bytes(text.encode("utf-8")))
         if accepted:
             state.pop("closing", None)
@@ -478,8 +580,28 @@ class PasteAssembler:
     ) -> bool:
         state = self._state(terminal.id, paste_id, client)
         state["updated"] = now
+        if "file" in state:
+            return self._end_file(terminal, paste_id, state)
         if state["bracketed"] and not terminal.queue_bytes(PASTE_END):
             return False
+        self._discard(terminal.id, paste_id)
+        return True
+
+    def _end_file(
+        self, terminal: TerminalSession, paste_id: str, state: dict[str, Any]
+    ) -> bool:
+        stream = state["file"]
+        try:
+            stream.close()
+        except OSError as error:
+            raise ValueError(f"Could not store the pasted text: {error}") from error
+        lines = state["lines"] + (1 if state["bytes"] and state["last"] != b"\n" else 0)
+        text = paste_reference(state["path"], state["bytes"], lines).encode("utf-8")
+        if terminal.board.modes.bracketed_paste:
+            text = PASTE_BEGIN + text + PASTE_END
+        if not terminal.queue_bytes(text):
+            return False
+        state["done"] = True
         self._discard(terminal.id, paste_id)
         return True
 
@@ -498,7 +620,8 @@ class PasteAssembler:
         return True
 
     def discard_terminal(self, terminal_id: str) -> None:
-        self.terminals.pop(terminal_id, None)
+        for state in (self.terminals.pop(terminal_id, None) or {}).values():
+            self._release(state)
 
     def prune(
         self,
@@ -509,7 +632,7 @@ class PasteAssembler:
         expired: list[tuple[str, bool]] = []
         for terminal_id in list(self.terminals):
             if active_ids is not None and terminal_id not in active_ids:
-                self.terminals.pop(terminal_id, None)
+                self.discard_terminal(terminal_id)
                 continue
             pastes = self.terminals[terminal_id]
             for paste_id in list(pastes):
@@ -519,7 +642,7 @@ class PasteAssembler:
                 ):
                     continue
                 if self._close(state, terminals):
-                    del pastes[paste_id]
+                    self._forget(pastes, paste_id)
                     expired.append((terminal_id, bool(state["bracketed"])))
                 else:
                     self._hold(state, now)
@@ -542,9 +665,26 @@ class PasteAssembler:
         pastes = self.terminals.get(terminal_id)
         if pastes is None:
             return
-        pastes.pop(paste_id, None)
+        self._forget(pastes, paste_id)
         if not pastes:
             self.terminals.pop(terminal_id, None)
+
+    def _forget(self, pastes: dict[str, dict[str, Any]], paste_id: str) -> None:
+        state = pastes.pop(paste_id, None)
+        if state is not None:
+            self._release(state)
+
+    @staticmethod
+    def _release(state: dict[str, Any]) -> None:
+        """Close a pasted file and delete it if the paste never finished."""
+        stream = state.get("file")
+        if stream is None:
+            return
+        with suppress(OSError, ValueError):
+            stream.close()
+        if not state.get("done"):
+            with suppress(OSError):
+                state["path"].unlink()
 
     @staticmethod
     def _hold(state: dict[str, Any], now: float) -> None:

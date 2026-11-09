@@ -67,7 +67,7 @@ kanbeat --version
 
 The script picks the archive for your system, downloads it and `SHA256SUMS` from the latest published [release](https://github.com/arconw/Kanbeat/releases), verifies the checksum, unpacks it to `~/.local/opt/kanbeat-<version>` and links `~/.local/bin/kanbeat` to it. The archive carries its own Python runtime, so nothing else is needed. The script does not use `sudo` and never edits your shell profile or any project; if `~/.local/bin` is not on your `PATH` it prints the line to add.
 
-- **Pin a version or move the install:** `KANBEAT_VERSION=1.0.0 KANBEAT_PREFIX=/opt/tools sh install.sh`.
+- **Pin a version or move the install:** `KANBEAT_VERSION=1.1.0 KANBEAT_PREFIX=/opt/tools sh install.sh`.
 - **Inspect it first:** `curl -fsSLO https://raw.githubusercontent.com/arconw/Kanbeat/main/install.sh`, read it, then `sh install.sh`. Every release also carries the same script as an asset.
 - **Update:** run `kanbeat shutdown` in each project that has a supervisor, then run the installer again. Older versions stay next to the new one in `~/.local/opt`.
 - **Remove:** `sh install.sh --uninstall` removes the links and the unpacked versions. Your projects' `.kanbeat/` directories are not touched.
@@ -83,7 +83,7 @@ These need **Python 3.11 or newer** and **Git**. Pick one; the tag in the comman
 ```sh
 # once: install uv (https://docs.astral.sh/uv/) and make sure Git is present
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv tool install git+https://github.com/arconw/Kanbeat.git@v1.0.0
+uv tool install git+https://github.com/arconw/Kanbeat.git@v1.1.0
 kanbeat --version
 ```
 
@@ -92,7 +92,7 @@ If `kanbeat` is not found afterwards, run `uv tool update-shell` and reopen the 
 **pipx:**
 
 ```sh
-pipx install git+https://github.com/arconw/Kanbeat.git@v1.0.0
+pipx install git+https://github.com/arconw/Kanbeat.git@v1.1.0
 pipx ensurepath
 ```
 
@@ -100,7 +100,7 @@ pipx ensurepath
 
 ```sh
 python3 -m venv ~/.venvs/kanbeat
-~/.venvs/kanbeat/bin/python -m pip install git+https://github.com/arconw/Kanbeat.git@v1.0.0
+~/.venvs/kanbeat/bin/python -m pip install git+https://github.com/arconw/Kanbeat.git@v1.1.0
 ~/.venvs/kanbeat/bin/kanbeat --help
 ```
 
@@ -119,7 +119,7 @@ Run `~/.venvs/kanbeat/bin/kanbeat`, or add that `bin` directory to your `PATH`.
 Prefer to do it by hand? Download the archive for your system and `SHA256SUMS` from the [Releases page](https://github.com/arconw/Kanbeat/releases):
 
 ```sh
-VERSION=1.0.0
+VERSION=1.1.0
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)  TARGET=linux-x86_64 ;;
   Linux-aarch64) TARGET=linux-arm64 ;;
@@ -293,7 +293,7 @@ flowchart TB
 - Kanbeat does not manage Git: no worktrees, branches, resets or cleanups. Parallel tickets all edit the same working tree, so declare a dependency whenever two tickets touch the same files.
 - The TUI shows ticket Markdown read-only; edit the files externally.
 - Attached views are monitor-only while a structured worker turn is active, so Kanbeat never runs two writers against one native session. Keys and paste are disabled; the wheel still scrolls the view.
-- Harness switching moves conversation text only. Hidden reasoning and binary attachments do not move, permissions, sandbox and native settings stay with each harness, and agent behavior can differ. Some Claude and Pi paths are not yet verified against live CLIs, and a context file does not extend a model's context window.
+- Harness switching moves conversation text only. Hidden reasoning and binary attachments do not move, permissions, sandbox and native settings stay with each harness, and agent behavior can differ. Every target is told to read the whole conversation from a plain-text file in `.kanbeat/.state/transfers/`, which Kanbeat cannot verify, and a context file does not extend a model's context window. Some paths are not yet verified against live CLIs.
 - The transition hook is woken by typing into its terminal when it is quiet, so it can misread a message sent while the harness waits for an answer; keep its prompt specific and its actions safe to repeat.
 - Native terminals do not forward mouse reporting or clipboard requests.
 - A terminal of at least 80 × 24 is required; about 190 columns show all six board columns without scrolling, narrower terminals scroll the board sideways.

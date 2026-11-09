@@ -1,9 +1,11 @@
 import asyncio
 import json
 import os
+import re
 import stat
 import sys
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -26,7 +28,9 @@ from kanbeat.session_switch import (
 from kanbeat.session_transfer import (
     IMPORT_NOTE,
     ConversationEvent,
+    TransferPlan,
     find_import_markers,
+    import_id_for_text,
 )
 
 THREAD = "01a18660-9ca4-71c0-ba25-81426f4ca65d"
@@ -71,6 +75,12 @@ def opencode_message(identifier, role, text):
             }
         ],
     }
+
+
+def read_context(text):
+    """Return the transfer context file that a delivery prompt points at."""
+    match = re.search(r"read the file (\S+) completely", text)
+    return Path(match.group(1)).read_text() if match else text
 
 
 class FakeCodex:
@@ -121,6 +131,7 @@ class FakeCodex:
             {
                 "thread_id": thread_id,
                 "text": text,
+                "context": read_context(text),
                 "client_user_message_id": client_user_message_id,
             }
         )
@@ -183,6 +194,7 @@ class FakeOpenCode:
         text,
         system=None,
         no_reply=True,
+        wait=True,
     ):
         if self.fail_send_before is not None:
             raise OpenCodeHttpError(self.fail_send_before)
@@ -191,8 +203,10 @@ class FakeOpenCode:
                 "session_id": session_id,
                 "message_id": message_id,
                 "text": text,
+                "context": read_context(text),
                 "system": system,
                 "no_reply": no_reply,
+                "wait": wait,
             }
         )
         self.messages[session_id].append(opencode_message(message_id, "user", text))
@@ -503,13 +517,27 @@ async def test_codex_to_opencode_to_codex_delivers_only_new_events(tmp_path, ins
     (sent,) = groups.opencode.sent
     assert sent["session_id"] == opencode_id
     assert sent["message_id"] == "msg" + first["import_id"]
-    assert sent["no_reply"] is True
+    assert sent["no_reply"] is False
+    assert sent["wait"] is False
     assert sent["system"] == IMPORT_NOTE
-    assert "Codex question" in sent["text"]
-    assert "Codex answer" in sent["text"]
-    assert IMPORT_NOTE in sent["text"]
-    assert sent["text"].rstrip().endswith("-->")
-    assert start_marker_count(sent["text"]) == 1
+    assert "Codex question" not in sent["text"]
+    assert "read the file" in sent["text"]
+    assert "completely" in sent["text"]
+    context = (
+        groups.state.board.root
+        / ".state"
+        / "transfers"
+        / "t1"
+        / f"{first['import_id']}.md"
+    )
+    assert context.is_file()
+    assert stat.S_IMODE(context.stat().st_mode) == 0o600
+    assert context.read_text() == sent["context"]
+    assert "Codex question" in sent["context"]
+    assert "Codex answer" in sent["context"]
+    assert IMPORT_NOTE in sent["context"]
+    assert sent["context"].rstrip().endswith("-->")
+    assert start_marker_count(sent["context"]) == 1
 
     groups.opencode.add_assistant(opencode_id, "msg_reply_1", "OpenCode answer")
     second = await switch_harness(groups, {"terminal": "t1", "harness": "codex"})
@@ -519,9 +547,9 @@ async def test_codex_to_opencode_to_codex_delivers_only_new_events(tmp_path, ins
     (turn,) = groups.codex.turns
     assert turn["thread_id"] == THREAD
     assert turn["client_user_message_id"] == second["target_message_id"]
-    assert "OpenCode answer" in turn["text"]
-    assert "Codex question" not in turn["text"]
-    assert start_marker_count(turn["text"]) == 1
+    assert "OpenCode answer" in turn["context"]
+    assert "Codex question" not in turn["context"]
+    assert start_marker_count(turn["context"]) == 1
 
     before = len(groups.codex.turns)
     third = await switch_harness(groups, {"terminal": "t1", "harness": "opencode"})
@@ -654,11 +682,11 @@ async def test_three_harness_cycles_keep_checkpoints_and_do_not_nest_envelopes(
 
     back = await switch_harness(groups, {"terminal": "t1", "harness": "codex"})
     assert back["delivered"] == 2
-    assert "OpenCode reply one" in groups.codex.turns[-1]["text"]
-    assert "Claude reply" in groups.codex.turns[-1]["text"]
-    assert "Codex question" not in groups.codex.turns[-1]["text"]
-    assert start_marker_count(groups.codex.turns[-1]["text"]) == 1
-    assert len(find_import_markers(groups.codex.turns[-1]["text"])) == 1
+    assert "OpenCode reply one" in groups.codex.turns[-1]["context"]
+    assert "Claude reply" in groups.codex.turns[-1]["context"]
+    assert "Codex question" not in groups.codex.turns[-1]["context"]
+    assert start_marker_count(groups.codex.turns[-1]["context"]) == 1
+    assert len(find_import_markers(groups.codex.turns[-1]["context"])) == 1
 
     groups.codex.threads[THREAD].append(
         codex_assistant("codex-assistant-2", "Codex reply two")
@@ -667,9 +695,9 @@ async def test_three_harness_cycles_keep_checkpoints_and_do_not_nest_envelopes(
 
     cycle = await switch_harness(groups, {"terminal": "t1", "harness": "opencode"})
     assert cycle["delivered"] == 2
-    assert "Codex reply two" in groups.opencode.sent[-1]["text"]
-    assert "Claude reply" in groups.opencode.sent[-1]["text"]
-    assert start_marker_count(groups.opencode.sent[-1]["text"]) == 1
+    assert "Codex reply two" in groups.opencode.sent[-1]["context"]
+    assert "Claude reply" in groups.opencode.sent[-1]["context"]
+    assert start_marker_count(groups.opencode.sent[-1]["context"]) == 1
 
     captured.clear()
     cycle = await switch_harness(groups, {"terminal": "t1", "harness": "claude"})
@@ -710,7 +738,7 @@ async def test_pi_delivery_uses_a_private_context_file_and_resumes_session(
     assert pi_id in call["argv"]
     assert call["context_mode"] == 0o600
     assert "Codex question" in call["context"]
-    assert not (groups.state.board.root / ".state" / "transfers" / "t1").exists()
+    assert (groups.state.board.root / ".state" / "transfers" / "t1").is_dir()
     path = next(groups.pi_sessions_dir().glob(f"*/*_{pi_id}.jsonl"))
     records = [json.loads(line) for line in path.read_text().splitlines()]
     user = next(
@@ -724,9 +752,9 @@ async def test_pi_delivery_uses_a_private_context_file_and_resumes_session(
     append_pi_reply(groups, pi_id, "Pi reply")
     back = await switch_harness(groups, {"terminal": "t1", "harness": "codex"})
     assert back["delivered"] == 1
-    assert "Pi reply" in groups.codex.turns[-1]["text"]
-    assert "Codex question" not in groups.codex.turns[-1]["text"]
-    assert start_marker_count(groups.codex.turns[-1]["text"]) == 1
+    assert "Pi reply" in groups.codex.turns[-1]["context"]
+    assert "Codex question" not in groups.codex.turns[-1]["context"]
+    assert start_marker_count(groups.codex.turns[-1]["context"]) == 1
 
 
 @pytest.mark.asyncio
@@ -782,7 +810,7 @@ async def test_missing_target_session_needs_explicit_fresh_and_transient_does_no
     assert entry["native_sessions"]["opencode"]["id"] == fresh["native_session"]
     assert entry["native_sessions"]["opencode"]["status"] == "available"
     assert len(groups.opencode.sent) == 2
-    assert groups.opencode.sent[-1]["text"].count("Codex question") == 1
+    assert groups.opencode.sent[-1]["context"].count("Codex question") == 1
 
 
 @pytest.mark.asyncio
@@ -820,7 +848,7 @@ async def test_restart_reconciles_uncertain_delivery_before_retry(
         assert sorted(statuses) == ["confirmed", "not_delivered"]
         assert len(groups.opencode.messages[target_id]) == 1
     assert entry["harness"] == "opencode"
-    assert groups.opencode.sent[-1]["text"].count("Codex question") == 1
+    assert groups.opencode.sent[-1]["context"].count("Codex question") == 1
 
 
 @pytest.mark.asyncio
@@ -850,8 +878,8 @@ async def test_missing_third_harness_is_skipped_and_stays_skipped(
         "id": "claude-missing",
         "status": "missing",
     }
-    assert "OpenCode question" in groups.codex.turns[-1]["text"]
-    assert "OpenCode reply" in groups.codex.turns[-1]["text"]
+    assert "OpenCode question" in groups.codex.turns[-1]["context"]
+    assert "OpenCode reply" in groups.codex.turns[-1]["context"]
 
     async def forbidden(*args, **kwargs):
         raise AssertionError("a recorded missing history must not be read again")
@@ -898,44 +926,59 @@ async def test_read_prepare_and_delivery_failures_leave_source_active(
 
 
 @pytest.mark.asyncio
-async def test_large_transfer_is_refused_until_an_explicit_reduction_is_chosen(
-    tmp_path, installed
+@pytest.mark.parametrize("target", ["codex", "opencode"])
+async def test_a_large_conversation_is_delivered_whole_through_the_file(
+    tmp_path, installed, target
 ):
     groups = FakeGroups(tmp_path)
-    groups.codex.threads[THREAD] = [
-        codex_assistant(f"assistant-{index}", f"text-{index} " + "x" * 20000)
-        for index in range(60)
-    ]
-    groups.entries["t1"] = entry_for()
+    source = "opencode" if target == "codex" else "codex"
+    if source == "codex":
+        groups.codex.threads[THREAD] = [
+            codex_assistant(f"assistant-{index}", f"text-{index} " + "x" * 20000)
+            for index in range(60)
+        ]
+        groups.entries["t1"] = entry_for()
+    else:
+        groups.opencode.sessions["ses_source"] = True
+        groups.opencode.messages["ses_source"] = [
+            opencode_message(
+                f"msg_{index}", "assistant", f"text-{index} " + "x" * 20000
+            )
+            for index in range(60)
+        ]
+        groups.entries["t1"] = entry_for(harness="opencode", native="ses_source")
 
-    with pytest.raises(SessionSwitchRefused) as refused:
-        await switch_harness(groups, {"terminal": "t1", "harness": "opencode"})
-    assert refused.value.reason == "transfer_too_large"
-    assert "Nothing was truncated" in str(refused.value)
-    assert "context window" in str(refused.value)
-    assert refused.value.details["size"]["full"]["bytes"] > 1024 * 1024
-    kinds = [
-        (option["kind"], option["count"]) for option in refused.value.details["options"]
-    ]
-    assert kinds == [("newest", 50), ("newest", 20), ("newest", 10)]
-    assert groups.opencode.created == []
-    assert groups.entries["t1"]["harness"] == "codex"
+    result = await switch_harness(groups, {"terminal": "t1", "harness": target})
+    assert result["delivered"] == 60
+    assert result["transfer"]["bytes"] > 1024 * 1024
+    delivered = groups.codex.turns if target == "codex" else groups.opencode.sent
+    (message,) = delivered
+    assert len(message["text"]) < 4000
+    assert "x" * 100 not in message["text"]
+    assert "text-0 " in message["context"]
+    assert "text-59 " in message["context"]
+    assert groups.entries["t1"]["harness"] == target
 
-    result = await switch_harness(
-        groups,
-        {
-            "terminal": "t1",
-            "harness": "opencode",
-            "reduction": {"kind": "newest", "count": 10},
-        },
+
+def test_the_delivery_prompt_forces_a_complete_read(tmp_path):
+    from kanbeat.session_switch import _context_prompt
+
+    event = ConversationEvent(
+        harness="codex",
+        event_id="e1",
+        ordinal=0,
+        role="user",
+        text="Question",
     )
-    assert result["delivered"] == 10
-    assert result["transfer"]["first_ordinal"] == 50
-    assert result["transfer"]["last_ordinal"] == 59
-    (sent,) = groups.opencode.sent
-    assert "text-50" in sent["text"]
-    assert "text-0 " not in sent["text"]
-    assert start_marker_count(sent["text"]) == 1
+    plan = TransferPlan(target="opencode", events=(event,), import_id="abc123")
+    path = tmp_path / "abc123.md"
+    prompt = _context_prompt(path, plan)
+    assert str(path) in prompt
+    assert "completely" in prompt
+    assert "first line to its last" in prompt
+    assert "consecutive parts" in prompt
+    assert "Question" not in prompt
+    assert import_id_for_text(prompt) == "abc123"
 
 
 @pytest.mark.asyncio
@@ -1165,6 +1208,19 @@ async def test_codex_and_opencode_delivery_parameters_are_explicit():
         "system": IMPORT_NOTE,
         "noReply": True,
     }
+    opencode.calls.clear()
+    asynchronous = await opencode.send_message(
+        "ses_abc",
+        message_id="msgfixture",
+        text="Fixture transfer",
+        system=IMPORT_NOTE,
+        no_reply=False,
+        wait=False,
+    )
+    assert asynchronous == {"info": {"id": "msgfixture"}}
+    method, path, body, query = opencode.calls[-1]
+    assert (method, path, query) == ("POST", "/session/ses_abc/prompt_async", None)
+    assert "noReply" not in body
     for bad in ("", "message", "bad id", 7):
         with pytest.raises(OpenCodeHostError):
             await opencode.send_message(
