@@ -67,8 +67,11 @@ async def wait_for_file(path, expected_size, timeout=60.0):
     )
 
 
-def terminal_input(supervisor, session):
+def terminal_input(supervisor, session, spool=False):
     async def send(op, **values):
+        if not spool:
+            # These tests stream the text itself, as a shell session would get it.
+            values.pop("file", None)
         return await supervisor.dispatch({"op": op, "terminal": session.id, **values})
 
     reports = []
@@ -520,3 +523,134 @@ def test_eviction_does_not_close_a_live_paste_mid_stream():
     assert assembler.prune(now + 2) == []
     assert "p0" in assembler.terminals["t1"]
     assert b"\x1b[201~" not in writes
+
+
+def spooled_files(supervisor, session):
+    directory = supervisor.state_dir / "pastes" / session.id
+    return sorted(directory.glob("*.txt")) if directory.is_dir() else []
+
+
+async def paste_through_client(supervisor, session, text):
+    queue, reports = terminal_input(supervisor, session, spool=True)
+    await queue.put({"kind": "paste", "text": text})
+    pump = asyncio.create_task(queue.run())
+    try:
+        await queue.drain()
+    finally:
+        pump.cancel()
+        await asyncio.gather(pump, return_exceptions=True)
+    return reports
+
+
+@pytest.mark.asyncio
+async def test_large_paste_in_an_agent_becomes_a_file_and_a_reference(
+    bracketed_terminal,
+):
+    supervisor, session, output = bracketed_terminal
+    text = "".join(f"line {number} \u20ac\n" for number in range(3000))
+    assert session.entry["harness"] != "shell"
+    reports = await paste_through_client(supervisor, session, text)
+    assert reports == []
+    (stored,) = spooled_files(supervisor, session)
+    assert stored.read_text(encoding="utf-8") == text
+    assert stored.stat().st_mode & 0o777 == 0o600
+    assert stored.parent.stat().st_mode & 0o777 == 0o700
+    sent = await wait_for_file(output, 40, timeout=10)
+    for _ in range(100):
+        if sent.endswith(b"\x1b[201~"):
+            break
+        await asyncio.sleep(0.02)
+        sent = output.read_bytes()
+    assert sent.startswith(b"\x1b[200~[Pasted text: 3000 lines, ")
+    assert sent.endswith(b"] \x1b[201~")
+    assert str(stored).encode() in sent
+    assert b"line 2999" not in sent
+
+
+@pytest.mark.asyncio
+async def test_large_paste_reference_has_no_markers_when_bracketed_paste_is_off(
+    plain_terminal,
+):
+    supervisor, session, output = plain_terminal
+    reports = await paste_through_client(supervisor, session, "w" * 20000)
+    assert reports == []
+    (stored,) = spooled_files(supervisor, session)
+    sent = await wait_for_file(output, 40, timeout=10)
+    assert b"\x1b[200~" not in sent
+    assert sent.startswith(b"[Pasted text: 1 line, 20 KB. Read the whole file ")
+    assert str(stored).encode() in sent
+    assert stored.read_text() == "w" * 20000
+
+
+@pytest.mark.asyncio
+async def test_paste_below_the_limit_is_typed_into_the_agent(bracketed_terminal):
+    supervisor, session, output = bracketed_terminal
+    await supervisor.dispatch(
+        {
+            "op": "terminal_input",
+            "terminal": session.id,
+            "events": [{"kind": "paste", "text": "short"}],
+        }
+    )
+    assert (await wait_for_file(output, 17, timeout=10)) == b"\x1b[200~short\x1b[201~"
+    assert spooled_files(supervisor, session) == []
+
+
+@pytest.mark.asyncio
+async def test_large_paste_in_a_shell_is_still_typed_in_full(tmp_path, monkeypatch):
+    output = tmp_path / "shell.out"
+    supervisor, session = await start_terminal(
+        tmp_path, monkeypatch, capture_cli(output)
+    )
+    try:
+        session.entry["harness"] = "shell"
+        text = "s" * 30000
+        reports = await paste_through_client(supervisor, session, text)
+        assert reports == []
+        assert await wait_for_file(output, len(text), timeout=30) == text.encode()
+        assert spooled_files(supervisor, session) == []
+    finally:
+        await supervisor.terminals.stop()
+
+
+@pytest.mark.asyncio
+async def test_abandoned_file_paste_leaves_no_file(bracketed_terminal):
+    supervisor, session, output = bracketed_terminal
+    now = 100.0
+    assert supervisor.pastes.begin(
+        session, "p1", "c1", now, supervisor.state_dir / "pastes" / session.id
+    )
+    assert supervisor.pastes.chunk(session, "p1", "partial", "c1", now)
+    assert len(spooled_files(supervisor, session)) == 1
+    assert supervisor.pastes.abort(session, "p1", now + 1)
+    assert spooled_files(supervisor, session) == []
+    assert supervisor.pastes.begin(
+        session, "p2", "c1", now, supervisor.state_dir / "pastes" / session.id
+    )
+    assert len(spooled_files(supervisor, session)) == 1
+    supervisor.pastes.discard_terminal(session.id)
+    assert spooled_files(supervisor, session) == []
+    assert supervisor.pastes.terminals == {}
+
+
+@pytest.mark.asyncio
+async def test_stale_file_paste_is_removed_by_the_pruner(bracketed_terminal):
+    supervisor, session, output = bracketed_terminal
+    assert supervisor.pastes.begin(
+        session, "p1", None, 0.0, supervisor.state_dir / "pastes" / session.id
+    )
+    assert len(spooled_files(supervisor, session)) == 1
+    supervisor.pastes.prune(1000.0, None, supervisor.terminals.sessions)
+    assert spooled_files(supervisor, session) == []
+
+
+def test_remove_pastes_deletes_session_files(tmp_path):
+    from kanbeat.terminal_control import paste_directory, remove_pastes
+
+    directory = paste_directory(tmp_path, "abc")
+    directory.mkdir(parents=True)
+    (directory / "one.txt").write_text("x")
+    remove_pastes(tmp_path, "abc")
+    assert not directory.exists()
+    assert not (tmp_path / "pastes").exists()
+    remove_pastes(tmp_path, "abc")

@@ -6,7 +6,7 @@ import uuid
 MAX_QUEUED_INPUTS = 512
 MAX_INPUT_BATCH = 64
 MAX_BATCH_BYTES = 32768
-LARGE_PASTE_BYTES = 32768
+LARGE_PASTE_BYTES = 8192
 PASTE_CHUNK_BYTES = 32768
 
 
@@ -52,6 +52,8 @@ class TerminalInput:
             "phase": phase,
             "client": self.client_id,
         }
+        if phase == "begin":
+            values["file"] = True
         if text is not None:
             values["text"] = text
         rejected_since = None

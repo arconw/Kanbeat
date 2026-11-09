@@ -21,6 +21,7 @@ from .session_switch import (
     switch_harness,
 )
 from .state import LocalState
+from .terminal_control import remove_pastes
 from .terminals import SHELL_HARNESS, Terminals, framed_prompt
 
 
@@ -804,6 +805,7 @@ class SessionGroups:
                 if request.get("native") is True:
                     await self.delete_native(entry)
                 remove_contexts(self.state, terminal_id)
+                remove_pastes(self.state.board.root / ".state", terminal_id)
                 session = self.terminals.sessions.pop(terminal_id, None)
                 if session is not None:
                     session.close()
