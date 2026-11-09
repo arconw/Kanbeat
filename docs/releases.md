@@ -20,9 +20,13 @@ Version 1.0.0 also lets an independent session change its harness without losing
 
 **What changes for existing users.** The transition hook no longer starts a one-shot session for every column change. It is now one session, **Transition hook** (Sessions, Ungrouped), that Kanbeat wakes with the numbered events, including changes made by hand and while the board is stopped; the old per-event ledger is dropped when the supervisor starts, and `transition_hook.prompt` is limited to 8,000 characters and 12,000 bytes. Kanbeat no longer binds Ctrl+C or Ctrl+P itself, so they reach the terminal, and plain labels no longer allow mouse text selection. Restart the supervisor (`kanbeat shutdown`) after updating so it runs the new code.
 
+Version 1.1.0 changes how a conversation reaches an agent when it is too long to type. A harness switch or a fork now always writes the whole conversation to a private context file under `.kanbeat/.state/transfers/` and tells the new agent to read it completely before anything else, for every harness. The size limit and the dialog that asked which chunks to transfer are gone. A paste of more than 8 KB into a Codex, Claude Code, OpenCode or Pi session is likewise kept in a private file under `.kanbeat/.state/pastes/`, and the agent's prompt receives one line that names the file and asks for all of it to be read; a plain terminal session still receives the text itself.
+
+**What changes in 1.1.0.** Switching or forking a long session no longer stops with a size message or asks what to send, and the transfer files stay in `.kanbeat/.state/` until the session is deleted (they hold the conversation, so they are private to you and ignored by Git). A long paste into an agent shows up as a one-line file reference instead of the text; a paste of 8 KB or less behaves as before. Delivery to OpenCode now uses its asynchronous prompt endpoint, and how each agent reads a very large file is untested against the live tools.
+
 ## Current status
 
-- Standalone archives and `install.sh` are published from 0.9.1 onwards. The Python quick-start pins the tested `v1.0.0` tag, which installs from Git as described in the [README](../README.md#installation).
+- Standalone archives and `install.sh` are published from 0.9.1 onwards. The Python quick-start pins the tested `v1.1.0` tag, which installs from Git as described in the [README](../README.md#installation).
 - Archives are built by the `Release` workflow. A pull request builds and smoke-tests them without publishing. A reviewed `v*` tag builds them again and prepares a **draft** GitHub release for the owner to inspect and publish by hand.
 - Kanbeat is not on PyPI or Homebrew, and the workflow never publishes there.
 - Kanbeat is licensed under the [Apache License 2.0](../LICENSE). Archives ship `LICENSE` and `THIRD_PARTY_NOTICES.txt` with the upstream licence texts of the bundled packages and a note on the CPython runtime and PyInstaller bootloader.
@@ -59,10 +63,10 @@ Download the archive for your platform and `SHA256SUMS` from the release page, t
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS      # Linux
 shasum -a 256 --check --ignore-missing SHA256SUMS  # macOS
-tar -xzf kanbeat-1.0.0-linux-x86_64.tar.gz
+tar -xzf kanbeat-1.1.0-linux-x86_64.tar.gz
 mkdir -p ~/.local/opt ~/.local/bin
-mv kanbeat-1.0.0-linux-x86_64 ~/.local/opt/kanbeat-1.0.0
-ln -sfn ~/.local/opt/kanbeat-1.0.0 ~/.local/opt/kanbeat
+mv kanbeat-1.1.0-linux-x86_64 ~/.local/opt/kanbeat-1.1.0
+ln -sfn ~/.local/opt/kanbeat-1.1.0 ~/.local/opt/kanbeat
 ln -sf ~/.local/opt/kanbeat/kanbeat ~/.local/bin/kanbeat
 kanbeat --version
 ```
@@ -72,7 +76,7 @@ Keep the `_internal` directory next to the `kanbeat` executable. Make sure `~/.l
 On macOS, a browser download carries a quarantine attribute. After verifying the checksum, remove it from the unpacked directory only if you trust the source:
 
 ```sh
-xattr -dr com.apple.quarantine ~/.local/opt/kanbeat-1.0.0
+xattr -dr com.apple.quarantine ~/.local/opt/kanbeat-1.1.0
 ```
 
 Download and trust behavior depends on the download tool and local macOS policy.
@@ -94,7 +98,7 @@ Project data lives in each project's `.kanbeat/` directory and is unaffected.
 ```sh
 rm ~/.local/bin/kanbeat
 rm ~/.local/opt/kanbeat
-rm -rf ~/.local/opt/kanbeat-1.0.0
+rm -rf ~/.local/opt/kanbeat-1.1.0
 ```
 
 Your projects' `.kanbeat/` directories are not touched; delete them yourself if you no longer want the tickets.
@@ -116,7 +120,7 @@ Wheel and sdist installs are unchanged: `uv tool install`, `pipx install` or `pi
 python -m venv .tmp/venv
 .tmp/venv/bin/python -m pip install '.[release]'
 .tmp/venv/bin/python tools/build_release.py --output .tmp/release/out --work .tmp/release/work
-.tmp/venv/bin/python tools/smoke_release.py .tmp/release/out/kanbeat-1.0.0-linux-x86_64.tar.gz --work .tmp/release/smoke
+.tmp/venv/bin/python tools/smoke_release.py .tmp/release/out/kanbeat-1.1.0-linux-x86_64.tar.gz --work .tmp/release/smoke
 ```
 
 `build_release.py` writes `kanbeat-<version>-<os>-<arch>.tar.gz` and a matching `.sha256`. `smoke_release.py` verifies the checksum, extracts into a fresh directory, and runs the extracted program outside the source tree against a fixture executable named `codex` on an isolated `PATH`. No vendor CLI or model is called. It checks:
